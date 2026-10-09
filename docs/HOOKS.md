@@ -3899,12 +3899,23 @@ and nothing more.
   index, direction, and edge endpoints/tangents where available. The old
   `path_hash` explicitly says `path_hash_scope=local_ids`: different raw
   IDs alone do not prove route divergence. Compare geometry and lane index
-  too. The dump records at most 256 route edges per vehicle, 2048 per dump,
-  with at most 1024 distinct geometry reads, cached within that dump.
+  too. It samples the first two route edges, up to twelve around the
+  vehicle's current edge, and the last two of the first 4096: at most 16
+  per vehicle and 128 per dump, with at most 1024 distinct geometry reads, cached within
+  that dump. The full path hash still covers up to 4096 edges; a changed
+  unsampled edge can change that hash without a differing sampled row.
   `route_omitted` and `geometry=budget` make these limits visible;
   `geometry=unavailable` means the native edge could not be read. Vehicle
-  summaries precede route records so optional detail cannot crowd them out
-  at the hook's line limit. These extra reads happen only during dumps,
+  base entries and compact `vehicle-N/core` entries reach the hook before
+  route records so optional detail cannot crowd them out at its line
+  limit. A core names the vehicle's state, stop, line, edge, full-precision
+  position and speed, and its path count and hash. The hook writes accepted
+  route records first, then verbose base entries, then every vehicle's
+  core and the lane summaries. Thus a newest-byte tail of an oversized
+  dump can still locate the differing vehicle even if verbose rows are lost.
+  It cannot guarantee a complete upload for a large world or busy log;
+  use `collect-logs` for the local full log if diagnostics report skipped
+  bytes. These extra reads happen only during dumps,
   not ordinary rolling checks. They describe the sampled state, not every
   earlier routing decision; a root cause can still require reproduction.
   Line assignments also log `vehicle-action before-assign` and
@@ -3939,9 +3950,11 @@ and nothing more.
   values the row was made from at full precision (`%.17g`), `row` the text
   hashed. The key is the registry's canonical id where there is one
   (`vehicle-N`, `line-N`, `town-N`, `industry-N`), else `row:<row>`
-  (edges, other constructions) or `player` and `people`. Entries are sorted
-  by key, ids first, so the same world dumps the same lines in the same
-  order whatever order the engine lists it in. Each lane ends with
+  (edges, other constructions) or `player` and `people`. The Lua entries
+  are sorted by key, ids first; the hook puts optional vehicle route rows
+  before every lane's base rows and compact cores in its log. The same world still dumps the
+  same lines in the same order whatever order the engine lists it in.
+  Each lane ends with
   `summary <text>`, the lane's text as hashed; a lane that cannot be read
   is one line `err <why>`.
 
@@ -3985,11 +3998,15 @@ python tools/lane_diff.py james=james/hook.log bob=bob/hook.log cat=cat/hook.log
 python tools/lane_diff.py --lane 3 --step 300 --max 50 --ignore entity a.log b.log
 ```
 
-For each lane and step dumped by two or more games it pairs the entries
-by key and prints the ones that differ, grouping the games that agree and
-showing only the fields that differ, and whether the lane's text itself
-differed (a difference below the lane's rounding leaves it alike). It exits
-1 when an entry differs. `python tools/test_lane_diff.py` tests it.
+For each lane and step it pairs captures by occurrence and entries by key,
+prints observed differences, and reports whether the lane's hashed summary
+agrees. Missing summaries, rows or route records, and a truncated checkpoint
+are marked incomplete; a missing entry then does not prove an absent entity.
+Repeated steps with unequal capture counts are left unpaired, since a world
+reload could put the same step in a different epoch. Exit 0 means complete
+aligned captures agree, 1 means an observed difference, and 2 means the
+comparison is incomplete or ambiguous. `python tools/test_lane_diff.py`
+tests it.
 
 #### The town street field
 

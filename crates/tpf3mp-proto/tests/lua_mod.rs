@@ -2155,6 +2155,10 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
     assert_eq!(
         vehicles,
         [
+            "lane 3 step 300 vehicle-0/core state=1 stop=0 line=nil edge=3 pos=10.199999999999999 speed=5 \
+             path_count=0 path_hash=nil entity=401 row=1:0:3~10.20 v5.00",
+            "lane 3 step 300 vehicle-1/core state=2 stop=1 line=nil edge=0 pos=0 speed=0 \
+             path_count=0 path_hash=nil entity=402 row=2:1:0~0.00 v0.00",
             "lane 3 step 300 vehicle-0 state=1 stop=0 line=nil edge=3 pos=10.199999999999999 speed=5 \
              arrival=nil/nil arrival_locked=nil load=nil pending=nil free=nil \
              entity=401 row=1:0:3~10.20 v5.00",
@@ -2197,9 +2201,14 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
     let dump_b = dump_at_checkpoint(&b, 350, "3");
     let differ: Vec<(&String, &String)> =
         dump_a.iter().zip(&dump_b).filter(|(x, y)| x != y).collect();
-    assert_eq!(differ.len(), 1, "{differ:#?}");
-    assert!(differ[0].0.starts_with("lane 3 step 350 vehicle-1 "));
+    assert_eq!(
+        differ.len(),
+        2,
+        "compact and verbose records both name the position"
+    );
+    assert!(differ[0].0.starts_with("lane 3 step 350 vehicle-1/core "));
     assert!(differ[0].1.contains(" pos=0.001 "), "{}", differ[0].1);
+    assert!(differ[1].0.starts_with("lane 3 step 350 vehicle-1 "));
 
     // No dump asked: nothing handed over at a checkpoint.
     a.load("HOOK.dumped = {} HOOK.checkpoint = true UPDATE({}, STATE, 0.2)")
@@ -2582,21 +2591,187 @@ fn long_vehicle_diagnostics_survive_upload_and_bound_route_reads() {
     );
     assert_eq!(
         game.load("return GEOMETRY_READS").eval::<usize>().unwrap(),
-        256
+        14
     );
     for line in &dump {
         assert!(line.len() < 1024, "{} bytes: {line}", line.len());
         assert_eq!(&tpf3mp_proto::redact(line), line);
     }
     let text = dump.join("\n");
-    assert!(text.contains("route_records=256 route_omitted=44"));
+    assert!(text.contains("route_records=14 route_omitted=286"));
     assert!(text.contains("free_part0="));
     assert!(text.contains("decision_offset=98"));
     assert!(text.contains(
-        "/path-0138 route_index=138 edge_entity=8139 lane_index=1 direction=false p0=8139,0,5"
+        "/path-0299 route_index=299 edge_entity=8300 lane_index=0 direction=false p0=8300,0,5"
     ));
     assert!(text.contains("path_hash_scope=local_ids"));
     assert!(text.contains("row=1:0:3~10.20"));
+}
+
+#[test]
+fn shifty_sized_vehicle_dumps_fit_two_checkpoints_in_the_hook_upload_budget() {
+    let game = dumping_game(false);
+    game.load(
+        r#"
+        local edges = {}
+        for i = 1, 300 do
+            edges[i] = { edgeId = { entity = 8000 + i, index = i % 3 }, dir = false }
+        end
+        WORLD[9][401].path = { edges = edges }
+        local cargo = {}
+        for i = 1, 15 do
+            cargo[i] = {}
+            for j = 1, 40 do cargo[i][j] = j end
+        end
+        WORLD[4][401].lineStop2cargo2available = cargo
+        for e = 403, 413 do
+            WORLD[4][e] = WORLD[4][401]
+            WORLD[9][e] = WORLD[9][401]
+        end
+    "#,
+    )
+    .exec()
+    .unwrap();
+    let first = dump_at_checkpoint(&game, 50, "3");
+    let second = dump_at_checkpoint(&game, 100, "3");
+    let wire_size = |dump: &[String]| -> usize { dump.iter().map(|line| line.len() + 16).sum() };
+    assert!(
+        first.len() > 100,
+        "13 vehicles still have sampled route detail"
+    );
+    assert!(
+        wire_size(&first) + wire_size(&second) <= 192 << 10,
+        "two 13-vehicle checkpoints must fit one minute of hook-log upload: {} + {} bytes",
+        wire_size(&first),
+        wire_size(&second)
+    );
+    assert_eq!(
+        first
+            .iter()
+            .filter(|line| line.contains(" state=")
+                && !line.contains("/path-")
+                && !line.contains("/core"))
+            .count(),
+        13,
+        "every vehicle keeps its base record"
+    );
+}
+
+#[test]
+fn peter_sized_vehicle_dump_keeps_both_compact_checkpoints_under_the_hook_budget() {
+    let game = dumping_game(false);
+    game.load(
+        r#"
+        local edges = {}
+        for i = 1, 300 do
+            edges[i] = { edgeId = { entity = 8000 + i, index = i % 3 }, dir = false }
+        end
+        WORLD[9][401].path = { edges = edges }
+        for e = 403, 557 do
+            WORLD[4][e] = WORLD[4][401]
+            WORLD[9][e] = WORLD[9][401]
+        end
+    "#,
+    )
+    .exec()
+    .unwrap();
+    let first = dump_at_checkpoint(&game, 50, "3");
+    let second = dump_at_checkpoint(&game, 100, "3");
+    let bytes: usize = second.iter().map(|line| line.len() + 16).sum();
+    assert_eq!(
+        second
+            .iter()
+            .filter(|line| line.contains(" state=")
+                && !line.contains("/path-")
+                && !line.contains("/core"))
+            .count(),
+        157
+    );
+    assert_eq!(
+        second.iter().filter(|line| line.contains("/core ")).count(),
+        157
+    );
+    assert!(
+        bytes <= 192 << 10,
+        "one 157-vehicle checkpoint used {bytes} bytes before other hook lines"
+    );
+    let logged = |dump: Vec<String>| -> String {
+        let mut lines = dump;
+        lines.sort_by_key(|line| {
+            let key = line.split_whitespace().nth(4).unwrap_or("");
+            match key {
+                key if key.contains("/path-") => 0,
+                "summary" | "err" => 3,
+                key if key.ends_with("/core") => 2,
+                _ => 1,
+            }
+        });
+        lines
+            .into_iter()
+            .map(|line| format!("[1759240010] {line}\n"))
+            .collect::<String>()
+    };
+    let combined = logged(first) + &logged(second);
+    let tail = &combined[combined.len().saturating_sub(192 << 10)..];
+    for step in [50, 100] {
+        let count = tail
+            .lines()
+            .filter(|line| line.contains(&format!(" step {step} ")) && line.contains("/core "))
+            .count();
+        assert_eq!(
+            count,
+            157,
+            "checkpoint {step}'s core records survived the newest 192 KiB of {} bytes",
+            combined.len()
+        );
+    }
+}
+
+#[test]
+fn an_unsampled_middle_route_change_is_visible_in_the_full_path_hash() {
+    let a = dumping_game(false);
+    let b = dumping_game(false);
+    for game in [&a, &b] {
+        game.load(
+            r#"
+            WORLD[9][401].path = { edges = {} }
+            for i = 1, 300 do
+                WORLD[9][401].path.edges[i] = {
+                    edgeId = { entity = 8000 + i, index = i % 3 }, dir = false
+                }
+            end
+        "#,
+        )
+        .exec()
+        .unwrap();
+    }
+    b.load("WORLD[9][401].path.edges[139].edgeId.entity = 9000")
+        .exec()
+        .unwrap();
+    let da = dump_at_checkpoint(&a, 50, "3");
+    let db = dump_at_checkpoint(&b, 50, "3");
+    let routes = |dump: &[String]| -> Vec<String> {
+        dump.iter()
+            .filter(|line| line.contains("/path-"))
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        routes(&da),
+        routes(&db),
+        "middle edge is deliberately unsampled"
+    );
+    let base = |dump: &[String]| -> String {
+        dump.iter()
+            .find(|line| line.contains(" path_hash="))
+            .unwrap()
+            .clone()
+    };
+    assert_ne!(
+        base(&da),
+        base(&db),
+        "the full path hash still exposes the change"
+    );
 }
 
 #[test]
