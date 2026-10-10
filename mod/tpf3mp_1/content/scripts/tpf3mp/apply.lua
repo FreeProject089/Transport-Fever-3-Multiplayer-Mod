@@ -381,6 +381,48 @@ end
 -- verdict first, and built as the player's own build, paid by the player
 -- (buildProposal). The new one stands where the old one stood, so the next
 -- edit, a depot or a line finds it by the same file and place.
+-- The stock rail editor's own replacement generator preserves its track
+-- reconstruction and snapping information. A SimpleProposal only carries
+-- the new construction parameters. Regenerate locally, then recapture to
+-- ensure the engine has not expanded this into a different requested edit.
+-- Reference: build 40408 gui/construction/construction.tl:1295.
+local function sameParameter(a, b, tolerance)
+	if type(a) ~= type(b) then return false end
+	if type(a) == "number" then return a == b or math.abs(a - b) <= tolerance end
+	if type(a) ~= "table" then return a == b end
+	for k, v in pairs(a) do if not sameParameter(v, b[k], tolerance) then return false end end
+	for k in pairs(b) do if a[k] == nil then return false end end
+	return true
+end
+
+local function railReplacement(build, old, entity)
+	local rail = "::/stations/rail/modular_station/modular_station.con"
+	if build.file ~= rail or build.replaces.file ~= rail or build.connection ~= nil then return nil end
+	local util = api.engine.util and api.engine.util.proposal
+	if not util or not util.createProposalReplaceConstruction then
+		error("the game cannot regenerate the rail station edit", 0)
+	end
+	local full = util.createProposalReplaceConstruction(old, entity.params)
+	if full == nil then error("the game could not regenerate the rail station edit", 0) end
+	if #full.toRemove ~= 1 or full.toRemove[1] ~= old or #full.toAdd ~= 1 then
+		error("the game regenerated a different rail station edit", 0)
+	end
+	local capture = ug_require and ug_require("tpf3mp_1::/scripts/tpf3mp/capture.lua")
+		or require("tpf3mp.capture")
+	local action, why = capture.construction(full)
+	local rebuilt = action and action.BuildConstruction
+	if not rebuilt then error("the regenerated rail station edit cannot travel: " .. tostring(why), 0) end
+	local same = sameParameter
+	if rebuilt.file ~= build.file or rebuilt.name ~= build.name
+		or rebuilt.connection ~= nil or not same(rebuilt.replaces, build.replaces, 0.0011)
+		or not same(rebuilt.transform.origin, build.transform.origin, 0.0011)
+		or not same(rebuilt.transform.basis, build.transform.basis, 0.0000011)
+		or not same(params(rebuilt.params), params(build.params), 0.0000011) then
+		error("the game regenerated a different rail station edit", 0)
+	end
+	return full
+end
+
 local function replaceConstruction(build, proposal, entity)
 	local old, oldComponent = constructionAt(build.replaces)
 	mine(old, "construction")
@@ -398,11 +440,26 @@ local function replaceConstruction(build, proposal, entity)
 	context.player = company()
 	context.gatherBuildings = true
 	context.gatherFields = true
-	buildProposal(proposal, context)
+	local native = railReplacement(build, old, entity)
+	if native then
+		-- Build 40408's makeProposalData binding only accepts SimpleProposal,
+		-- despite its Teal declaration. The stock UI sends this full native
+		-- proposal directly, with errors enabled. Do not discard its graph
+		-- just to pass it through the simple-proposal validator.
+		if dry then error({ dry = true, proposal = native, context = context }, 0) end
+		run(api.cmd.makeWorldBuildProposalCmd(native, context, false, true))
+	else
+		buildProposal(proposal, context)
+	end
 	-- What it made, where the action says: this game could name it.
-	local new = constructionAt({ file = build.file, at = build.transform.origin })
+	local new, component = constructionAt({ file = build.file, at = build.transform.origin })
+	if native and not sameParameter(component and component.params, entity.params, 0.0000011) then
+		error("the game did not apply the requested rail station parameters", 0)
+	end
 	-- The acting company's, whatever the engine made of it, as a new one.
 	settleConstruction(new, build.file)
+	-- The native replacement already includes its snapped track graph.
+	if native then return true, new end
 	-- The new one makes its entrances again itself, unsnapped, as a build
 	-- does: a road station edited by the street came loose from it, its
 	-- entrance no longer joined to the junction (2026-10-03, in both games).
@@ -1289,18 +1346,12 @@ local function stopEdge(ref)
 	return e
 end
 
--- A proposal that removes edge `e` and adds it again with `objects`.
-local function rebuildWith(e, network, objects)
-	local proposal = api.type.SimpleProposal.new()
-	local s = api.type.SegmentAndEntity.new()
-	s.entity = -1
-	s.comp = api.engine.getComponent(e.id, api.type.ComponentType.BASE_EDGE)
-	s.type = network == "Track" and 1 or 0
-	s.comp.objects = objects
-	-- The edge keeps its owner: its PlayerOwned is a component of its own,
-	-- which the edge's BASE_EDGE does not carry, and without it the rebuilt
-	-- edge would be no one's (a company's road everyone's).
-	local owner = require_companies().ownerOf(api, e.id)
+-- The edge `id` rebuilt as `s` keeps its owner: its PlayerOwned is a
+-- component of its own, which the edge's BASE_EDGE does not carry, and
+-- without it the rebuilt edge would be no one's (a company's road
+-- everyone's).
+local function keepOwner(s, id)
+	local owner = require_companies().ownerOf(api, id)
 	if owner ~= nil then
 		local ok = pcall(function() s.playerOwned.player = owner end)
 		if not ok then
@@ -1309,6 +1360,17 @@ local function rebuildWith(e, network, objects)
 			s.playerOwned = owned
 		end
 	end
+end
+
+-- A proposal that removes edge `e` and adds it again with `objects`.
+local function rebuildWith(e, network, objects)
+	local proposal = api.type.SimpleProposal.new()
+	local s = api.type.SegmentAndEntity.new()
+	s.entity = -1
+	s.comp = api.engine.getComponent(e.id, api.type.ComponentType.BASE_EDGE)
+	s.type = network == "Track" and 1 or 0
+	s.comp.objects = objects
+	keepOwner(s, e.id)
 	proposal.streetProposal.edgesToAdd = { s }
 	proposal.streetProposal.edgesToRemove = { e.id }
 	-- The lane configurations at its ends name the edge, so they go and come
@@ -1490,6 +1552,12 @@ function HANDLERS.PlaceStop(stop)
 		-- (docs/BUILDING.md: an empty name leaves both off); its group is
 		-- named after its town once built (settleStop).
 		eo.name = native or PROVISIONAL_STOP_NAME
+		-- The settings the originator's tool built it with (a mod's on a
+		-- signal among them), in every game alike; none, the construction's
+		-- defaults (SimpleStreetProposal.EdgeObject.params: not in the
+		-- game's API reference, but a member on build 40408, and the signal
+		-- it builds keeps them, 2026-10-06).
+		if stop.params and #stop.params > 0 then eo.params = params(stop.params) end
 		added[k] = eo
 	end
 	local proposal = rebuildWith(e, network, objects)
@@ -1531,6 +1599,177 @@ function removeEdgeObject(ref, context)
 	proposal.streetProposal.edgeObjectsToRemove = { best }
 	log("removing " .. tostring(ref.model) .. " " .. tostring(best) .. " from " .. network .. " edge " .. e.id)
 	return buildProposal(proposal, context)
+end
+
+-- How near each end of a track a PlaceSignals names is its node, in three
+-- dimensions: the node's own position, rounded to the millimetre.
+local SIGNAL_END_TOLERANCE = 0.5
+-- How near where a removed signal stood, along its track, the signal of its
+-- construction there is.
+local SIGNAL_TOLERANCE = 0.25
+
+-- The track between the nodes at `a` and `b` (an action's ends), as it
+-- stands: its id, component and whether it runs from `a` to `b`. One track
+-- node within SIGNAL_END_TOLERANCE of each end, in three dimensions (a
+-- track may pass over another), and one track between them; two of either
+-- refuse it, never chosen between by this game's own entities (D8).
+local function signalTrack(nodes, a, b)
+	local function only(p)
+		local found
+		for _, n in ipairs(nodes) do
+			local dx, dy, dz = n.pos[1] - p.x, n.pos[2] - p.y, (n.pos[3] or 0) - (p.z or 0)
+			if dx * dx + dy * dy + dz * dz <= SIGNAL_END_TOLERANCE * SIGNAL_END_TOLERANCE then
+				if found ~= nil then error("two track nodes where a signal's track ends", 0) end
+				found = n
+			end
+		end
+		if found == nil then error("no track node where a signal's track ends", 0) end
+		return found
+	end
+	local na, nb = only(a), only(b)
+	if na.id == nb.id then error("a signal's track from a node to itself", 0) end
+	local ids = api.engine.system.streetSystem.getNodeTrackSegments(na.id)
+	local found
+	for i = 1, (ids and #ids or 0) do
+		local c = api.engine.getComponent(ids[i], api.type.ComponentType.BASE_EDGE)
+		if c and ((c.node0 == na.id and c.node1 == nb.id) or (c.node0 == nb.id and c.node1 == na.id)) then
+			if found ~= nil then error("two tracks between a signal's track's ends", 0) end
+			local forward = c.node0 == na.id
+			found = { id = ids[i], comp = c, forward = forward,
+				p0 = forward and na.pos or nb.pos, p1 = forward and nb.pos or na.pos,
+				t0 = arr(c.tangent0), t1 = arr(c.tangent1) }
+		end
+	end
+	if found == nil then error("no track between a signal's track's ends", 0) end
+	return found
+end
+
+-- A track's length along its curve, in metres (its Hermite curve in 32
+-- steps: near enough for SIGNAL_TOLERANCE on the tracks a game draws).
+local function trackLength(t)
+	local length, last = 0, t.p0
+	for i = 1, 32 do
+		local p = geom.hermitePos(t.p0, t.t0, t.p1, t.t1, i / 32)
+		local dx, dy, dz = p[1] - last[1], p[2] - last[2], (p[3] or 0) - (last[3] or 0)
+		length = length + math.sqrt(dx * dx + dy * dy + dz * dz)
+		last = p
+	end
+	return length
+end
+
+-- The signals a PlaceSignals placed are the acting company's, the same in
+-- every game, as a stop's are (settleStop): each track found again by its
+-- ends, and each object on it that it did not have before given to the
+-- company where it is anyone else's.
+local function settleSignals(tracks, sig, me)
+	local nodes = readNodes("Track")
+	local companies = require_companies()
+	local given = 0
+	for i, entry in ipairs(sig.edges) do
+		local had = {}
+		for _, o in ipairs(tracks[i].comp.objects or {}) do had[o[1]] = true end
+		local ok, t = pcall(signalTrack, nodes, entry.edge.a, entry.edge.b)
+		if not ok then
+			log("the new signals: a track cannot be found again to settle their owner: " .. tostring(t))
+		else
+			for _, o in ipairs(t.comp.objects or {}) do
+				if not had[o[1]] and companies.ownerOf(api, o[1]) ~= me then
+					local sent = pcall(function() send(api.cmd.makeEntitySetPlayerCmd(o[1], me)) end)
+					if sent then given = given + 1 else log("the new signal " .. tostring(o[1]) .. ": its owner was not set") end
+				end
+			end
+		end
+	end
+	if given > 0 then log("the new signals made the acting company's (" .. tostring(me) .. "): " .. given) end
+end
+
+-- Signals added to and removed from existing tracks (action::PlaceSignals:
+-- what Auto Signals builds after its player's signal), in one proposal:
+-- every track named is rebuilt between its nodes with its other objects
+-- kept under their own entities, as a stop is placed. Every track and every
+-- removed signal is found first, in the world as it stands, one for one;
+-- anything missing or ambiguous refuses the whole build, in every game
+-- alike. A place along a track is from its `a` end: where this game's track
+-- runs from `b`, it is 1 - place there, and the side flips.
+function HANDLERS.PlaceSignals(sig)
+	local C = api.type.ComponentType
+	local SIGNAL = enum("EdgeObjectType").SIGNAL
+	local nodes = readNodes("Track")
+	local tracks, seen = {}, {}
+	for i, entry in ipairs(sig.edges) do
+		local t = signalTrack(nodes, entry.edge.a, entry.edge.b)
+		if seen[t.id] then error("a signal build that names a track twice", 0) end
+		seen[t.id] = true
+		tracks[i] = t
+	end
+	local me = company()
+	local segs, removed, added, gone, renames, ends = {}, {}, {}, {}, {}, {}
+	for i, entry in ipairs(sig.edges) do
+		local t = tracks[i]
+		local function here(at) if t.forward then return at end return 1 - at end
+		local taken = {}
+		local length
+		for _, old in ipairs(entry.remove or {}) do
+			length = length or trackLength(t)
+			local want, best = here(old.at), nil
+			for _, o in ipairs(t.comp.objects or {}) do
+				local c = o[2] == SIGNAL and not taken[o[1]] and api.engine.getComponent(o[1], C.EDGE_OBJECT)
+				if c and c.edgeObjectConstruction == old.model and math.abs(c.param - want) * length <= SIGNAL_TOLERANCE then
+					if best ~= nil then error("two signals where one is removed", 0) end
+					best = o[1]
+				end
+			end
+			if best == nil then error("no " .. tostring(old.model) .. " where a signal is removed", 0) end
+			mine(best, "signal")
+			taken[best] = true
+			gone[#gone + 1] = best
+		end
+		local objects = {}
+		for _, o in ipairs(t.comp.objects or {}) do
+			if not taken[o[1]] then objects[#objects + 1] = { o[1], o[2] } end
+		end
+		for _, new in ipairs(entry.add or {}) do
+			local k = #added + 1
+			objects[#objects + 1] = { NEW_EDGE_OBJECT - (k - 1), SIGNAL }
+			local eo = api.type.SimpleStreetProposal.EdgeObject.new()
+			eo.edgeEntity = -i
+			eo.param = here(new.at)
+			eo.left = (new.left == true) == t.forward
+			eo.oneWay = sig.one_way == true
+			eo.model = sig.model
+			eo.playerEntity = me
+			-- Named, as a stop the room places is, so the engine gives it
+			-- its owner (docs/BUILDING.md).
+			eo.name = PROVISIONAL_STOP_NAME
+			if sig.params and #sig.params > 0 then eo.params = params(sig.params) end
+			added[k] = eo
+		end
+		local s = api.type.SegmentAndEntity.new()
+		s.entity = -i
+		s.comp = api.engine.getComponent(t.id, C.BASE_EDGE)
+		s.type = 1
+		s.comp.objects = objects
+		keepOwner(s, t.id)
+		segs[i] = s
+		removed[i] = t.id
+		renames[t.id] = { id = -i, comp = s.comp }
+		ends[#ends + 1] = t.comp.node0
+		ends[#ends + 1] = t.comp.node1
+	end
+	local proposal = api.type.SimpleProposal.new()
+	proposal.streetProposal.edgesToAdd = segs
+	proposal.streetProposal.edgesToRemove = removed
+	proposal.streetProposal.edgeObjectsToAdd = added
+	if #gone > 0 then proposal.streetProposal.edgeObjectsToRemove = gone end
+	-- The lane configurations at the tracks' ends name them: they go and
+	-- come back naming the rebuilt tracks, all in one (junctions.renamedAll).
+	junctions.renamedAll(proposal, ends, renames)
+	log(string.format("placing %d and removing %d signals on %d tracks", #added, #gone, #segs))
+	local context = api.type.Context.new()
+	context.player = me
+	local built = buildProposal(proposal, context)
+	settleSignals(tracks, sig, me)
+	return built
 end
 
 -- ------------------------------------------------------ vehicles and lines
@@ -1793,6 +2032,29 @@ function HANDLERS.SellVehicle(sell, ctx)
 	return run(api.cmd.makeVehicleSellCmd(vehicles))
 end
 
+-- Small before/after records at the action boundary, not a per-tick scan.
+-- A new train diverged immediately after BuyVehicle/AssignLine; these show
+-- whether movement already differed before the engine chose its route.
+local function vehicleActionState(entity, canonical, phase, line, first)
+	local ok, why = pcall(function()
+		local c = api.type.ComponentType
+		local v = api.engine.getComponent(entity, c.TRANSPORT_VEHICLE)
+		local p = api.engine.getComponent(entity, c.MOVE_PATH)
+		local d = p and p.dyn
+		local pos = d and d.pathPos
+		log("vehicle-action " .. phase .. " vehicle-" .. tostring(canonical)
+			.. " line-" .. tostring(line) .. " first=" .. tostring(first)
+			.. " time=" .. tostring(now()) .. " entity=" .. tostring(entity)
+			.. " state=" .. tostring(v and v.state) .. " stop=" .. tostring(v and v.stopIndex)
+			.. " edge=" .. tostring(pos and pos.edgeIndex) .. " pos=" .. tostring(pos and pos.pos)
+			.. " speed=" .. tostring(d and d.speed))
+	end)
+	if not ok then
+		log("vehicle-action " .. phase .. " vehicle-" .. tostring(canonical)
+			.. " unavailable: " .. tostring(why))
+	end
+end
+
 function HANDLERS.AssignLine(assign, ctx)
 	if assign.line == nil then
 		return false, "this version of the mod does not take vehicles off their line yet"
@@ -1802,7 +2064,10 @@ function HANDLERS.AssignLine(assign, ctx)
 	local first = assign.first_stop
 	if first == nil then first = -1 end
 	for _, v in ipairs(assign.vehicles) do
-		run(api.cmd.makeVehicleSetLineCmd(ownOf(ctx, "vehicles", v), line, first))
+		local entity = ownOf(ctx, "vehicles", v)
+		vehicleActionState(entity, v, "before-assign", assign.line, first)
+		run(api.cmd.makeVehicleSetLineCmd(entity, line, first))
+		vehicleActionState(entity, v, "after-assign", assign.line, first)
 	end
 	return true
 end
@@ -2127,6 +2392,16 @@ function HANDLERS.Perk(op, ctx)
 		return run(api.cmd.makeJournalBookAssetCmd(company(), entry, api.type.Vec3f.new(0, 0, 0)))
 	end
 	return false, "a perk of no kind"
+end
+
+-- The shared date pace; zero holds the date without stopping vehicles.
+function HANDLERS.CalendarSpeed(p)
+	local value = p.millis_per_day
+	-- Also validate direct Lua replay, before constructing an engine command.
+	local capture = ug_require and ug_require("tpf3mp_1::/scripts/tpf3mp/capture.lua")
+		or require("tpf3mp.capture")
+	capture.calendarSpeed(nil, value)
+	return run(api.cmd.makeGameSetCalendarSpeedCmd(value))
 end
 
 -- A town building's Historic Preservation (action::Preservation), as its

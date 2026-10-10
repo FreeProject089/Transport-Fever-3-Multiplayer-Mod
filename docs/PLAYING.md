@@ -112,10 +112,18 @@ Start the launcher from the package:
 
 It opens the TPF3-MP window. Keep it open while you play: it holds your
 connection to the server, closing it ends your session, and during a game
-it asks first. On a system where the window cannot open, the launcher
-opens the same launcher as a page in your browser instead (`--browser`
-does so on purpose); that page works only on your own machine, in the tab
-the launcher opened, and has the whole lobby in it.
+it asks first. If the native window cannot open or stops working, the
+launcher opens the same launcher as a page in your browser instead
+(`--browser` does so on purpose); that page works only on your own machine,
+in the tab the launcher opened, and has the whole lobby in it. When the
+window fails, the page takes over the existing launcher session, including
+its room and game link. If Windows cannot open the page automatically, a
+Windows dialog shows the private address and copies it to the clipboard when
+available; otherwise it explains how to copy the address from the dialog.
+Paste it into a browser on this computer. If the configured local port is
+already in use, the launcher tries another loopback port. If it still cannot
+serve the page, a Windows notice explains why; the existing session remains
+connected, so keep the launcher running while you play.
 
 The window starts the game and shows where things stand; you play from the
 game's own **Multiplayer** button (next section).
@@ -188,23 +196,50 @@ menu instead** puts it back.
 
 ### Changing the server
 
-TPF3-MP plays on the project's relay (**EU**) unless you choose another
-server. *This follows a proposed change to the project's decisions (D12),
-which the owner has yet to approve.*
+In a one-server playtest, the launcher can connect to a server you type. A
+multi-region release routes only to the trusted servers it was built with.
 
-1. Open **Settings** (top right). The **Server** card says which server you
-   play on, and whether it is the default.
-2. Type the other server's address as `host:port`, such as
-   `tpf3mp.example.org:29470`, and press **Use this server** (or Enter).
-   Anything else is refused and the card says why.
-3. If you were connected, the launcher disconnects and connects to the new
-   server under the same name. It remembers the server for next time.
-4. **Reset to default** goes back to the relay.
+1. Open **Settings** (top right). The **Server** card says where you play.
+2. In a one-server playtest, type a server address as `host:port` and press
+   **Use this server**. If you were connected, the launcher reconnects under
+   the same name and remembers the choice.
+3. In a multi-region release, Settings lists the trusted regions and their
+   pings. A saved trusted-region pin can be cleared with **Reset to default**;
+   the launcher then routes automatically again.
 
-You cannot change the server while in a room: leave it first. An invite
-never switches servers: an invite to a room on another server is refused,
-so friends who play elsewhere all set the same server here. The browser
-page (`--browser`) has the same setting, under **Settings: server**.
+You cannot change a server while in a room: leave it first. On a
+multi-region release, a region in the trusted list can be chosen on the
+invite form; without that choice, a six-character invite is resolved across
+every listed region. An address pasted beside an invite is ignored. The
+browser page (`--browser`) follows the same trusted-region rules under
+**Settings: server**.
+
+### When TPF3-MP has several servers
+
+Under D12 (approved 2026-10-08), a release may come with more than one
+server, such as **EU** and **US**. Then, unless you have pinned one of those
+listed regions:
+
+- the launcher connects to the server closest to you, the one with the
+  lowest ping, and Settings lists every server with its ping;
+- **Public rooms** shows the rooms of every server, each card with its
+  server and ping (`US · 110 ms`); a click joins it on its server;
+- if a listed server is still connecting when you open **Public rooms**,
+  the launcher waits up to five seconds for every region to respond. If a
+  server is still connecting or unavailable, **Public rooms** reports an
+  incomplete list and asks you to retry;
+- a room you host goes to the closest server;
+- a six-character invite code works on any listed server. The launcher
+  checks the code and password on all regions without joining; exactly one
+  match is required before it joins. If multiple regions accept the same
+  code and credentials, choose the intended listed region. Wrong
+  passwords and absent invites give the same generic response. If a
+  region is unavailable or times out, the lookup fails closed and asks you
+  to retry. A public-room card and an explicit region choice go directly
+  to that listed region.
+
+A multi-region release accepts only its compiled trusted servers;
+**Reset to default** returns a pinned launcher to automatic regional play.
 
 ## Playing from the game's Multiplayer button
 
@@ -229,8 +264,9 @@ window too.
    on by its name, marked (default) when it is the launcher's own (the
    window never shows a server's address, but in this field); type another
    (`host:port`) and **Use this server**, or **Reset to default**.
-   Changing it disconnects you and connects to the new one, and an
-   invite only joins rooms on your own server. Not while in a room.
+   Changing it disconnects you and connects to the new one. A one-server
+   setup keeps invites on that server; a regional release resolves invites
+   across its listed regions. Not while in a room.
    **Your banner**, next to it, picks the picture the others see on your
    card in a room, from the game's own pictures; **Default** goes back to
    the one chosen for you. Under **Characters** you can pick one of the
@@ -259,6 +295,11 @@ window too.
      **Mods** tab and its settings on **Gameplay Settings**, as you would
      to load it, and press **Use for the room**: the room starts from that
      save, with exactly those mods and settings in every player's game.
+     An active tutorial is quit automatically on the first simulation update
+     in a multiplayer room (unpause if needed), using the game's normal Quit Tutorial cleanup on
+     every replica. This releases the tutorial's construction and finance
+     restrictions; playing through the tutorial together is not supported.
+     Single-player tutorials and campaign missions are not auto-quit.
      The first tile, **New world**, starts the room from a world you
      create: the game opens its normal setup screens for climate, map and
      settings once the room is made. TPF3-MP is always among the room's
@@ -428,8 +469,19 @@ protected folder such as Program Files.
   loans, up to four loans at once. An offer you take goes on a four-to-eight
   month cooldown before that slot gets a new offer; the interest and
   repayments are your company's alone.
-- **Subsidies, entity renaming, vehicle recolouring, line waypoints, bridge/tunnel
-  window type changes, Industry Greenification marketing campaigns and Historic Preservation.**
+- **Renaming and recolouring.** Rename a station, a vehicle, a town or a
+  depot from its window or the line manager, and recolour a vehicle from
+  its window, as usual: every player's game applies it.
+- **Subsidies.** Accept or decline a subsidy offer from its card as
+  usual. An offer is everyone's until a company takes it: the first to
+  accept gets it, and it leaves every player's list. A subsidy you took is
+  your company's alone: the money up front, the reward and the penalty are
+  booked to it, and only your company's lines count towards it. The
+  game's subsidy cards show every taken subsidy as accepted, another
+  company's too. A "Transport Workers" subsidy still completes by anyone's
+  commuters.
+- **Line waypoints, bridge/tunnel window type changes, Industry
+  Greenification marketing campaigns and Historic Preservation.**
   These new channels are refused pending a two-player game acceptance run.
   Their mechanics are implemented but are not enabled for play yet; see
   [COVERAGE.md](COVERAGE.md).
@@ -713,10 +765,13 @@ before sharing it publicly if you want to be sure.
   same, mod by mod, and installs what you lack from Mod Hub.
 - **"too many players are connected from this network"**: the server
   limits connections per network. Close another game, or ask the operator.
-- **"that invite is for another server"**: an invite never takes you to
-  another server. Ask for an invite to a room on yours, or, if your friends
-  play elsewhere, change the server in **Settings** (see "Changing the
-  server") and join again.
+- **"that invite is for another server"**: this is the one-server or
+  explicitly selected-server behavior. On a regional release, a bare code
+  is checked against every listed region; choose a listed region if the
+  invite is ambiguous.
+- **"invite lookup is incomplete"**: one trusted region was unavailable,
+  timed out or rate-limited its check. No room was joined. Check the
+  connection and retry, or choose a listed region explicitly.
 - **"the invite or password is not valid"**: the room closed, the code
   is mistyped, or the password is wrong.
 - **"too many requests; try again in a moment"** when joining: too many

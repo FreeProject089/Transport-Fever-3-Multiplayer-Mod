@@ -134,6 +134,41 @@ a TPF3 design: the stall timeout in [PROTOCOL.md](PROTOCOL.md) is sized as
 is an order of magnitude larger and pauses the game for 15-20 s on a fast
 machine, and a snapshot of that world is 1.4 GB on the wire.
 
+**On TF3 (build 40408)** the save writer is the same: `PushCompressor`
+(`0x32d450`) reads zstd level 3 at `0x32d464` and hands its stream a
+128-byte buffer at `0x32d5c4`. Stage 0 measured saves of 3.3 s at
+Gigantomaniac 1:1 (164 MB) and 7.7 s for a 45 km world (438 MB). The hook
+rewrites both instructions in place, as tpf2-bigmap's `save_fast` did:
+`mov eax,1` for the level and `mov r8d,0x10000` for the buffer
+(`crates/tpf3mp-hook/src/savefast.rs`, profile targets "save:
+PushCompressor …"). Each checks its bytes first and installs alone; the
+loader is untouched (`PushDecompressor` keeps reading the constant), and a
+save stays a standard zstd frame any game loads. Rooms judge lane digests,
+not save files, so games with and without it agree. Off by default;
+`TPF3MP_HOOK_SAVE_FAST=1`, `on`, `true` or `yes` opts in (case-insensitive,
+whitespace trimmed); unset or any other value keeps the game's own settings.
+hook.log says what was applied
+(`faster saves: zstd level 1, a 64 KiB buffer`) or that the feature is off.
+The TF3 speed-up is not measured yet. Only the Steam Windows 40408 profile
+has these verified targets. The 40420 bundle has no save targets, so opting
+in logs that faster saves are unavailable for the build without resolving or
+rewriting any site. The Preview 40418 candidate also omits them because its
+signatures have not been checked. On a supported profile, a missing or
+byte-mismatched site keeps that part of the game's original save settings.
+
+### Simulating (TF3)
+
+TF3's noise and pollution grids have 16 m cells, so their cost grows with
+the area: 1,602 x 16,002 floats each on 100 x 1000 tiles, eight times
+Gigantomaniac's, moved one step every update in up to three full-grid
+passes (about 1.75 GB of memory traffic per update; analysis in
+investigation/TF3_SIM_COST_2026-10-05.md). On every map size, the hook
+runs each step as one fused pass that leaves every bit as the game's passes
+would (2.1x faster offline on those grids), looks up components faster, and
+times the costliest systems in the `perf: sim` line; see
+[HOOKS.md](HOOKS.md), "The fast emission grid", "The game's own systems:
+the `perf: sim` line" and "The faster component lookup".
+
 ## What a load actually does
 
 The save holds the 4 m heightmap and every alignment. A load therefore
@@ -349,6 +384,11 @@ derived (`WorldModel::TPF2_BUILD_35924`), until TF3's are measured.
 | "Every peer needs the same `octree_depth`" | `terms`: the size, octree depth, street cell, placement budget and density levels, with a fingerprint the room compares, and the names of what differs. |
 | The minimap | [MINIMAP.md](MINIMAP.md): a script mod on TF3. |
 | Terrain cache compression, dedup, lazy zeroing, the SSE2 terrain paths, generator buffers, faster saves | Not in the prototype: each rests on a TPF2 structure that has to be found in TF3 first ("Measure these first on TPF3" above). |
+
+Shipped, Big Maps would be a native package of the project's signed index,
+its features switched on by the launcher instead of by hand
+([NATIVE_MODS.md](NATIVE_MODS.md), approved D29). The signed-index
+framework does not yet ship a Big Maps package or player-facing manager.
 
 `cargo run -p tpf3mp-bigmap -- ladder` prints the ladder under a settings
 file (`--config`, the example is `crates/tpf3mp-bigmap/tpf3mp_bigmap.example.toml`,

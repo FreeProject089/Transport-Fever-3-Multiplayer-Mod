@@ -1,9 +1,13 @@
 # The native hook
 
-Acceptance status: subsidy, entity rename/recolour and waypoint mechanics
-described below are implemented but disabled by `tpf3mp/acceptance.lua`.
-They are refused on submission and replay until ordinary two-player game
-acceptance. See [COVERAGE.md](COVERAGE.md) for the selected integration.
+Acceptance status: waypoint mechanics described below are implemented but
+disabled by `tpf3mp/acceptance.lua`. They are refused on submission and
+replay until ordinary two-player game acceptance. Entity rename/recolour
+([investigation/TPF3_RENAME_2026-10-07.md](../investigation/TPF3_RENAME_2026-10-07.md))
+and subsidies
+([investigation/TPF3_SUBSIDIES_2026-10-07.md](../investigation/TPF3_SUBSIDIES_2026-10-07.md))
+passed it on 2026-10-07.
+See [COVERAGE.md](COVERAGE.md) for the selected integration.
 
 The native hook is the small library that runs *inside* the game process. It
 captures and cancels player commands, gates the simulation step, controls speed
@@ -300,6 +304,11 @@ the payload may wrap around the end of the buffer.
   present.
 - **Heartbeat.** Each side bumps its own counter and reads the peer's. A counter
   that stops advancing means the peer is gone.
+  The agent gives a loaded game's hook 60 s (a load 600 s). A game that
+  freezes longer (a big map can, while it builds terrain and textures)
+  loses its agent. Before any room's game began, the hook then lets the
+  game play on alone and logs that it cannot join a room until restarted
+  from the launcher; in a room's game it holds the world, as before.
 - **Restart.** The owner re-creates the mapping with a new `session`. A peer
   that sees `session` change knows the rings were reset and drops anything in
   flight, then re-syncs from the new generation. The launcher does this for
@@ -337,7 +346,8 @@ game with the hook in it as the launcher does.
 ### Reviewing the native data for a game update
 
 The compiled Windows native data is grouped with its signature profile in
-`profiles/tf3_build40408_steam_windows/`: `hooks.toml` records the executable
+`profiles/tf3_build40420_steam_windows/` (the original 40408 bundle remains
+for historical verification): `hooks.toml` records the executable
 SHA-256, size and PE timestamp; `native.rs` records the game/Steam build and
 exports each subsystem's data file. Those files hold splice bytes, frame and
 field offsets, structure layouts and GUI register/site descriptions. The
@@ -352,16 +362,18 @@ Bootstrap checks its complete executable identity before
 installing the menu or step gate. A TOML profile for another executable is
 insufficient: it cannot enable that build with the previous build's native
 layouts. Custom profiles for the supported executable keep their priority.
-This release still supports only the existing Windows Steam build 40408;
-moving data does not approve the Preview or add another supported platform.
+This feature selects Windows Steam build 40420. The released main branch still
+selects 40408 until the normal acceptance and promotion gates are passed;
+this change does not approve Preview or another platform.
 
 A static signature candidate for Steam Preview 40418 is in
 `profiles/tf3_build40418_steam_windows/hooks.toml`. Its original 145 targets matched
 the private archive. The additional optional `lua_touserdata` signature awaits
-an archive recheck; its directory deliberately has no `native.rs` and is not
-selected. The Release bundle and release archive remain active. The changed
-splice bytes, script review and remaining ABI work are recorded in
-[the Preview investigation](../investigation/PREVIEW_40418_2026-10-04.md).
+an archive recheck. The 40408 bundle has seven optional performance targets
+added after that candidate was prepared. They remain unverified on Preview
+while its private archive is unavailable. The candidate directory deliberately
+has no `native.rs` and is not selected. Its changed splice bytes and ABI work
+are recorded in [the Preview investigation](../investigation/PREVIEW_40418_2026-10-04.md).
 
 For a new build, create a separate bundle directory, investigate the audit's
 signature/function/script changes, and review its native data alongside its
@@ -437,7 +449,15 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     (`server_default`), for the server setting. Since version 23 it
     carries the launcher's log session (`log_session`, empty while
     diagnostics are off), which the window shows with a Copy on its first
-    page and its Server page (approved D10 amendment).
+    page and its Server page (approved D10 amendment). Since version 26
+    the room list carries the release's servers when the launcher plays
+    on several (`servers`: name, ping, here, reachable) and each room its
+    server's name and ping (`server`, `ping_ms`; LOBBY.md, "Several
+    servers"). Since bridge version 27 a room-card Join also carries the
+    listed server name, so duplicate invite codes still select the card the
+    player clicked. Bridge version 28 adds the release's trusted servers to
+    the top-level lobby view before room browsing, for region choices on
+    typed invites.
   - `End`: the session is over. Sent only once the room's game has begun:
     a room left before that ends nothing in the game, which keeps its link
     for the player's next room.
@@ -499,7 +519,9 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
     `SetServer { server }` is the player's server setting: a `host:port`,
     or empty for the launcher's default; the launcher checks, remembers
     and reconnects, and refuses it in a room (D12, proposed amendment).
-    Connect still names no server, and an invite never switches it.
+    Connect still names no arbitrary server. On a regional release, a typed
+    invite is resolved across the compiled trusted servers; a pasted server
+    prefix is not routing authority.
     Since version 20, `ChooseStart { save, map, year }` is the room
     owner's pick of the save the room starts from, in its lobby (empty
     for none; LOBBY.md, "Changing the start save in the room"), and the
@@ -530,9 +552,10 @@ link it. The agent's side is `tpf3mp_agent::bridge`.
   this: an event for another step, an event after its step's release, or a
   release that goes back. The hook must then stop following and say so.
 - **Pacing.** The agent releases steps on its jitter-buffered schedule
-  (`Playout`). The game runs a released step at its own speed and waits at
-  the gate for the next one. It reports each step it ran; the agent reports
-  progress to the server from that, at most every 20 ms.
+  (`Playout`). The game runs released steps at its own call pace, an even
+  share of them each call ("Even steps" below), and waits at the gate for
+  the next one. It reports each step it ran; the agent reports progress to
+  the server from that, at most every 20 ms.
 - **Liveness.** The hook must beat its heartbeat from a thread of its own,
   since the game thread blocks while loading. The agent gives up on a hook
   whose heartbeat stands still for 60 s, or 10 minutes while the world
@@ -709,11 +732,12 @@ call of the speed getter, as TPF2MP's speed hook
 
 - **Before the room begins a game**, and **after it ends**, the game's own
   speed.
-- **In the room's game**, the steps the room has released
+- **In the room's game**, of the steps the room has released
   (`Session::poll_step`, never blocking the game's thread, then
-  `Session::batch`, which reads on through the agent's one-step releases),
-  at most 16 a call and never past a checkpoint step, whose lanes must be
-  the world's right after it; the call then reports each (`after_step`).
+  `Session::read_ahead` and `Session::batch`, which read on through the
+  agent's one-step releases), at most 16 a call and never past a
+  checkpoint step, whose lanes must be the world's right after it, an even
+  share ("Even steps" below); the call then reports each (`after_step`).
   A room faster than the game's own pace catches up that way, up to 16x.
   When the room withholds the next step (paused, or a player behind), 0:
   the game's paused path, and the world stands still.
@@ -774,6 +798,140 @@ to hold. Tests: `step::tests` drive the driver against a scripted room;
 runs exactly once per call with the count chosen and its arguments
 untouched; `session::tests` read releases ahead over a real link;
 `detour::x86_64::tests` redirect one call in hand-written code.
+
+#### Even steps
+
+The game calls its step on its own clock, about every 200 ms at every
+speed, and the agent releases the room's steps on another, its playout's:
+one every 200 ms at 1x (5 steps a second), every 50 ms at 4x. Running all
+that was released at a call made the count alias against the call clock's
+jitter of 10 to 15 ms. Measured on build 40408 with the step trace
+(2026-10-07, one player on the deployed server): 0.4 % of the calls ran
+another count than speed/100 at 1x, 15 % at 2x, 45 % at 4x (`4 3 5 4`,
+`1 7`, `0 9`); in a two-player room 11 %, 19 % and 17 %. The renderer
+interpolates from each call, so vehicles moved 75 % and then 125 % of a
+normal call, or stood and jumped: they wobbled.
+
+`crate::cadence` instead runs, of the steps released, the room's pace
+(steps a second from the room's `Begin`, times its speed from
+`ToHook::Speed`) times the game's call period (the mean of the latest 16
+call gaps without their two shortest and two longest, so a save's freeze
+does not move it and uneven calls average to what they are), with these
+rules in order:
+
+- **an event, save, load or end waits** behind the released steps
+  (`Session::read_ahead` reads every release up to the first such message
+  and never past it, `Session::barrier_waiting`): all of them, so the
+  message is read on the next call as before;
+- **the player's own action is on its way** through the room (handed over
+  in the last 3 s and not yet ordered back): all of them, so it comes back
+  as soon as before (another player's action may show a call, about
+  200 ms, later);
+- **far behind** (more than 1.5 s of the room's pace, at least 16 steps:
+  a reconnect, a load; below the server's pacing window, so a game that
+  falls behind catches up before it holds the room back): all of them, at
+  most 16 a call, as before;
+- **the room is paused**, or **nothing new was released for 400 ms** (the
+  room waits for a member): all of them, so every game stops at the
+  frontier;
+- otherwise **the nominal count**, with one released step kept in
+  reserve: a call that finds fewer rebuilds the reserve with one update
+  less (at 1x one call of 0), a backlog of more than 3 is repaid by a
+  quarter a call, at most half the nominal count more, and near a
+  checkpoint the steps to it are spread evenly over the calls they take
+  (`4 3 3`, not `4 4 2`), over fewer calls while a backlog waits (`5 5`),
+  so rooms with checkpoints only a few steps apart keep their pace.
+
+A rate of steps per call within 0.15 of a whole number is taken as that
+number; a rate between (7 steps a second against 5 calls) carries its
+fraction to an even mix. Which steps run, in which order and with which
+actions between them, and every checkpoint's cut, are as before: only the
+split of released steps into calls changes. Released steps wait at most
+about the band (1 to 3 steps: 200 to 600 ms of simulation at 1x, 50 to
+150 ms at 4x) before they run. `TPF3MP_HOOK_EVEN_STEPS=0` runs every
+released step a call may, as before (hook.log says which at install). The
+step trace notes each choice (`avail`, `cap`, `nom`, `pick`), and
+`perf-step:` counts the room calls by rule (`even steps`).
+
+#### The batch interval
+
+Even steps leave unevenness the count cannot remove: a checkpoint every 50
+steps cuts a call at 4x (12.5 calls), an action needs a call without
+updates, a late turn or a save leaves a backlog. TPF2MP never had it: its
+count per call was constant and it paced by the engine's batch interval
+(`tpf2-multiplayer/native/src/speedhook.cpp`; its first version varied the
+count instead, and vehicles juddered).
+
+TF3 build 40408 does what TPF2 does, every field 0x78 higher (verified in
+its disassembly, 2026-10-08). `CGame::Step` (0x11f3b0, main thread, every
+frame), `m_data = [CGame+0x1f0]`:
+
+```
+totalTime (i64, m_data+0x1a0) += dt
+while totalTime >= lastSyncTime (i64, +0x1a8) + guiFrameTime (i32 µs, +0x218):
+    next = lastSyncTime + guiFrameTime
+    if !CGame::Sync(cgame, fn): break        ; the call at 0x11f406 -> 0x11f650
+    lastSyncTime = next
+totalTime = min(totalTime, lastSyncTime + guiFrameTime - 1)
+alpha = (totalTime - lastSyncTime) / guiFrameTime   -> CGame+0x1f8
+```
+
+`CGame::RunGameSimLoop` (0x11e210) runs `GameSim::Step` on
+`gameSims[simIdx]` (`m_data+0x88`, `+0x98`) with a fixed 200 ms time step
+and waits; a successful Sync publishes that finished state, flips `simIdx`,
+hands the other `GameSim` the next batch and sets `guiFrameTime` from
+`CalcGuiFrameTime` (0x11d240, 200-400 ms). The renderer interpolates by
+`alpha` across the batch Sync exposed. So right after a true Sync the
+batch on screen until the next one is known and finished.
+
+`crate::interval` redirects that call (profile targets `CGame::Sync` and
+`CGame::Step/Sync call`, both optional) and, after a true Sync, writes
+`guiFrameTime = shown × T × trim`: `T` the room's time per step, `shown` the
+batch's updates up to half again the nominal count (a catch-up above that
+shows as faster motion rather than slowing it); a running room's batch
+without updates is shown 50 ms (actions, a reserve being rebuilt: vehicles
+stand briefly), or the nominal period when nothing was released at all
+(the room waits for a member or a late turn), and a paused room keeps the
+game's own interval. A batch of 3 at 4x is shown over 150 ms, one of 5
+over 250 ms: vehicles move at the room's speed whatever the count. With it
+on, even steps keep a fixed nominal count (the pace over the game's 200 ms)
+and do not repay with extra updates; `trim` (0.8..1.25, down to 0.5 —
+twice the room's pace — when the backlog is more than twice the band plus
+a call behind, as after a load; at most 0.05 a batch) does: after a steady batch it moves against a backlog outside even
+steps' 1..3-step band; after a drain, a catch-up or a reserve being
+rebuilt (whose backlog says nothing about the pace) it eases back to 1.
+Writing anywhere but right after a true Sync moved TPF2's render clock back
+(a ShipFoamRenderer assertion); there Step's own clamp keeps `alpha` in
+[0, 1) for any interval in bounds (20 ms..2 s).
+
+The step detour publishes each batch, keyed by the `GameSim` it stepped
+(`this`), with the updates it really ran (the per-update detour counts
+them; the game adds its own pending debug steps to the answer, and such a
+batch is not timed), into one of two slots; the wrapper reads the slot of
+`gameSims[1 - simIdx]` after Sync flipped it. The next batch runs on the
+other `GameSim`, so the slot read is not being rewritten, and the main
+thread never waits for the simulation thread (a log line that meets the
+lock held is dropped). The wrapper is `extern "C-unwind"`: an exception
+Sync throws reaches the game's own handlers as without it. A begin, every load and a hold start a
+new epoch: nothing published before times anything after.
+
+Fail closed: only on the profiles whose layout was verified (40408 and
+40420: the same offsets), only
+with both targets, even steps on and the per-update detour installed
+(without it no batch's real count is known, and even steps measure
+again); before writing, the wrapper checks
+`m_data` (non-null, 8-aligned), `simIdx` (0 or 1), the value Sync wrote
+(20 ms..2 s), `totalTime >= lastSyncTime`, that the batch's epoch is still
+the current one (a hold, a load, an end or leaving the room start a new
+one), and that the field is committed
+writable memory (`VirtualQuery`, once per `m_data` and epoch). Anything else
+turns the interval off for the process (logged); the step driver then sees
+it off and even steps measure the call period again. Outside a running
+room's game, paused, or for a batch it cannot match, nothing is written:
+the game's own interval stands. `TPF3MP_HOOK_BATCH_INTERVAL=0` turns it off.
+`perf-step:` counts intervals written, Syncs skipped and Syncs that
+returned false; with the step trace on, each write logs `interval: n=..
+us=.. trim=.. backlog=..`.
 
 ### The Lua side
 
@@ -1647,8 +1805,10 @@ state, which the game saves with the world:
   taker=` line each), so two games' logs show where they part. A world
   stepped from different room steps is the step gate's to hold, not the
   subsidy script's. A world loaded from the room's save starts every game
-  at the same step and game time; that its offers agree there is INFERRED,
-  and these lines check it in the next two-game test with subsidies on.
+  at the same step and game time, and its offers agreed there: two games
+  that loaded a room's save listed the same offers, and drew the same new
+  ones afterwards, at every checkpoint of a run
+  ([investigation/TPF3_SUBSIDIES_2026-10-07.md](../investigation/TPF3_SUBSIDIES_2026-10-07.md)).
   Offers belong to no company. Accepting one (`Subsidy::Accept`) is
   checked by every game against its script's state first: the offer under
   that number must still be offered, of the kind the action names, and the
@@ -1696,11 +1856,14 @@ state, which the game saves with the world:
   runs the same wrapper. A subsidy with no taker kept (single player, a
   save from before) counts everyone's, as the game does. Only while
   `acceptance.subsidies` is on. The modifier's name is read from the
-  binary (`loadGameRes`, beside `loadConstruction` and `loadGameScript`):
-  INFERRED to be the one for generic resources until a game shows
-  `taker=` on a taken subsidy and only the taker's deliveries in
-  `delivered=`. Not carried: `deliver_workers` completes when the
-  industry's workers are boosted (`industry_util.isPersonCapacityBoosted`),
+  binary (`loadGameRes`, beside `loadConstruction` and `loadGameScript`),
+  and seen working in a two-game run: a passenger subsidy another company
+  took stayed open while the first company's line between its two towns
+  completed the first company's own subsidy for the same towns, in both
+  games ([investigation/TPF3_SUBSIDIES_2026-10-07.md](../investigation/TPF3_SUBSIDIES_2026-10-07.md)).
+  The base game's subsidy cards know no companies: every player sees every
+  taken subsidy as accepted, another company's too. Not carried:
+  `deliver_workers` completes when the industry's workers are boosted (`industry_util.isPersonCapacityBoosted`),
   a state of the industry the engine keeps for no company, so anyone's
   commuters complete it; the reputation and town growth bonuses are the
   towns', as the game has them; the pace of new offers follows the first
@@ -2956,10 +3119,34 @@ construction's window its edits:
   refused (two stops on one side is a fatal assert in the game's lane
   creation on TPF2). Refused: a stop dropped where one stood (the game
   moves its lines to the new one, which a replay cannot say), more than
-  two new objects, or two on one side, signals and waypoints, a stop whose
-  engine side (`STOP_LEFT`, `STOP_RIGHT`) is not what its `left` says, and
-  a stop whose construction no GUI state noted.
-  INFERRED, not yet seen in the game: that the tool's proposal lists
+  two new objects, or two on one side, more than one signal or waypoint at
+  once, a stop whose engine side (`STOP_LEFT`, `STOP_RIGHT`) is not what
+  its `left` says, and a stop whose construction no GUI state noted.
+  A signal or waypoint carries the settings the tool builds it with
+  (`PlaceStop::params`, schema 26): `construction_react_util.getActionParams`
+  gives the tool `EdgeObjectBuilder.params` (the construction's own keys,
+  values as the tool's controls hold them: `oneWay`, and a mod's, Auto
+  Signals' `auto_signals_distance`, `_replace`, `_direction`), and
+  `capture.watchStopTool` notes them with the tool's construction
+  (`stop-tool-params`: `1`, the construction, how many, each
+  `key=<i|f|b>value`, tab-separated, keys sorted). A note is at most 512
+  bytes and a longer one is cut short, so one that would not fit, settings
+  that are not plain numbers or booleans, a note another construction's or
+  one whose count does not match refuse the signal (`a signal whose
+  settings the room cannot read: ...`), never build it with the
+  construction's defaults. Every game sets them on the signal it builds
+  (`SimpleStreetProposal.EdgeObject.params`: not in the game's API
+  reference, but a member on build 40408, and kept on the signal it
+  builds, seen 2026-10-06 in a single-player game: Auto Signals then
+  spaced signals from it). `year`, which the game's own tool adds, is not
+  among them: no base signal construction reads it.
+  Seen on build 40408 (2026-10-06): on a track with a signal on it
+  already, the signal tool's `edgeObjectsToAdd` lists the new signal
+  alone, not the kept ones; the capture pairs the records with every
+  object of the edge where there is one for each, else with the new ones
+  where there is one for each of those, and refuses any other count (`a
+  stop build whose objects it cannot pair`).
+  INFERRED, not yet seen in the game: that the stop tool's proposal lists
   `objects` in the order of `edgeObjectsToAdd`, that a kept stop keeps its
   entity there, that `STOP_LEFT` goes with `left`, that a script proposal
   names a new object `-1` in the edge's objects (TPF2's convention), that
@@ -2969,8 +3156,7 @@ construction's window its edits:
 A refusal shows its reason in the tool, and the log has each new reason
 with the proposal's shape (`the room cannot carry this ... build`); every
 build handed to the room is logged with its shape too. The upgrade, bus
-lane and tram track tools and the signal tools stay refused until their
-builds are captured. Where the profile lacks the
+lane and tram track tools stay refused until their builds are captured. Where the profile lacks the
 two targets, `clicks()` is nil and every tool stays refused.
 
 Seen on build 40408, through the deployed server with two games on one PC:
@@ -3018,10 +3204,38 @@ follow-ups`. In the room's game:
   click its command counts, which `guiUpdate` hands the room as a tool's
   (`handed the player's build to the room [a script's follow-up build from
   <mod>]`);
+- a follow-up that rebuilds existing tracks in place with signals added
+  or removed, and nothing else (Auto Signals after its player's signal,
+  `modbuild.isSignals`), is read by `engine.placeSignals` instead: each
+  added segment pairs with the one removed edge between the same nodes,
+  its tangents, type, template, owner, style, lock, decorations and lane
+  configurations unchanged; a mixed signal-and-track modification is
+  refused rather than replayed as signals alone. Each object it keeps is the
+  removed edge's own, each it drops is in `edgeObjectsToRemove` and a
+  signal, and each new one a signal whose record is the
+  `edgeObjectsToAdd` entry its entity names (-400000000, then down,
+  counted across all the edges) on its own edge; all new signals of one
+  construction, one-way and settings. It becomes one `PlaceSignals`
+  (`[a script's signals]`): each track by its ends (node 0 first), each
+  new signal's place along it and side, each removed one's place and
+  construction. Any other shape refuses it with why. Every game finds
+  every track first, by one node within 0.5 m of each end in three
+  dimensions and one track between them, and each removed signal as the
+  one of its construction within 0.25 m of its place, all one for one;
+  anything missing or found twice refuses the whole build. It rebuilds all
+  the tracks in one proposal, a place read as `1 - place` and the side
+  flipped where its track runs the other way, the lane configurations at
+  their ends naming the rebuilt tracks at once (`junctions.renamedAll`,
+  which keeps a junction's turns set by hand marked so), and gives the new
+  signals to the acting company. Behind `acceptance.lua`'s `signals`, on
+  since a two-player game on 2026-10-06 ([MODS.md](MODS.md)). The mod then hears the room's build in
+  every game, finds the first signal among the removed tracks' objects and
+  its new signals with no spacing set, and builds nothing more;
 - any other is stopped with why: `a script's follow-up of another player's
   build: that player's game hands it to the room`, `a script's build with
   no build of this player's just before it`, or what it holds that is not
-  carried from a script yet (constructions, removals, stops and signals).
+  carried from a script yet (constructions, removals, stops, and signals
+  in any other shape).
 
 Seen on build 40408 (2026-10-02, two games on one PC, Parallel Tracks):
 the mod's `guiUpdate` runs in the state the wrapper is on, its
@@ -3766,11 +3980,16 @@ startup timeout cleanup; production readiness checks are unchanged.
 `TPF3MP_HOOK_STEP_TRACE=1` in the game's environment writes a
 `step-trace:` line for every call of the game's step
 (`crates/tpf3mp-hook/src/steptrace.rs`): when it came, how many updates it
-ran and why (`run`; `wait` for the room's next step, `actions`/`replaying`
-for the room's actions, `save`, `load` for the room's world, `hold`; `own`
-outside the room's game), the game's step and the whole call in
-milliseconds (timed for the trace even with `TPF3MP_HOOK_PERF=0`), and
-`lanes` on a checkpoint's batch.
+ran and why (`run`; `wait` for the room's next step, `reserve` for
+released steps kept back ("Even steps"), `actions`/`replaying` for the
+room's actions, `save`, `load` for the room's world, `hold`; `own` outside
+the room's game), the game's step and the whole call in milliseconds (timed
+for the trace even with `TPF3MP_HOOK_PERF=0`), `lanes` on a checkpoint's
+batch, and, on a call that could run the room's steps, how its count was
+chosen: the steps released and not run (`avail`), the batch's cap (`cap`),
+the nominal count (`nom`) and the rule (`pick`: `nominal`, `reserve`,
+`underrun`, `repay`, `barrier`, `command`, `paused`, `stale`, `far`, or
+`off`).
 
 Vehicles are compared by their place on their paths, not in the world. On
 build 40408, with a bus running a line in two games in one room, the bus's
@@ -3841,6 +4060,28 @@ and nothing more.
   lanes at every checkpoint, for chasing a desync on purpose: `all`, or
   lane numbers (`3`, `0,3`). `off` dumps nothing, not even after a
   divergence. The hook says in its log what it read.
+- **Vehicle diagnostic detail.** Long vehicle entries are split into
+  `vehicle-N/detail-NNN` records below the relay's 1024-byte line limit;
+  long capacity fields become numbered `free_partN` fields. The diagnostic
+  row uses `~` instead of `@` so a numeric position is not redacted as an
+  email address. The lane hash input is unchanged.
+  `vehicle-N/path-NNNN` records show route order, raw edge entity, lane
+  index, direction, and edge endpoints/tangents where available. The old
+  `path_hash` explicitly says `path_hash_scope=local_ids`: different raw
+  IDs alone do not prove route divergence. Compare geometry and lane index
+  too. The dump records at most 256 route edges per vehicle, 2048 per dump,
+  with at most 1024 distinct geometry reads, cached within that dump.
+  `route_omitted` and `geometry=budget` make these limits visible;
+  `geometry=unavailable` means the native edge could not be read. Vehicle
+  summaries precede route records so optional detail cannot crowd them out
+  at the hook's line limit. These extra reads happen only during dumps,
+  not ordinary rolling checks. They describe the sampled state, not every
+  earlier routing decision; a root cause can still require reproduction.
+  Line assignments also log `vehicle-action before-assign` and
+  `after-assign`, with canonical vehicle/line IDs, game time and the local
+  vehicle's state, stop, path position and speed. These bounded action-time
+  reads help distinguish an existing displacement from a departure that
+  diverges after assignment; they do not scan vehicles every tick.
 - **A box of the network.** `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (the
   world's x and y, metres, any two opposite corners) dumps the network lane
   at every checkpoint in `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to` (steps,
@@ -4595,6 +4836,32 @@ Unknown map key types or pre-existing metatables are refused. Native
 validation and its current limits are recorded in
 `investigation/TPF3_ROAD_TERMINALS_2026-10-01.md`.
 
+### Automatic industry spawn probe
+
+Steam build 40408 has a separate native demand-spawn path. For a local
+diagnostic run only, set `TPF3MP_HOOK_TRACE_INDUSTRIES=1` in the launcher's
+environment. The exact-build hook then records each demand callback's native
+GameTime and FNV-1a seed, both target-capacity key strings and the unchanged
+capacity result, candidate/resource loop order and its `industry_closed_`
+gate result, and each returned industry entity ID (`-1` means no entity was
+emitted). A `?` marks an input that failed the bounded memory/layout check.
+The entity ID can be matched to the industry/construction lanes to inspect
+the resulting placement.
+
+This is a read-only diagnostic: it never changes native values or sends the
+records to the room. The game-thread callbacks copy fixed-size records into a
+64-entry queue; a separate logger thread formats and writes them. The probe
+records at most 32 loop candidates per callback and 512 callbacks per game;
+queue overflow is reported explicitly. Its six signatures live in a separate
+compiled 40408-only diagnostic profile, leaving the release targets and the
+40418 Preview coverage contract unchanged. The probe enables only on an exact
+`TPF3MP_HOOK_TRACE_INDUSTRIES=1` opt-in and when every site resolves before
+the ordinary hooks patch the image. Any splice mismatch rolls back the detour
+and earlier splices. The capacity
+detour also checks its compiled 40408 entry bytes before installation, so a
+shadow profile cannot redirect that name to a function with another ABI. With
+the switch unset, the probe installs nothing.
+
 The native collection fixes below were ported with the seeds, from the
 same commits. Their original static analysis follows; later real-game
 results are recorded in `investigation/TPF3_ROAD_TERMINALS_2026-10-01.md`.
@@ -4655,6 +4922,12 @@ may branch into the stolen bytes past their first (established with
 so the hook keeps them as any function would; the upper `ymm` halves are
 volatile at every call, and both sites follow a `call` with no vector
 instruction between (the disassembly), so nothing lives in them there.
+
+**The in-place rewrite** (`tpf3mp_hookcore::detour::Rewrite`) replaces
+bytes one for one after checking the site holds exactly the bytes expected
+(a site holding anything else is refused unwritten), and restores them when
+detached or dropped. The simulation timers use it to swap a vtable slot's
+pointer for the timer's ("The game's own systems: the `perf: sim` line").
 
 **Land-vehicle reservation order** (the survey's item 1, CONFIRMED). In
 `ecs::LandVehicleMoveSystem::Update2` (`0xac0f90`) the engine walks its
@@ -4792,19 +5065,26 @@ playtest's hook.log, about 70% of the appends) and the vehicles' lists
 were never sorted; the persons' (`Add`) were.
 
 Every read on the hot paths (this walk, the order fixes' vectors, the
-game scripts' reseed) is checked through `image::Readable`: a per-thread
-cache of the regions `VirtualQuery` found committed and readable, dropped
-(`image::invalidate`) before every simulation update, before every call
-of the game's step, when a world's GUI starts and when a load is asked
-for, so a region is asked of the system about once per update, not once
-per word (13 times per edge before). The system call costs about 1.7 µs on
-the development PC and tens of microseconds inside Sandboxie, which hooks
-system calls: in the three-player playtest (`f622599`) the boxed games
-spent 37 to 42% of their step time in the hook, most of it in these
-checks. Every address the hook reads comes from a structure the engine
-keeps live; the checks guard against a layout the hook misreads, and
-dropping the cache wherever the engine frees keeps a freed region from
-answering. The sort is `road::place`, in place: one scan
+game scripts' reseed) goes through `image::Readable`, which reads through
+guarded reads ("Reading the game's memory: guarded reads" below): no
+system call, and a misread address is refused by the hook's vectored
+handler instead of crashing the game. Before those, `Readable` was a
+per-thread cache of the regions `VirtualQuery` found committed and
+readable, dropped (`image::invalidate`) before every simulation update,
+before every call of the game's step, when a world's GUI starts and when
+a load is asked for, so a region was asked of the system about once per
+update, not once per word (13 times per edge before). The system call
+costs about 1.7 µs on the development PC and tens of microseconds inside
+Sandboxie, which hooks system calls: in the three-player playtest
+(`f622599`) the boxed games spent 37 to 42% of their step time in the
+hook, most of it in these checks, and even with the cache a big map's
+road fix still cost about 6 µs per append (about 1.5 `VirtualQuery` calls
+an append: 11 ms per update, 19% of the game's step). That cache is
+still the path with guarded reads off. Every address the hook reads
+comes from a structure the engine keeps live; the checks guard against a
+layout the hook misreads, and dropping the cache wherever the engine
+frees keeps a freed region from answering. The sort is `road::place`, in
+place: one scan
 finds how far the list is strictly ascending; a list kept sorted is then
 either whole (nothing written) or out of order only in the entry just
 appended, which is moved into place by binary search; anything else is
@@ -4812,9 +5092,11 @@ sorted whole through a reused buffer. It gives exactly the order of the
 reference `road::entry_order` (checked on random lists in the tests),
 refuses the same lists, and writes nothing when it refuses. On the
 development PC one append to an edge of 2 to 32 entries went from about
-5 to 8 µs to about 0.1 µs (`order::splice_tests::road_append_bench`; a
-check from the cache is about 7 ns against 1.7 µs asking the system,
-`image::tests::readable_bench`), the sort alone
+5 to 8 µs to about 0.1 µs through the cache and 33 to 47 ns with guarded
+reads (`order::splice_tests::road_append_bench`, which hits the cache
+every time; in a game the misses were the cost; a check from the cache
+is about 6 ns, a guarded one 1 to 2 ns, against 0.5 to 1.7 µs asking the
+system, `image::tests::readable_bench`), the sort alone
 from 94 to 31 ns at 2 entries and 508 to 117 ns at 128
 (`order::tests::road_sort_bench`). Both appenders must be detoured, or none sorts. The callbacks run
 serially at the end of a modification (INFERRED from their callers, the
@@ -4892,6 +5174,80 @@ directly; a lane that differs names the container. The hashes are FNV-1a
 too; TF3's ids are expected equal (the survey), and the `reordered`
 counts say whether the sorts changed anything.
 
+### Reading the game's memory: guarded reads
+
+Every native read the hook makes on the game's threads must fail closed:
+an address the hook got wrong (a layout it misread, a build that moved a
+field) is refused, never a crash. `crates/tpf3mp-hook/src/image/guarded.rs`
+does this without asking the system first:
+
+- **Two routines** in assembly do every hot-path read: `touch(first,
+  last)` reads one byte of each page a range spans (the check behind
+  `Readable::readable` and `image::readable_cached`), `copy(dst, src,
+  len)` copies bytes out (behind `Readable::read`). They are leaf
+  functions that use only volatile registers and never move `rsp`, so at
+  any instruction in them the return address is at `[rsp]`, and they
+  share one recovery stub that answers 0.
+- **A vectored exception handler**, added first
+  (`AddVectoredExceptionHandler(1, …)`) when the hook installs
+  (`image: guarded reads on (…)` in hook.log), acts on exactly one kind
+  of exception: `EXCEPTION_ACCESS_VIOLATION`,
+  `STATUS_GUARD_PAGE_VIOLATION` or `EXCEPTION_IN_PAGE_ERROR` whose
+  instruction pointer is inside the two routines **and** whose first
+  parameter says it was a read. It moves the thread to the recovery stub
+  (`EXCEPTION_CONTINUE_EXECUTION`), and the caller sees a refusal.
+  Everything else, a write fault in the routines included, returns
+  `EXCEPTION_CONTINUE_SEARCH` untouched: the game's own handlers and its
+  crash reporter see every other fault exactly as without the hook. (The
+  game's own vectored handler, also added first, at startup, acts only on
+  heap corruption, `0xC0000374`; its crash reporter is a last-chance
+  filter, `SetUnhandledExceptionFilter`, which a child process in the
+  tests stands in for.)
+- **Addresses that cannot be user memory** (below 64 KiB, which Windows
+  never maps, past `0x7FFF_FFFE_FFFF`, or wrapping) are refused without
+  a read, so a null pointer plus an offset costs no fault.
+- **Guard pages.** Reading a `PAGE_GUARD` page clears the guard and
+  raises `STATUS_GUARD_PAGE_VIOLATION` (a thread's own stack guard page
+  is the kernel's to handle: it grows the stack and the read succeeds, as
+  any stack use would). Another thread's stack, or a guarded heap, relies
+  on that guard, so the handler puts it back (`VirtualProtect` with the
+  page's protection plus `PAGE_GUARD`) before refusing: the same answer
+  the `VirtualQuery` check gave, with the guard kept. Between the system
+  clearing it and the handler re-arming it are a few microseconds, in
+  which a second read of the same page would succeed (it is committed
+  memory, so that read is safe too); only a misread pointer reaches a
+  guard page at all.
+- **Writes.** A read proves nothing about writing, and neither did the
+  `VirtualQuery` check (it refused only no-access and guard pages, not
+  read-only ones). The fixes that sort in place (the road fix, the order
+  and person-order fixes) write through memory a check found readable,
+  as before: a vector the engine itself just wrote, on the engine's
+  thread, so the guarantee is the same as it was.
+- **Cost.** A check of readable memory, or a check and an 8-byte read,
+  is 1 to 2 ns, against 6 to 8 ns from the old cache when it hits and
+  0.5 to 1.7 µs (tens in Sandboxie) when it asks `VirtualQuery`
+  (`image::tests::readable_bench`, release build, development PC). A
+  refused read costs one exception dispatch, 1.2 to 1.8 µs; refusals mean
+  a misread layout, so they are rare, and the `perf:` line counts them.
+- **The kill switch** `TPF3MP_HOOK_GUARDED_READS=0` (or `off`) in the
+  game's environment, a handler the system refuses, or a build that is
+  not x86-64 Windows: the hook checks with `VirtualQuery` through the
+  region caches, as before (`image: guarded reads off (…)` or
+  `… unavailable …` in hook.log). Elsewhere than Windows nothing native
+  is read, as before.
+- The handler is never removed: the hook stays loaded for the life of
+  the game. The cold paths (code checks before a patch, install-time
+  reads) still ask `VirtualQuery` through `image::readable`.
+
+The tests (`image::guarded::windows_tests`) read committed, reserved,
+freed, no-access and read-only pages, ranges that run from a committed
+page into an uncommitted one and a no-access page in the middle of a
+long range, a guard page (refused, and its guard still there
+afterwards), sixteen threads faulting at once, a later vectored handler
+that still receives a fault outside the routines and a write fault
+inside them, and a child process whose stray fault still ends in its
+last-chance filter.
+
 ### The person-order fixes
 
 `crates/tpf3mp-hook/src/persons.rs` ports silver2127's TPF2 Multiplayer
@@ -4950,6 +5306,7 @@ ids in place.
 | `TPF3MP_HOOK_PERSON_ARRIVALS_ORDER` | `person-arrivals-order` |
 | `TPF3MP_HOOK_PERSON_NEEDS_PATH_ORDER` | `person-needs-path-order` |
 | `TPF3MP_HOOK_FREED_ID_ORDER` | `freed-id-order` |
+| `TPF3MP_HOOK_FREED_ID_TRACE` | the free-id trace (logging only; it never needs to match between games) |
 
 Each fix installs on its own and fails closed on its own:
 
@@ -5065,6 +5422,68 @@ of `RemoveEntity` include walks of node lists and hash maps.
   `EndModification`. So it sorts the same batches, and its `AddEntity`
   check (`entity == c.entity`) still holds.
 
+**What the sort cannot reach.** Read with `tools/tpfre` on build 40408,
+`EndModification` is the only code that appends to the free-id queue (its
+insert `0x2bb1110` has one caller, `0x2bb4ff3`), `AddEntity` the only code
+that pops it or grows the entity table, and `RemoveEntity` (`0x2bb75f0`)
+only pushes to the modification's removed ids. `Engine::Load` and
+`Engine::Clone` replace the queue whole. So with the sort, the ids a game
+hands out are a function of one thing: the sequence of the simulation
+engine's modifications, each with the ids it took and freed. Two games can
+only part on ids when that sequence differs, for example when a
+modification lands at a moment the frames choose rather than the room's
+steps (the paused path runs the game scripts' system, and a batch's first
+update drains the command list before `ecs::Engine::Update` begins).
+
+Seen once in production (release 1.2.8, 2026-10-06, two games from the
+start world, no reload): the signals placed by the room had equal ids in
+both games up to room step 34900, and from step 35100 on other ids. The
+only actions in between were a bulldozed signal and nine line edits.
+Vehicles diverged in lane 3 about 1,300 steps later, at step 36400.
+
+#### The free-id trace
+
+Logging only, on with `freed-id-order` (`TPF3MP_HOOK_FREED_ID_TRACE=0`
+turns it off). It rides on the fix's own splice and reads, through
+`image::Readable`, only the simulation's engine: the one `GameSim::Step`
+hands `ecs::Engine::Update` (`[[this+8]+0x18]`), noted at every call of
+the room's game's step. The replicated engine is left out.
+
+- At every checkpoint (and the first batch after a load), right after the
+  `ticks:` line:
+
+  ```
+  free ids: step <n>: queued=<ids> front=<id> hash=<16 hex>; updates: <m> modification(s) took <t> and freed <f> (<16 hex>); outside updates: <m> took <t> and freed <f>
+  ```
+
+  The queue's size, front and a hash of every id in pop order, then what
+  the modifications in the room's updates took (new and reused ids) and
+  freed since the last checkpoint, with a hash of the freed ids in order.
+  Two games of a room must log equal lines at equal steps. The first line
+  that differs bounds where their ids parted to one checkpoint interval,
+  long before a placed object's id or a vehicle shows it.
+- Each modification of the simulation's engine that took or freed ids
+  outside the room's updates (the first 16, then every 1024th):
+
+  ```
+  freed-id trace: the simulation's engine took <t> and freed <f> id(s) <where> (returning to <rva>); <n> such modification(s) since the world loaded
+  ```
+
+  `<where>` is `in the game's step outside the room's updates` (the paused
+  path, or a batch's first update before the engine's update began) or
+  `outside the game's step` (another frame or thread). `<rva>` is the
+  return address of `EndModification` (its head is checked: the return
+  address is `0x128` above the site's `rsp`), the code to read with
+  `tpfre q <db> func <rva>`. In a sound game there are none; a room
+  action is applied for its step and counts as an update.
+
+The checks: `EndModification`'s head before the site, and the step's
+`mov rcx, [rbp+8]; ...; mov rcx, [rcx+0x18]; call ecs::Engine::Update`
+at `GameSim::Step + 0x1c0`. A mismatch leaves the trace off and says why
+(`freed-id trace: off, ...`); the fix itself stays on. `freed-id-order`'s
+own `in-step` counts are not comparable between games: the paused path's
+modifications run inside the step too, as many as there are frames.
+
 **Not ported**:
 
 - *Capacity maps* (TF2's `capacity`). TF3's `SimEntityUpdateHelper` keeps
@@ -5127,8 +5546,10 @@ than a game with a bigger pool.
   ```
 
   `freed-id-order` also counts the second engine's modifications, which
-  run outside the step as often as frames come. That is why the in-step
-  counts are the ones to compare.
+  run outside the step as often as frames come, and the paused path's,
+  which run inside it as often as frames come. Its in-step counts can
+  therefore differ between games of a room; the free-id trace's `free
+  ids:` lines are the ones to compare (above).
 
 The time goes to the `person-order` piece of the `perf:` line.
 
@@ -5151,6 +5572,103 @@ fixes on) passed step 26100 in sync, past the step-25950 split. Whether it
 also passes the step-36400 fare split was not yet known when this was
 written.
 
+### The fast emission grid
+
+`crates/tpf3mp-hook/src/emission` replaces the work of
+`ecs::EmissionGridSystem::Update` (`0xaa9230`, profile target
+`emission::EmissionGridSystem::Update`) with a fused step whose result is
+the game's to the bit (investigation/TF3_SIM_COST_2026-10-05.md §1).
+
+**What the game does.** Each update moves the noise and the pollution grid
+(16 m cells: 1,602 x 16,002 floats each on a 100 x 1000-tile map, 1,794 x
+1,794 on Gigantomaniac) one step per 0.2 s of `dt`. A step is up to three
+full-grid passes on the game's thread pool, each reading one buffer and
+writing the system's shared temporary, then a swap of the two vectors:
+Diffuse (5-point stencil, `+1e-15`), Wind (pollution only: bilinear shift
+and a divide per cell) and Average (`(1-c)*conc + c*avg`). The kernels never
+write the border ring, so borders travel with their buffers. About 68 bytes
+of memory traffic per cell and update: 1.75 GB on a 100 x 1000-tile map,
+0.22 GB on Gigantomaniac. The grid is simulation state (town noise and
+pollution ratings, eco levels, scripts) and is saved, so every bit must
+match in every game of a room.
+
+**What the hook does.** It redirects `Update`'s three dispatcher calls
+(`+0x1f2` Diffuse, `+0x29e` Wind, `+0x31c` Average). The Diffuse and Wind
+calls only note their arguments; the Average call runs the whole step at
+once: one pass over row bands on up to 16 threads of the hook's own (the
+game's pool is idle while `Update` waits), eight cells at a time with AVX.
+Every lane does the game's scalar operations in the game's order (no FMA,
+no reassociation; the same `+1e-15`, the same divide), and the step writes
+the same cells into the same buffers that the game's passes and swaps
+would, the temporary included. Each band first copies the up to four rows
+outside it that it reads, so the result does not depend on the number of
+bands or threads. `Update` itself (component lookups, the temporary's
+resize, the swaps, the border checks, the step count) stays the game's.
+Measured offline on the 1,602 x 16,002 grids of a 100 x 1000-tile map
+(both grids, one update, 16 threads, Ryzen 9 9950X3D): the game's kernels
+split over threads as its pool splits them took 42 ms, the fused step 20 ms
+(2.1x). Both are bound
+by memory bandwidth; the fused step moves 32 bytes per cell instead of 68,
+the least a step that reads two buffers and writes two can move.
+
+**Fail-closed.** `TPF3MP_HOOK_FAST_EMISSION=0` in the game's environment
+leaves the game's update (on by default: the result is bit-identical, so a
+game with it and one without agree, and the room sets nothing). It also
+stays off without the profile target, on a CPU without AVX, or when any
+byte of `Update`, the three dispatchers or the three kernels differs from
+the FNV-1a hashes in `profiles/.../emission.rs`. A step the model does not
+cover runs the game's own dispatchers, in the game's order: grids of
+different sizes, a weight or wind the game's own code asserts on, a
+non-default MXCSR on the simulation thread or a worker, calls out of order.
+The first three fused steps of each grid, and one in 1,024 after, first run
+three 12-row windows of the real grid through the game's own kernels and
+the fused step side by side; a difference turns the fused step off for the
+rest of the game.
+
+**In `hook.log`:**
+
+```
+emission grid: fused update installed (at 0x...: one pass, AVX, up to 16 threads, bit-identical to the game's three passes; TPF3MP_HOOK_FAST_EMISSION=0 turns it off)
+emission grid: noise 1602x16002: 3 windows of the real grid bit-identical to the game's kernels; fused from now on
+emission grid: pollution 1602x16002: 3 windows of the real grid bit-identical to the game's kernels; fused from now on
+emission grid: self-check <n> passed                    (at n = 8, 16, 32, ...)
+emission grid: 4096 grid steps fused, <t> ms each on average; 0 run the game's way
+```
+
+Lines to worry about: `emission grid: the game's own update, <why>` at
+install (the fix is not active), `this step runs the game's way: <why>`
+(one step fell back; harmless, the game's code ran), and `OFF for the rest
+of this game: self-check failed: <name> differs at (x, y) ...`, which means
+the model and the game disagree: report it with the log.
+
+**Tested without the game** (`emission::original_tests`, which relocate the
+game's code from the executable with the harness in
+`crates/tpf3mp-hook/src/original.rs`):
+
+- the three kernels against the fused step on random grids from 3 x 3 to
+  258 x 129 (zeros, negative zeros, denormals, huge values, infinities,
+  emitter input between steps; winds of every sign and zero), 12 steps
+  each, with 1 to 64 bands, with and without threads and AVX lanes: every
+  bit of every buffer equal;
+- the game's whole `Update` (relocated with stubs for the ECS lookups and a
+  one-thread pool) with and without the redirected calls, on worlds from
+  3 x 3 to 260 x 300 and 34 x 600, eight updates each including a `dt` of
+  0.4 (two steps): the same buffer in every vector and the same bits, with
+  every step fused, and with every step forced down the fall-back path;
+- a non-default MXCSR runs the game's passes; the self-check passes on the
+  game's kernels and catches a one-ulp change of a weight; the recorded
+  hashes, call sites and kernel calls match the executable;
+- `emission_speed` (ignored, a benchmark): `cargo test -p tpf3mp-hook
+  --release --lib -- --ignored emission_speed --nocapture`.
+
+**Not done: skipping still blocks.** A block whose inputs did not change
+would give the same outputs, but the emitters write into the grid outside
+`Update` (`EmissionEmitterSystem::Update2`, three insert paths), and so do
+loading and scripts; proving that no write was missed needs either hooks
+on every writer or a full comparison against a copy, which costs most of
+what skipping saves. The fused step leaves the grid exact without that
+proof.
+
 ### What the hook costs: the `perf:` lines
 
 `crates/tpf3mp-hook/src/perf.rs` times the hook's per-update work where
@@ -5166,13 +5684,33 @@ tenths of a millisecond a second, so the timing is **on by default**.
 lines off; hook.log says which at install (`perf: timing the hook's
 work, ...` or `perf: timing off (...)`).
 
-Every 10 seconds of wall time, after a call of the step, two lines go to
-hook.log (nothing while no step runs, at the main menu):
+Every 10 seconds of wall time, after a call of the step, the two existing
+`perf:` lines go to hook.log with the game's own costliest systems in a
+separate `perf: sim` line ("The game's own systems: the `perf: sim` line"
+below). A `perf-step:` line reports the selected update count for each
+`GameSim::Step` call in the same window:
 
 ```
-perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 90000 hits, 1200 misses
+perf: 10.0s: game step 2000.0 ms (200.0 ms/s) in 600 batches, 600 updates (3.333 ms/update); hook 42.5 ms (4.25 ms/s, 2.12% of the game's step); readable cache 0 hits, 0 misses; guarded reads 90000, 3 faults
 perf: road-entry 19000/9.50ms/0.50us, platform-visit 0/0.00ms/0.00us, platform-candidates 0/0.00ms/0.00us, land-vehicle 0/0.00ms/0.00us, vehicles-at-stop 0/0.00ms/0.00us, person-order 0/0.00ms/0.00us, reseed 6000/30.00ms/5.00us, paused-tick 0/0.00ms/0.00us, lanes 0/0.00ms/0.00us, lane-dump 0/0.00ms/0.00us, gate 600/3.00ms/5.00us; road-entry refused 12 (12 the edge's entity has no slot)
+perf-step: 10.0s: room updates/call 0:0 1:600 2:0 3:0 4+:0; outside-room exact calls 0:0 1:0 2:0 3:0 4+:0; own-speed calls 0 (updates unknown); max consecutive zero-update room calls 0; max call-start gap 50.0 ms; even steps off:0 nominal:600 reserve:0 underrun:0 repay:0 barrier:0 command:0 paused:0 stale:0 far:0; batch interval written 50 skipped 0 false syncs 0
 ```
+
+The `perf-step:` buckets count the selected `Updates::Exactly(n)` answer,
+not a guess from elapsed time or the update timer: `room` calls are the
+room's cadence, exact calls outside a room are listed separately, and
+`Updates::Own` calls have an unknown update count. The zero-update maximum
+counts adjacent room calls selected as `Exactly(0)` and is clipped to each
+10-second window; any non-room or nonzero/unknown call breaks the run. The
+call-start gap is the largest interval between consecutive detour-entry
+timestamps, with each gap recorded after its later step returns, using the
+`Instant` already read for `perf:` timing. Window reporting occurs after a
+step returns, so a call that spans the 10-second boundary is included in the
+window it closes. The gap is `n/a` until two calls have been observed.
+`even steps` counts the room calls by the rule that chose their count
+("Even steps"): in a steady room nearly all are `nominal`. These are
+simulation-call cadence and timing measurements, not render-frame timings
+or evidence of vehicle motion or visual stutter.
 
 The first line: the window's length; the game's step, its total time,
 that time per second of wall time, its calls (batches) and the
@@ -5181,7 +5719,10 @@ per-update detour, so `0` without it), and the step's time per update;
 then the hook: the sum of every piece below, per second, and as a share
 of the game's step time; then the readability checks answered from
 `image::Readable`'s cache and those that asked the system (each miss is
-one `VirtualQuery` or more). Each piece of the second line is
+one `VirtualQuery` or more; both 0 with guarded reads on), and the
+guarded checks and reads made and how many of them a fault refused (0
+with `TPF3MP_HOOK_GUARDED_READS=0`; each thread adds its reads in
+batches of 256, so a window's count may lag by that much a thread). Each piece of the second line is
 `<name> <calls>/<total ms>/<mean µs>` over the window:
 
 | piece | what is timed | calls are |
@@ -5224,7 +5765,8 @@ lines' `ms/update` and the piece's total:
 | `TPF3MP_HOOK_SCRIPT_RESEED` | the game scripts' per-call reseed (the per-update detour stays, so the mod's own `tpf3mp_native.seed` still works) |
 | `TPF3MP_HOOK_LANE_DUMP=off` | lane dumps, even after a divergence |
 | `TPF3MP_HOOK_MEASURE_ORDER` | (unset by default) the order measurement, which adds its own detours and hashing when set |
-| `TPF3MP_HOOK_PERF` | the timing and these lines |
+| `TPF3MP_HOOK_GUARDED_READS` | guarded reads: the hot paths check with `VirtualQuery` through the region caches instead (same answers, slower) |
+| `TPF3MP_HOOK_PERF` | the timing and these lines, the `perf: sim` line's timers with them (`full` keeps them on and counts the component lookups too) |
 
 Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where
@@ -5238,6 +5780,8 @@ nothing the game computes, so one game of a room may run them alone.
 | `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (with `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to`) | the network lane (0) dumped at every checkpoint of those steps, only its edges with an end in the box, even with lane dumps off ("Lane dumps") |
 | `TPF3MP_HOOK_TOWN_TRACE` (`1` or `on`) | the `town:` lines and the towns lane's dump at every checkpoint ("The town trace") |
 | `TPF3MP_HOOK_STEP_TRACE` (`1` or `on`) | a `step-trace:` line for every call of the game's step ("What the lanes cost") |
+| `TPF3MP_HOOK_BATCH_INTERVAL` (`0` or `off`) | the hook never writes the game's batch interval ("The batch interval") |
+| `TPF3MP_HOOK_EVEN_STEPS` (`0` or `off`) | each call of the game's step runs every released step it may, instead of an even share ("Even steps") |
 | `TPF3MP_HOOK_EDGE_WATCH=<e>,...` (with `TPF3MP_HOOK_EDGE_WATCH_STEPS=from-to`) | the `edge watch:` lines for those entities and an `apply:` line for every command applied ("The edge watch") |
 | `TPF3MP_HOOK_STREET_TRACE` (`1` or `on`; narrowed by `TPF3MP_HOOK_STREET_TRACE_STEPS` and `TPF3MP_HOOK_STREET_TRACE_BOX`) | the `street:` lines ("The street trace") |
 | `TPF3MP_HOOK_ROAD_ENTRY_TRACE=from-to` | a `road:` line for every in-step road edge append in those steps ("The road entry trace") |
@@ -5246,6 +5790,83 @@ nothing the game computes, so one game of a room may run them alone.
 
 The `road-entry:` digest at every checkpoint needs no switch: it is on
 while `road-entry-order` sorts.
+
+### The game's own systems: the `perf: sim` line
+
+`crates/tpf3mp-hook/src/simperf.rs` times the game systems whose cost
+grows most with the map (investigation/TF3_SIM_COST_2026-10-05.md): timing
+only, each timer calls the game's function with the arguments it was
+given. They are in while the timing is (`TPF3MP_HOOK_PERF` not `0`), at
+two clock reads a call (about 56 ns) against milliseconds of work, and
+each one fails closed on its own: hook.log says at install, for each,
+`perf: sim timer <name>: in (...)` or `perf: sim timer <name>: absent,
+<why>`.
+
+| name | the game's function | how it is reached |
+|---|---|---|
+| `emission-grid` | `ecs::EmissionGridSystem::Update` (`0xaa9230`): the noise and pollution grids' diffusion, wind and averaging | its vtable slot (`0x1436fcb10`) |
+| `emission-emitters` | `ecs::EmissionEmitterSystem::Update2` (`0xaa51c0`): the emitters' splat into the grids | its vtable slot (`0x1436fc490`) |
+| `towns` | `ecs::TownSystem`'s update (`0xb61cc0`), which sums the grids per district | its vtable slot (`0x143708bb8`) |
+| `parcel-collision` | `parcel_util::UpdateParcelCollision` (`0x9312e0`): each applied proposal's octree walk over the union of its boxes plus 50 m | its only call (`0x1425fcb9a`), redirected |
+
+The three systems have no direct caller (the static proof checks it), so
+their timers replace the vtable slot's pointer after checking it holds the
+function the profile resolved: a detour of the function itself, by any
+other feature, still runs, inside the timer. Once a window:
+
+```
+perf: sim emission-grid 600/24000.00ms/40000.00us, emission-emitters 600/3000.00ms/5000.00us, towns 600/1200.00ms/2000.00us, parcel-collision 40/2000.00ms/50000.00us (50.333 ms/update together); parcel boxes 120, union mean 1.000 km², max 25.500 km²; component-index fast, not counted (TPF3MP_HOOK_PERF=full counts it)
+```
+
+Each timer is `<name> <calls>/<total ms>/<mean µs>` (`<name> absent` when
+it is not in); then their sum per simulation update; the parcel walk's
+boxes and the mean and largest area of its query box (a few large unions
+or many small ones decide which of the investigation's option 6 helps);
+then the component lookup below. With `TPF3MP_HOOK_PERF=full` the lookup's
+calls are counted too (`component-index <n> calls`), one `lock add` a call
+on a counter picked by the thread's stack: cheap, but on millions of calls
+a second, so not by default. Set the time against the first line's `game
+step ... ms/update`. The emitters' and grid's passes run on the game's
+thread pool and are waited for, so their time is wall time on the
+simulation's thread.
+
+### The faster component lookup
+
+`crates/tpf3mp-hook/src/fastindex.rs` (`fast-component-index`, on unless
+`TPF3MP_HOOK_FAST_COMPONENT_INDEX=0` or `off`). The game's
+`ecs::Engine::GetComponentDataIndex(engine, entity, type)` (`0xa4b90`,
+about 1,600 direct calls) is a linear search: the entity's list of
+`{type, index}` pairs at `[engine+0x90] + entity·24`, the first pair of
+the type, its index; a miss asserts (`Engine.h:0x143`). It keeps a 0xE0
+byte frame and a `/GS` cookie on every call for the assert's formatting.
+The hook jumps from its entry to a frameless copy of the hit path: the
+same reads in the same order, the same first match. A miss goes, with
+every argument register as it came, to the original's trampoline, which
+searches again and asserts as the game does.
+
+- **Exact, so not a room setting.** Nothing is cached, so nothing must be
+  kept coherent with the engine, and a call on any thread reads what the
+  original read. The tests run the game's own function, relocated from
+  the executable, and the hook's on 320,000 random queries over random
+  worlds (duplicate types in a list, empty and 200-pair lists, negative
+  entities, `INT_MIN`/`INT_MAX` types, misses): the same answer every time,
+  and every miss reaches the game's assert, every hit never does. A third
+  test runs both with every register set to a known value: a hit changes
+  `rax` and `r9` only, all of which the original changes too.
+- **Fails closed**: the profile's signature is the whole hit path, entry
+  to `ret`, so a build whose lookup differs anywhere leaves the game's.
+- **What it gains**, measured on the development PC
+  (`fastindex::original_tests::a_lookup_costs`, release): about 1.5 to 2
+  ns of 10 to 14 ns when the lists are in the cache (about 15%), and
+  nothing measurable when they are not (100 ns and more, two dependent
+  cache misses: the entity's list header, then its list). So it trims the
+  per-call overhead only; the parcel walk's cost on a large map is mostly
+  the misses, which only fewer lookups remove (the investigation's
+  option 6a).
+
+To A/B it, run the same save with and without
+`TPF3MP_HOOK_FAST_COMPONENT_INDEX=0` and compare the first line's `ms/update`
+and the `perf: sim` line's `parcel-collision`.
 
 ## Release-day procedure: adding a target for a new build
 

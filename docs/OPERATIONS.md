@@ -224,6 +224,20 @@ reach the server: late joiners then wait.
 
 ## Upgrades
 
+Before promoting a release that changes the protocol or persistence, run
+the check with the published player/server binaries and the candidate binaries:
+
+```sh
+TPF3MP_CHECK_OLD_CLIENT_EXPECTED=update \
+  tools/acceptance/upgrade-check.sh <old bin dir> <new bin dir>
+```
+
+Use `connect` instead of `update` when the protocol is unchanged. The check uses
+two local launcher APIs and fake games to start a room on the old version,
+save it, restart the server, and verify both players resume the same world.
+It needs the loopback admin port and two consecutive launcher HTTP ports;
+`TPF3MP_CHECK_UI_PORT` changes the first launcher port from its default 47471.
+
 Every player must run the server's protocol version. The handshake tells
 players on another version which side to update, and their launchers
 update themselves. Upgrade the server when a release is published, which
@@ -471,6 +485,9 @@ either.
    [DECISIONS.md](DECISIONS.md); under its proposed amendment players may
    change it in Settings). For the project's relay that is
    `tpf3mp.213-133-98-90.sslip.io:29470`, with `TPF3MP_SERVER_NAME` `EU`.
+   For a regional release (D12, approved 2026-10-08), also set
+   `TPF3MP_SERVERS`; see
+   [More than one server](#more-than-one-server).
 5. **Rebuild the draft:** re-run the latest `release` run of `main` (in
    Actions), or promote a new commit to `main`. It stops, and makes no
    draft, while `TPF3MP_UPDATE_PUBLIC_KEY` or `TPF3MP_DEFAULT_SERVER` is
@@ -488,6 +505,66 @@ either.
 From then on, releasing again needs a version bump in `Cargo.toml`, on a
 feature branch like any change, and launchers of earlier versions update
 themselves once the new release is published and signed.
+
+
+## More than one server
+
+Under D12 (approved 2026-10-08), a release may list several operated
+servers, such as the project's relay in Europe and a second one in America.
+Launchers then show the public rooms of all of them, each with its server
+and ping, host new rooms on the closest, and resolve a typed invite only
+after every listed server confirms exactly one credential match. The
+servers know nothing of each other. This is a deployment guide: this code
+change has not configured or deployed regional servers or changed the
+live relay. Regional clients and servers must all run protocol 19 together.
+
+For each further server:
+
+1. **Deploy it as the first** ([First deployment](#first-deployment)),
+   with its own `invite.key`, data directory and admin token: nothing is
+   shared with the other servers. It must run the same release as them.
+2. **Give it a certificate from a public authority** for the name players
+   reach it by, as the relay has: Let's Encrypt for its host name (a
+   VPS's own name, or an sslip.io name of its address). Launchers trust
+   servers by the public authorities alone; a self-signed certificate is
+   refused. Open UDP 29470 (and TCP 443 for the tunnel, under
+   [Tunnels](#tunnels)), and check it from another machine with
+   `tpf3mp-agent connect <host>:29470`.
+3. **Add it to the repository variable `TPF3MP_SERVERS`** (Settings,
+   Secrets and variables, Actions, Variables): `NAME=host:port`, more
+   than one separated by commas, such as `US=<host>:29470`. Names are 1 to
+   24 letters, digits, spaces, dots, dashes or underscores, and are what
+   players see. A release has at most eight servers including the default;
+   names and addresses must be unique. Before packaging, the release
+   workflow validates these variables with the same parser the launcher
+   uses, including the host and port, so an invalid entry stops the build.
+   The default server stays in `TPF3MP_DEFAULT_SERVER` and
+   `TPF3MP_SERVER_NAME`, and is listed first. The release workflow refuses
+   a list that does not read.
+4. **Release**: only packages built with the variable know the server.
+   Launchers of earlier releases keep playing on the default server alone.
+   Every listed server must be upgraded to the same protocol-19 release
+   before publishing that regional client package.
+
+A server that is down is passed over for hosting. A typed invite waits up
+to five seconds for every trusted region to be reachable, then probes them
+concurrently with a five-second per-region request timeout. A missing,
+timed-out or rate-limited answer makes the lookup incomplete; no room is
+joined or primary connection promoted, and the player is asked to retry.
+No private-room metadata is returned. A unique positive lookup is followed
+by one authoritative JoinRoom which checks the credentials again. An
+explicit trusted-region choice or public room card goes directly to that
+region without probing the others.
+
+When a player opens the
+public room list, the launcher waits up to five seconds for every listed
+server; if one is still connecting or unavailable, it reports that the list
+is incomplete and asks the player to retry instead of silently presenting
+the rooms from only the responding regions. Launchers look again every 30
+seconds. Each connected launcher holds one quiet session on every listed
+server, so every server's session count includes the players connected to
+the others; they join no room there and send no diagnostics. Taking a server
+off the list takes a release; until then, launchers find it down.
 
 ## Releases
 
@@ -511,9 +588,11 @@ distributions with an older C library too.
   `TPF3MP_DEFAULT_SERVER` (Settings, Secrets and variables, Actions,
   Variables) to the public server's `host:port`. It is built into the
   packages' launcher as its default server (D12 in
-  [DECISIONS.md](DECISIONS.md)): an invite that names another server is
-  refused. Under D12's proposed amendment players may change the server
-  in Settings (remembered in `launcher.json` as `chosen_server`), and
+  [DECISIONS.md](DECISIONS.md)). A one-server release refuses a room on a
+  different server; a regional release resolves codes only across its
+  compiled trusted list (D12, approved regional amendment). Under D12's
+  proposed server-setting amendment players may change the server in
+  Settings (remembered in `launcher.json` as `chosen_server`), and
   **Reset to default** returns to this one. A build without the variable,
   as a developer's, defaults to the project's relay
   (`tpf3mp.213-133-98-90.sslip.io:29470`, shown as `EU`; `setup::RELAY`
@@ -531,6 +610,10 @@ distributions with an older C library too.
   the relay's (Let's Encrypt, for its sslip.io name) is; `--pin-cert` is
   for development servers. The packages also
   carry `PLAYING.md`.
+- **More servers.** `TPF3MP_SERVERS`, empty by default, lists the
+  release's other servers as `NAME=host:port` separated by commas, such
+  as `US=us.example.org:29470`; see
+  [More than one server](#more-than-one-server).
 - **Updates.** The launcher installs a release only if it is signed with
   a key it trusts. Whoever holds that key can run code on every player's
   machine, so it lives where no branch or workflow but one can read it,
@@ -571,6 +654,28 @@ distributions with an older C library too.
   once most players have that version, and remove the old one later.
   Losing every trusted key means players download the next version by
   hand once.
+- **Announcing on Discord.** Once `sign.yml` has signed a published
+  release, `.github/workflows/announce.yml` posts it to a Discord channel
+  and mentions the announcement role: the release's name, a link to its page
+  and the start of its notes. By then launchers offer the update. It posts
+  nothing for a draft, a prerelease or an unsigned release, and the message
+  can mention that role and no one else, whatever the notes say. A release
+  signed a second time is not announced again; run the workflow by hand
+  with the tag to post it again. Set it up once:
+
+  1. In the Discord channel's settings, Integrations, Webhooks, create a
+     webhook and copy its URL. In Settings, Secrets and variables, Actions,
+     add it as the repository secret **`DISCORD_RELEASE_WEBHOOK`**.
+  2. In Discord, with Developer Mode on (User Settings, Advanced),
+     right-click the announcement role under Server Settings, Roles, and
+     copy its ID. Set it as the repository variable
+     **`DISCORD_ANNOUNCE_ROLE_ID`**.
+  3. Try it: run **announce release** by hand in Actions with the latest
+     tag. If the message shows the role but notifies no one, turn on
+     "Allow anyone to @mention this role" in the role's settings.
+
+  Without the secret the workflow posts nothing and still passes, as in
+  forks; with a malformed webhook URL or role ID it fails and posts nothing.
 - **Building without releasing.** Run the workflow by hand. The packages
   stay workflow artifacts, but the repository is public, so anyone can
   download them.

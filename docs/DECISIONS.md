@@ -403,8 +403,10 @@ Rejected:
 
 ## D12 (2026-09-27): the launcher plays on the project's server alone
 
-*A proposed amendment below, not decided, lets players change the server in
-the launcher's settings; invites still never switch servers.*
+*The 2026-09-30 server-setting amendment below remains proposed. The
+regional amendment proposed 2026-10-06 was approved on 2026-10-08; for
+regional releases it supersedes this original one-server limit and the
+earlier no-invite-routing rule.*
 
 A package's launcher plays on the one server it was built for, the
 project's own (D4), set when the release is built
@@ -475,6 +477,89 @@ drafts no release without `TPF3MP_DEFAULT_SERVER`, so each release names
 its server on purpose; the relay in the code is the fallback for builds
 without it.
 
+### D12 amendment (approved 2026-10-08): several operated servers, rooms hosted on the closest
+
+The owner approved the regional-server proposal and automatic typed-invite
+lookup. D12's trust boundary remains: a release may route only to servers it
+lists, and text pasted beside a six-character invite is never routing
+authority. For multi-server releases this replaces earlier D12 text that
+said invites never change servers; one-server behavior remains as before.
+
+Asked by a contributor (silver2127), who runs a second server on a VPS:
+"set up the server on the VPS as well and add in to the game that hosts
+pick the closest server but players can see games on both." D12 already
+says regional servers "come later through the launcher itself, never
+through what an invite says"; this is that step:
+
+- **A release lists its servers.** The default server
+  (`TPF3MP_DEFAULT_SERVER`, named by `TPF3MP_SERVER_NAME`) comes first,
+  then the others the release vouches for (`TPF3MP_SERVERS`, such as
+  `US=us.example.org:29470`, names and `host:port`s separated by commas).
+  The list is built in, as the default server is: players still never
+  type a server to meet, and a list that does not read stops the
+  launcher rather than guessing.
+- **Rooms are hosted on the closest server.** The launcher connects to
+  the closest listed server that answers, by the round trip of the QUIC
+  connection it already opens, and before creating a room it moves to the
+  closest again. Pings within 10 ms of the lowest count as equal: the
+  server played on stays, else the one listed first. A server that does
+  not answer is passed over; when none answers, connecting fails as it
+  always did.
+- **Players see the rooms of every server.** While connected, the
+  launcher keeps a quiet connection to each other listed server (no
+  content declared, no room, no diagnostics). It gathers each server's
+  pages from zero through the requested global page, sorts the rooms
+  together, and returns 20 at a time; earlier local pages are cached while
+  browsing. Each room card carries the listed server name through Join, so
+  equal invite codes on different servers still select the clicked room.
+- **Invites stay six-character codes.** A room card carries its compiled,
+  trusted region as well as its code. A typed or pasted code is checked on
+  every listed region, concurrently, with a read-only `ResolveInvite`
+  request carrying the optional password. It returns no room details. The
+  launcher joins only when every region answered and exactly one accepts
+  the credentials. No match, a wrong password, and a banned player have
+  the same `BadInvite` result; multiple matches require the player to
+  choose a listed region. An unavailable, timed-out, or rate-limited region
+  makes the lookup incomplete and retryable. Until a unique match exists,
+  the launcher neither promotes a connection nor sends `JoinRoom`. It
+  then joins once, and `JoinRoom` rechecks credentials, capacity and
+  eligibility; a refusal never falls through to another region. Choosing a
+  region or clicking its public room card routes only to that
+  release-listed server. A pasted server-looking prefix is ignored. This
+  keeps a hidden private room that shares a code with a public room from
+  being mistaken for a unique public match.
+- **Trust is unchanged** (D4): every listed server needs a certificate
+  from a public authority, as the relay's. Each server keeps its own
+  `invite.key`, rooms and logs; nothing passes between servers.
+- **Protocol and rollout are coordinated.** `ResolveInvite` changes the
+  protocol to version 19, so every client and every regional server in a
+  release must be upgraded together. The launcher uses its already-open
+  trusted connections; it does not rely on a global room registry. A
+  release that lists only its default server behaves as before.
+- **The operator chooses the rollout.** `--server` still plays on one
+  server alone for a playtest; a release's compiled server list is the
+  routing authority. This decision and implementation do not configure or
+  deploy additional servers or change the live relay.
+
+Trade-offs: each launcher holds one idle connection per other server
+while connected (keep-alives only, while idle), and every server
+sees each connected player's session, not only the one they play on. Every
+typed invite probes every listed region; a miss consumes that server's
+normal wrong-invite budget, so one guess against an eight-server release
+counts against all eight budgets. Loading a later global page may need one
+request per preceding local page, but those pages are kept for the current
+browse.
+
+Rejected:
+
+- **Invites naming their server** (longer codes, or `EU-K7QM2X`): D13's
+  six characters stay what players read out; the launcher finds the room.
+- **Choosing the closest by geography or by the player's region
+  setting**: a measured round trip needs no setting and follows the
+  network players actually have.
+- **Servers syncing rooms with each other**: every server stays on its
+  own, and the launchers do the listing.
+
 ## D13 (2026-09-27): invites and support codes are six letters and digits
 
 A room's invite is a code such as `K7QM2X`, and so is a player's support
@@ -497,8 +582,11 @@ in a public support channel.
   could not be guessed; a code can, given enough tries. An address may
   try 20 wrong invites (or passwords) in 10 minutes, and is then refused
   every join until the window ends: about 2,900 tries a day against 740
-  million codes. A room's password still guards it on top, and its owner
-  can kick anyone who gets in.
+  million codes. A cross-region typed invite checks each listed server,
+  and every negative code/password pair consumes that server's same
+  per-address budget; if any server rate-limits the lookup, the launcher
+  does not guess around it. A room's password still guards it on top, and
+  its owner can kick anyone who gets in.
 - **Logs name invites by key.** A six-character code cannot be spotted in
   a log line as `TPF3MP1.…` could. Code that logs one writes
   `invite=<code>`, which redaction hides, and `Invite`'s `Debug` never
@@ -1138,10 +1226,19 @@ of them, in every game alike: the mod does nothing in a room.
   game only (the hook lets builds that are not player-initiated through,
   as towns' growth).
 - **What the build tools' capture does not carry stays stopped**:
-  constructions, removals, stops and signals, for now. Auto Signals needs
-  more: the room's signal (`PlaceStop`) does not carry the signal's
-  parameters, and its spacing removes and re-adds edges with signals on
-  them.
+  constructions, removals, stops and signals, for now. The narrow
+  signal-only exception approved below carries a signal's parameters and
+  the signals added or removed by an in-place track rebuild. It does not
+  permit other removals or a mixed track modification.
+
+*Amendment approved by the owner on 2026-10-08:* a shared mod may rebuild
+an existing track, including one used by a line, **only to add or remove
+signals**. The capture must pair every rebuilt track with its original and
+verify that its nodes, geometry, type, template, owner, style, lock,
+decorations and lanes are unchanged. It sends only the signal changes to
+the room. A change it cannot prove signal-only is refused in every game;
+other script removals and roadside stops remain stopped. This exception
+allows Auto Signals without permitting a general rebuild of a lined edge.
 
 Two players whose builds apply within one window may both hand a mod's
 follow-up: the room orders both and every game applies both alike, a
@@ -1211,3 +1308,85 @@ missing mod is installed from Mod Hub, never received from another player":
 this builds it. Not covered yet: the new world path (a room started from a
 new world keeps the mods the game's New Game page picks), and the game's
 experimental economy settings (`configDict`), which do not travel.
+
+## D29 (2026-10-06, owner-approved 2026-10-08): native mods come from a signed index, and the hook enables only what is built into it
+
+The owner approved this policy on 2026-10-08. It covers CKAN-style
+management of **native mods**: mods that are more than Lua and so cannot
+live on Mod Hub or mod.io. Big Maps is the first (hook patches behind
+switches, targets in the build's profile, a New Game page the hook serves, a
+Lua mod folder, [BIGMAPS.md](BIGMAPS.md)). Today such a mod is switched on
+by hand with environment variables on its own branches. The design is in
+[NATIVE_MODS.md](NATIVE_MODS.md). PR #117 and this follow-up implement the
+framework only; they do not provide a trusted production key or index, a
+player-facing installer, Big Maps as a package, or native-mod room terms on
+the protocol. Approval of the policy does not mark those implementation
+items complete.
+
+- **One signed index.** The launcher installs a native mod only when it is
+  listed in `native-mods.json`, signed with a **native-mods key** of the
+  project (Ed25519, with the same code and key handling as releases, D7):
+  the public half is built into the launcher
+  (`TPF3MP_NATIVE_MODS_PUBLIC_KEY`), and a launcher built without one
+  installs none. As with D19's dev key, the key is its own: it cannot sign
+  a release, and a release key cannot sign the index. Signing is a workflow
+  in an environment whose required reviewer approves each index, as for
+  releases. Each index has a serial that only grows, so an older signed
+  index cannot be replayed to bring back a withdrawn package.
+- **Every entry pins what it may be.** A package names the game builds it
+  runs on by the executable's SHA-256, as hook profiles do; every file with
+  its size and SHA-256; its dependencies and conflicts; the hook features it
+  enables; its settings and their defaults; and whether it changes the
+  simulation. An index with one malformed entry is refused whole.
+- **The launcher installs into its own folder.** Packages go to
+  `native-mods/<id>/<version>/` in the launcher's data folder, never the
+  game's. Every file is checked against the index as it downloads, and a
+  version goes into place only once all of its files check out; the
+  version before an upgrade is kept for a rollback. A registry names every
+  file installed, and uninstalling deletes exactly those (D7's journal, for
+  mods). Installing is not enabling: the player switches a package on.
+- **The hook enables only what the launcher enabled, on the build it was
+  enabled for** (D11). The launcher names the enabled packages' file in the
+  game's environment (`TPF3MP_NATIVE_MODS`), written for the executable it
+  starts; no other switch turns a native feature on. A feature runs only if
+  this hook has it and the matched profile has every target it patches. A
+  package that changes only what one player sees is left off with a reason
+  when it cannot run; one that changes the simulation and cannot run keeps
+  the game out of rooms (fail closed, as for a build without a profile).
+- **First version: no new native code.** A package only *enables* features
+  compiled into TPF3-MP's hook (a registry of feature ids,
+  `features::BUILT_IN`) and ships data, Lua and settings. The index already
+  has a place for **signed plugin libraries** (`plugins`, with an
+  interface version), which this launcher refuses; loading them is a later
+  decision.
+- **In a room, simulation-changing native mods are part of the room's
+  terms**, with their exact versions and settings, compared as the room's
+  content is. A member who lacks one, or holds another version, installs
+  the room's version from the signed index in one click, never from another
+  player. A package that changes only what a player sees is the player's
+  own (as personal mods, D25). Until the protocol carries these terms, a
+  simulation-changing package refuses multiplayer (PLAN.md, Part 3: a
+  channel not checked yet is refused).
+
+Rejected:
+
+- **Open URLs, as CKAN does** (anyone publishes a metadata file pointing at
+  their download): native code from anywhere, run inside every player's
+  game. D4's servers are trusted because the project runs them; code that
+  runs beside them must be the project's too.
+- **Native mods through mod.io or Mod Hub**: Mod Hub carries Lua mods for
+  the game's own loader; the launcher does not talk to mod.io (D28), and a
+  mod.io file is not signed by the project.
+- **Players passing mods to each other**, as a room's owner sending what
+  a member lacks: a member would run what another player's machine handed
+  them. D28 refuses it for Lua mods; native mods have more reason to.
+- **Unsigned packages over HTTPS**: the reason D7 rejected unsigned updates.
+
+Touches: D7 (the same signing primitives, a second key for a second kind of
+artifact), D19 (the per-purpose key it set the pattern for), D11 (the
+launcher decides what the hook does in the game it starts), D28 (covers Mod
+Hub mods only; native mods are a separate channel and change nothing
+there), D4 (trust in the project, fail closed). PLAN.md, Part 3: a new item.
+Not covered yet: the room's terms on the wire (an additive field of the
+content declaration, with a protocol version bump), the launcher's page for
+native mods, and Big Maps itself as the first package.

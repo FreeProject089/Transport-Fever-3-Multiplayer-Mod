@@ -20,7 +20,7 @@ Flag each of these when a task asks for it:
 |---|---|---|
 | Steam networking, peer-to-peer, a player hosting, a player's game as the truth | D2, D4: the server orders every turn; no player is the host | Rooms on the project's server |
 | Joining a room from the game without the launcher, a Multiplayer entry that works in a game Steam started | D11: the hook runs only in a game the launcher started | *Changed:* the main menu's Multiplayer entry in a game the launcher started, which drives that launcher (D17, amended 2026-09-30) |
-| Typing or choosing a server, following an invite to its server | D12: one server, built in. *Proposed:* the D12 amendment (2026-09-30, not decided) makes the project's relay the default and lets players change the server in the launcher's Settings; invites still never switch servers | `--server` for development; with the amendment, the server setting (Settings, **Server**), never an invite |
+| Connecting to an unlisted server, or treating a pasted address as invite routing authority | D12: a regional release routes only to its compiled trusted list. A six-character code is checked on every trusted region; only a unique credential match permits automatic join, and a room card or explicit region choice names its trusted target | `--server` for a one-server playtest; a release-listed region for explicit selection; bare typed invites resolve across all listed regions |
 | A proxy DLL (`alut.dll`), files in the game's folder, an installer `.bat` that patches the game | D9, D11 | The readable install scripts put in the mod alone; the launcher injects the hook |
 | An action sent to other games before its channel was checked (a "strict" flag off meaning "send it unchecked") | Fail closed (AGENTS.md) | Off means the action is refused in a multiplayer game; see Part 3 |
 | A speed control in the launcher | Part 2, Dev A: the game's own speed buttons, synced by the server | |
@@ -308,8 +308,11 @@ the hook):
   order, not by entity ID. Selling, replacing, cloning (joining the
   original's line on the same step).
 - [ ] Lines: create, edit stops and platforms, delete; assign a vehicle.
-- [ ] Vehicle colour and name, with no echo between games (TPF2 froze on
-  100,000 colour commands).
+- [x] Vehicle colour and name, with no echo between games (TPF2 froze on
+  100,000 colour commands). *Done (2026-10-07):* a vehicle, a station, a
+  town and a depot renamed and the vehicle recoloured in a two-game room
+  on build 40408, applied alike in both, no echo; the `rename` gate is on.
+  See `investigation/TPF3_RENAME_2026-10-07.md`.
 
 Dev B:
 
@@ -352,8 +355,11 @@ Dev B:
   and prospecting's outcome for companies other than the room's first,
   which the game's company script never runs (it looks at the save's
   player alone).
-- [ ] Roadside stops and signals, the side included, never rebuilding an
-  edge a line runs on.
+- [ ] Roadside stops and signals, the side included. *Changed (owner-approved
+  D27 amendment, 2026-10-08):* signal-only in-place rebuilds may touch a
+  track a line runs on when nodes, geometry, type, template, owner, style,
+  lock, decorations and lanes stay unchanged; every other mixed rebuild
+  is refused. Roadside stops and other lined-edge rebuilds remain open.
 - [ ] The room's required mods from Mod Hub IDs; a missing mod is
   installed from Mod Hub, never received from another player. *Added (D28,
   proposed):* built on `feat/lobby-mods`: the owner picks the room's save,
@@ -370,13 +376,29 @@ Dev B:
   in every game alike ([MODS.md](MODS.md)). *Added (owner-approved D27), for builds a shared mod sends after the player builds (Parallel
   Tracks, Parallel Roads):* the follow-up of a player's build goes to the
   room from that player's game alone; every other game's is stopped
-  (`tpf3mp/modbuild.lua`). Built for new streets and tracks; signals and
-  removals stay stopped (Auto Signals, [MODS.md](MODS.md)).
+  (`tpf3mp/modbuild.lua`). Built for new streets and tracks; other removals
+  stay stopped. *Added (owner-approved D27 amendment, 2026-10-08):* signals a script places along existing
+  tracks (Auto Signals) go as one `PlaceSignals`, the signal's own
+  settings in `PlaceStop`, behind `acceptance.lua`'s `signals`, on after
+  a two-player game (2026-10-06, [MODS.md](MODS.md)); no regression
+  scenario yet. Its tracks are rebuilt in place, lines on them too,
+  only when their other properties are unchanged: see the item above.
 - [ ] *Added (D25, proposed):* personal mods ([MODS.md](MODS.md)). Built:
   the scan (`tpf3mp-modscan`), the content check on shared mods only, the
   room's world loaded with the room's mods and the player's own, and the
   personal mods' guard for game-script mods. Tick once the two-player test
   in MODS.md passes in the real game, and its measurements are made.
+- [ ] *Added (D29, owner-approved 2026-10-08):* native mods (more than Lua,
+  such as Big Maps) installed by the launcher from the project's signed
+  index, enabled in the hook only for their pinned build, and in a room
+  part of its terms ([NATIVE_MODS.md](NATIVE_MODS.md)). PR #117 and its
+  hardening implement framework only: index validation and signature
+  primitives, the store and registry APIs, the enabled-list handoff, and
+  the hook's fail-closed plan. No production key or index, player-facing
+  installer, built-in native feature, or room terms on the wire exists, so
+  players cannot install or use a native mod yet. Open: the key and signing
+  workflow, the launcher's page, Big Maps as the first package, and the
+  room's terms on the wire.
 
 Dev C:
 

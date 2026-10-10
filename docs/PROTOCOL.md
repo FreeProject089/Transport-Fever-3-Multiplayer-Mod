@@ -1,6 +1,6 @@
 # Protocol
 
-Current integration: protocol **16**, bridge **23**, action schema **25**.
+Current integration: protocol **19**, bridge **28**, action schema **26**.
 This selective combination differs from both prior dev and PR #37; all
 participants and the relay must be upgraded together. Numbers in feature
 history below describe their original introduction.
@@ -122,10 +122,19 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   at least one letter and one digit, typed in either case, and checked
   when decoded. The server finds the room by an HMAC of the code under a
   server-side pepper, stores only that, and gives no two open rooms the
-  same code. Invalid invites, unknown rooms and wrong passwords all fail
-  the same way (`BadInvite`), so invites cannot be used to probe which
-  rooms exist. An address that sends 20 of those in 10 minutes gets
-  `RateLimited` for every join until the 10 minutes are up.
+  same code. `ResolveInvite { invite, password }` checks whether the invite
+  and optional room password match an open room on this server. The server
+  locates it by the HMAC, then asks the room actor to check the credentials
+  without joining the player or changing the room. A match returns only
+  `InviteMatch`; it includes no room metadata and writes nothing to the
+  room log. Unknown invites, a wrong or missing password, and a banned
+  player all return the same `BadInvite`. A room that is full can still
+  return `InviteMatch`; `JoinRoom` remains authoritative for capacity,
+  room phase and membership. Resolution uses the ordinary per-connection
+  request and join rate limits. Its failed attempts share the same
+  per-address budget as failed joins: after 20 wrong invites or passwords
+  in 10 minutes, every join or resolution from that address gets
+  `RateLimited` until the window ends.
 - **The room list** (protocol 9, D26 proposed). A room is **private**
   unless its owner creates it with a `listing` (`CreateRoom::listing`):
   the map type (the climate's name, such as `temperate`, up to 32 bytes),
@@ -137,7 +146,13 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   whether it has a password, its phase and its listing: a public room's
   invite is for anyone to join with, and its password still guards it. A
   private room is never listed, and its invite never leaves the server
-  but as the answer to its creator. The server keeps a public room's
+  but as the answer to its creator. A launcher on a release's several
+  servers (DECISIONS.md, D12's owner-approved amendment of 2026-10-06) asks
+  each server for its list on a connection of its own and merges them;
+  servers know nothing of each other. When a player types or pastes an
+  invite, the launcher sends `ResolveInvite` to the listed servers; each
+  response identifies only whether that server can admit the invite and
+  password. The server keeps a public room's
   invite in memory only: a room restored after a restart is private. A
   public room nobody is connected to is not listed while it waits out its
   grace period. The owner updates the listing with `DescribeRoom(RoomListing)`, such as the
@@ -371,6 +386,13 @@ at the room's pace behind a jitter buffer of its own
   paused apply at once.
 - **Speed changes.** Steps already sealed keep playing evenly from the last
   one played.
+- **In the game.** The game runs the released steps on its own call clock,
+  an even share each call, keeping a step or so in reserve
+  ([HOOKS.md](HOOKS.md), "Even steps"). It runs everything released when an
+  event waits behind it or the player's own command is on its way, so this
+  adds nothing to a player's own commands; another player's may show one
+  call (about 200 ms) later, and the world shown is up to a few steps older
+  than the release.
 
 What players feel on their own commands is their round trip, plus their own
 buffer, plus the wait for the next turn. It is not the room's input delay,

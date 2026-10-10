@@ -333,6 +333,29 @@ in both games. The change does not repair already broken placements.
 
 ### Module edits and upgrades
 
+Stock rail-station edits without external street changes now use
+`createProposalReplaceConstruction` on each replica, as the game's own
+construction UI does (Steam 40408, `gui/construction/construction.tl:1295`).
+This preserves the full native replacement graph instead of reconstructing
+it from a `SimpleProposal`. The regenerated proposal must replace exactly
+the intended construction and recapture to the same file, name, parameters
+and transform, without introducing external street edits. Ownership and
+build errors still refuse the action. Build 40408's runtime rejects a full
+`Proposal` in `makeProposalData`, despite its API declaration; native edits
+therefore use the stock command path with `ignoreErrors=false` and verify
+the resulting construction parameters. Native replacements already include
+their track snapping and do not receive a second refresh.
+
+This addresses the replay path implicated by five Basingstoke Station
+module edits rejected with `Construction Not Possible` on 2026-10-05.
+Stand-in engine regression coverage exercises bulk, liquid, flatbed and
+goods module parameters with different local entity IDs, and refuses
+changed parameters, moved constructions, extra additions/removals, external
+street edits and critical errors. Two local games on a copy of the affected
+save accepted a bulk-platform replacement and an additional track at
+Basingstoke Station; both replayed the edits and subsequent rolling checks
+agreed. The original save and the player's session were not modified.
+
 The old construction and the new parameters come off the proposal; every
 instance upgrades the construction with the same file within 10 m at the
 stamp. Two traps:
@@ -445,6 +468,16 @@ list and the apply rewrites its lines and station group before it dies. The
 script's proposal conversion copies all of that, so placement and deletion are
 lossless from Lua. Rules:
 
+When the tool supplies neither an explicit edge parameter nor a model
+transform, capture finds the closest point on the edge's 3D Hermite curve
+to the viewing ray from `api.gui.camera.getEye()` through the cursor's
+terrain hit. Projecting the terrain hit horizontally loses the height of
+a bridge and can move the signal tens of metres along it. Explicit native
+proposal coordinates still take priority. Replay uses the captured world
+position, never another player's camera. A stand-in regression covers the
+elevated case and explicit-coordinate precedence; real-game results are
+recorded separately in the validation report.
+
 - the `left` byte is the engine's, not the geometric side. Two signals that
   both stood geometrically left of their track carried `left` 0 and 1; a
   waypoint on the centreline has no side at all. Ship the engine's byte with
@@ -478,7 +511,12 @@ edge named by its ends within 0.5 m, the stop's place by the point of the
 edge's centreline where it stands, and the stop's construction, which the
 GUI notes from the construction menu (TF3's proposal does not name it). A
 two-sided stop goes as one `PlaceStop` built on both sides. A stop that
-replaces another, signals and waypoints stay refused.
+replaces another stays refused. Signals and waypoints go the same way, with
+the settings the signal tool builds them with (its
+`EdgeObjectBuilder.params`, which every game sets on the signal it builds:
+a mod's settings, Auto Signals' spacing among them). Signals a mod's script
+then places along the track (Auto Signals) go as one `PlaceSignals`
+(HOOKS.md, "Scripts' follow-up builds").
 
 ## Terrain and the asset brush
 
@@ -543,8 +581,9 @@ replaces another, signals and waypoints stay refused.
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (**25**; combines station access, company perks
-and preservation, plus named stops and gated asset removal). This
+`ACTION_SCHEMA_VERSION` (**26**; combines station access, company perks
+and preservation, plus named stops and gated asset removal; 26 adds a
+signal's settings to `PlaceStop` and `PlaceSignals`). This
 integration combines the existing
 junction schema with the selected vehicle, depot, demolition, precedence
 and gated action additions described in [COVERAGE.md](COVERAGE.md).
@@ -552,6 +591,19 @@ The Lua mod builds an action from a captured
 command, the payload travels opaque through the server, and every replica
 resolves it against its own world by the rules above. Everything a TPF2
 command carried as text travels here as typed, bounded fields.
+
+`CalendarSpeed` carries `millis_per_day`, the exact integer from the game's
+calendar speed control. Zero pauses the date; positive values set the day
+length independently of simulation speed. The GUI guard queues the command
+instead of running it locally, and each replica applies it through
+`makeGameSetCalendarSpeedCmd` at the ordered action's step. Values outside
+0–2,147,483,647 are refused before reaching the engine. The variant is
+appended, preserving the existing schema-25 variants' bytes; old clients
+cannot decode the new variant and must use the same mod build as the room.
+Capture, wire round-trip and two Lua replica replays are covered by tests.
+On 2026-10-06 two local build-40408 games also verified date pause from the
+host and resume from the guest through the ordinary calendar UI, while
+simulation updates continued during calendar pause.
 
 **References.** An action never names an engine entity id. It uses:
 
@@ -586,7 +638,7 @@ appended.
 | `CreateLine` | name, colour, the line as the game keeps it: stops (station group, terminal, other terminals, load mode, waiting times, loading rules per cargo, the waypoints after it), transport modes, settings. A waypoint is on a lane of a street's, track's or construction's transport network (the edge by its ends, node 0 first, which must run the same way in every game; the construction by file and place), the lane's index and the place along it; or, for ships and aircraft, a position in the open; with the line manager's tag |
 | `EditLine` | a line and one change: rename, recolour, the whole line anew, or delete |
 | `AssignLine` | vehicles, the line or none, the first stop or none for the game's choice ("Next Reachable Stop") |
-| `PlaceStop` | a stop, waypoint or signal (`object`): the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, its construction, whether a stop is two-sided and whether a signal is one-way |
+| `PlaceStop` | a stop, waypoint or signal (`object`): the edge (network and ends), the position along it, the engine's `left` flag, the originator's unit direction there, its construction, whether a stop is two-sided and whether a signal is one-way, and a signal's or waypoint's settings (`params`, the tool's, schema 26) |
 | `Terraform` | the grid: corner, cell size, columns, and each cell's target and previous height; on TF3 the corner is the first cell's index in the terrain's own grid times the cell size (4 m), and a stroke larger than 4,096 cells goes as several, a band of whole rows each. Gated off (`acceptance.lua`, `terraform`) |
 | `CompanyOp` | create, join, rename or delete a company; its head's password, players and stations (`ShareStations` the default, `StationAccess` one other company over it) |
 | `Loan` | take a loan (the offer taken and the offer the game drew to follow it) or pay one back, each on its terms as TF3's loan script keeps them, the interest in millionths |
@@ -597,6 +649,7 @@ appended.
 | `ApplyRank` | a company rank to take, as the company window sends the game's growth script (`applyLevel`); the acting player's company takes it ([HOOKS.md](HOOKS.md), "Company ranks") |
 | `Perk` | a company perk from the construction menu: Industry Greenification (the industry by its canonical id, `IndustryId`, which every game binds by its construction, and the permit), or a marketing campaign (the town, the campaign's duration and line cost factor, the permit, and the price the tool charged). Gated off (`acceptance.lua`, `perks`) ([HOOKS.md](HOOKS.md), "Company perks") |
 | `Preserve` | a town building's Historic Preservation checkbox: the construction it stands in, by file and position, its index in that construction's town buildings, and whether it is preserved. Gated off (`acceptance.lua`, `preservation`) |
+| `PlaceSignals` | signals a mod's script places along existing tracks after its player's signal (Auto Signals): each track by its ends (node 0 first), each new signal's place along it from that end and side, each removed signal's place and construction; the new signals' construction, one-way and settings once. Every game rebuilds all the tracks in one proposal, or none. Behind `acceptance.lua`'s `signals` |
 
 **Polylines.** A road or track build is a polyline: the tool's proposal by
 positions, the originator's decisions included:
