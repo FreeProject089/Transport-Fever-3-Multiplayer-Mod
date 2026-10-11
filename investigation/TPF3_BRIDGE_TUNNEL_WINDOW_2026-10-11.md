@@ -48,13 +48,30 @@ its own game (`tpf2-multiplayer`, `native/src/slice_hook.cpp`,
 `CALLER_BRIDGE_UPGRADE`: "0 new nodes, 10 added/10 removed bridge edges",
 2026-09-14). It never carried tunnel types.
 
+## Second run: a signal on the bridge, a track tunnel
+
+`target/game-runs/run-1011-210631`, the same save and PC, with this branch
+merged locally with `fix/signal-dotted-settings` (Signal Distance's
+`signal_distance.local`, which had kept any signal from being placed in
+the first run):
+
+| action | player | what | went as | rebuilt in place |
+|---|---|---|---|---|
+| 1 | host | a signal on the track bridge's edge 134154 | `PlaceStop` | (signal 135926 in both games) |
+| 2 | host | that bridge's type, the signal on it | `BuildTrack` | 35 edges, the signal's among them |
+| 0 | guest | a new track through a hill (a tunnel) | `BuildTrack` | |
+| 1 | guest | that tunnel's type | `BuildTrack` | 13 edges |
+
+The window's proposal listed the signal on its rebuilt edge, so
+`engine.keptInPlace` let it through, and the signal still stood in both
+games afterwards (seen by the player). The rolling world checks matched
+at all 17 windows (steps 1 to 850); the game ran from just after the
+bridge's swap, so the windows cover all four. Nothing was refused, failed to apply or
+diverged; `stdout.txt` again had only the railroad crossing mod's
+load-time errors.
+
 ## Not exercised
 
-- A track tunnel; a track bridge with a signal or waypoint on it. Placing a
-  signal in this save was refused before the swap: its Signal Distance mod
-  sets a parameter named `signal_distance.local`, which the signal tool's
-  capture does not take (`engine.flatParams`). That is a separate defect.
-  Capture tests cover a kept and a dropped signal
-  (`a_bridge_window_rebuild_travels_as_the_track_it_rebuilds`).
+- A waypoint on a swapped bridge (it goes the same way as a signal).
 - Two players changing one bridge in the same step; a bridge shared by
   two companies' edges; other platforms.
