@@ -164,22 +164,29 @@ def read_dumps(lines):
 
         trailer = TRAILER.match(line)
         if trailer:
-            step, _lanes, written, left_out = trailer.groups()
+            step, lane_text, written, left_out = trailer.groups()
             step, written = int(step), int(written)
             omitted = int(left_out or 0)
-            if batch is not None and batch.step == step:
-                captured_lines = sum(len(dump.entries) for dump in batch.dumps)
-                for dump in batch.dumps:
-                    if written != captured_lines:
-                        dump.batch_issues.append(
-                            f"checkpoint reports {written} entries written, captured {captured_lines}"
-                        )
-                    if omitted:
-                        dump.batch_issues.append(f"checkpoint reports {omitted} entry/entries left out")
-                    open_captures.pop((dump.lane, dump.step), None)
-                batch = None
-            elif batch is not None:
+            if batch is not None and batch.step != step:
                 finish_without_trailer()
+            if batch is None:
+                batch = CheckpointBatch(step)
+            captured_lines = sum(len(dump.entries) for dump in batch.dumps)
+            for lane in (int(part) for part in lane_text.split(",")):
+                if lane not in batch.lanes:
+                    missing = Dump(lane, step)
+                    missing.batch_issues.append("checkpoint requested lane but no rows captured")
+                    dumps.setdefault((lane, step), []).append(missing)
+                    batch.dumps.append(missing)
+            for dump in batch.dumps:
+                if written != captured_lines:
+                    dump.batch_issues.append(
+                        f"checkpoint reports {written} entries written, captured {captured_lines}"
+                    )
+                if omitted:
+                    dump.batch_issues.append(f"checkpoint reports {omitted} entry/entries left out")
+                open_captures.pop((dump.lane, dump.step), None)
+            batch = None
 
     finish_without_trailer()
 

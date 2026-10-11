@@ -2200,22 +2200,32 @@ reaches is its potential, and the company window takes a rank reached with
   changes, to check in the game).
 
 Nothing is guessed: a sample whose statistics or game modules do not read
-is left out (`the companies' scores were not sampled: ...`), and a town
+is left out (`the companies' scores were not sampled: ...`) and remains due
+for retry in the same game quarter. Previously such a failure persisted the
+quarter before reading it, losing that sample's chance to earn XP. A town
 with no rating counts for nobody.
 
 In `hook.log`, every game of a room of two companies writes at each
 sample, at the same game time and with the same numbers:
 
 ```
+room ranks loaded: quarter=431 companies=2
+room ranks loaded: company-0 entity=25 experience=20514 potential=3 level=2
+room ranks loaded: company-1 entity=901 experience=800 potential=0 level=1
 progression at game time 5400000: 12 towns, weights cargo 1 passengers 1
 progression at game time 5400000: town-3 population 1240: company-0 share 0.5500 rating 80.0000 part 545.6000, company-1 share 0.4500 rating 64.2859 part 358.7153
-progression at game time 5400000: company-0 score 3120.4000, experience 20514, rank 3 reached, 2 taken
-progression at game time 5400000: company-1 score 812.9000, experience 812, rank 0 reached, 1 taken
+progression at game time 5400000: company-0 score 3120.4000, experience 20514, rank 3 reached, 2 taken, prior experience 20514, sample quarter 432
+progression at game time 5400000: company-1 score 812.9000, experience 812, rank 0 reached, 1 taken, prior experience 800, sample quarter 432
 ```
 
-one line per town someone carried for, then one per company. Compare the
-lines of the same game time across the games: any difference is a
-divergence.
+The `room ranks loaded` lines report the saved records on the first
+multicompany update of this game-script state, before sampling; at most 16
+companies are listed, with an explicit omitted count beyond that. Compare
+them with the last sample before a rebase and the first sample after it to
+see whether the offered world restored or lost experience. The sample logs
+one line per town someone carried for, then one per company, including the
+experience before that sample and the quarter persisted with it. Compare
+lines at the same game time across games: any difference is a divergence.
 
 ### Headquarters
 
@@ -4000,8 +4010,9 @@ python tools/lane_diff.py --lane 3 --step 300 --max 50 --ignore entity a.log b.l
 
 For each lane and step it pairs captures by occurrence and entries by key,
 prints observed differences, and reports whether the lane's hashed summary
-agrees. Missing summaries, rows or route records, and a truncated checkpoint
-are marked incomplete; a missing entry then does not prove an absent entity.
+agrees. Missing summaries, rows or route records, a requested lane with no
+rows, and a truncated checkpoint are marked incomplete; a missing entry then
+does not prove an absent entity.
 Repeated steps with unequal capture counts are left unpaired, since a world
 reload could put the same step in a different epoch. Exit 0 means complete
 aligned captures agree, 1 means an observed difference, and 2 means the
@@ -5323,6 +5334,35 @@ the room's game's step. The replicated engine is left out.
   address is `0x128` above the site's `rsp`), the code to read with
   `tpfre q <db> func <rva>`. In a sound game there are none; a room
   action is applied for its step and counts as an update.
+
+- The trace also keeps the first 96 modifications, including ones that
+  take or free no IDs, of each
+  checkpoint interval in memory, across the last 128 checkpoints. When a
+  divergent checkpoint or its room-wide lane-dump request arrives, each
+  game writes the latest 64 retained intervals up to that checkpoint to
+  `hook.log`.
+  This includes an allocator split well before the first lane mismatch,
+  without continuously filling the hook's 192 KiB/minute diagnostic upload
+  budget. An incident writes at most 128 KiB of operation detail, once per
+  divergent step. The header gives the oldest and newest retained
+  checkpoints, expired checkpoints, recorded/retained operations, omitted
+  operations, unfit counts and unreadable native observations.
+  `complete=true` means none of those gaps occurred. The launcher's source
+  and run budgets can still skip old log
+  lines, which its own diagnostics report.
+
+  `free operations: step <checkpoint> part <n>` lines list compact records
+  in modification order, each with `step:place:taken/freed:table/queued:
+  first_freed/last_freed/freed_hash:return_rva`. `U` means a room update,
+  `S` the game's step outside an update, and `X` outside its step. `-` is
+  unavailable; `?` for taken means its count did not fit the preceding
+  observation. The IDs and hash describe the freed batch at
+  `EndModification`; taken is a count inferred between modification ends,
+  not the identities of IDs allocated by `AddEntity`. If native worker
+  modifications overlap, callback observation order need not be causal
+  modification order. A world load clears
+  this memory. Turning `TPF3MP_HOOK_FREED_ID_TRACE=0` off also disables
+  these lines, and **Send diagnostics** Off keeps hook lines local.
 
 The checks: `EndModification`'s head before the site, and the step's
 `mov rcx, [rbp+8]; ...; mov rcx, [rcx+0x18]; call ecs::Engine::Update`

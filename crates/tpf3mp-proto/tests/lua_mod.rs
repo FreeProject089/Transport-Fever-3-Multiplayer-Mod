@@ -11069,12 +11069,27 @@ fn with_two_companies_each_takes_its_share_of_every_town_by_its_deliveries_and_r
     );
     assert_eq!(
         log[3],
-        "progression at game time 0: company-0 score 440.0000, experience 1500, rank 7 reached, 1 taken"
+        "progression at game time 0: company-0 score 440.0000, experience 1500, rank 7 reached, 1 taken, prior experience 1500, sample quarter 0"
     );
     assert!(
         log[4].starts_with("progression at game time 0: company-1 score 489.28")
-            && log[4].ends_with(", experience 489, rank 2 reached, 1 taken"),
+            && log[4].ends_with(
+                ", experience 489, rank 2 reached, 1 taken, prior experience 0, sample quarter 0"
+            ),
         "{log:?}"
+    );
+    let loaded: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        loaded
+            .iter()
+            .any(|line| line.starts_with("room ranks loaded: quarter=")),
+        "{loaded:?}"
+    );
+    assert!(
+        loaded
+            .iter()
+            .any(|line| line.starts_with("room ranks loaded: company-0")),
+        "{loaded:?}"
     );
     // The game's delivery statistics per line, over half a year.
     let asked: String = lua
@@ -11224,7 +11239,8 @@ fn a_sample_the_game_cannot_measure_changes_no_rank() {
     let (lua, _script) = engine();
     lua.load(FAKE_PROGRESSION).exec().unwrap();
     lua.load(
-        "GAME_MODULES['/game_mechanics/towns/town_util.tl'] = nil \
+        "SAVED_TOWN_UTIL = GAME_MODULES['/game_mechanics/towns/town_util.tl'] \
+         GAME_MODULES['/game_mechanics/towns/town_util.tl'] = nil \
          HOOK.room = true \
          HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
          UPDATE({}, STATE, 0.2) UPDATE({}, STATE, 0.2)",
@@ -11243,6 +11259,63 @@ fn a_sample_the_game_cannot_measure_changes_no_rank() {
         .eval()
         .unwrap();
     assert!(none, "nothing guessed");
+    let quarter: Option<i64> = lua
+        .load("return STATE.value.progression.quarter")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        quarter, None,
+        "a failed sample must remain due this quarter"
+    );
+    lua.load("GAME_MODULES['/game_mechanics/towns/town_util.tl'] = SAVED_TOWN_UTIL UPDATE({}, STATE, 0.2)")
+        .exec().unwrap();
+    let recovered: String = lua.load(
+        "local p = STATE.value.progression return tostring(p.quarter) .. ':' .. tostring(#p.records)"
+    ).eval().unwrap();
+    assert_eq!(
+        recovered, "0:2",
+        "the repaired module lets the same quarter earn XP"
+    );
+}
+
+#[test]
+fn a_failed_tally_keeps_saved_progression_and_retries_the_same_quarter() {
+    let lua = two_companies(false);
+    let state = "local p = STATE.value.progression \
+        return tostring(p.quarter) .. ':' .. tostring(#p.records) .. ':' .. tostring(#p.passengers) \
+            .. ':' .. tostring(p.passengers[1].value)";
+    let before: String = lua.load(state).eval().unwrap();
+    lua.load(
+        "GAME_T = 1000 \
+         SAVED_SENSITIVITY = GAME_MODULES['/game_mechanics/towns/town_util.tl'].getRatingSensitivity \
+         GAME_MODULES['/game_mechanics/towns/town_util.tl'].getRatingSensitivity = function() error('temporary town read failure') end \
+         UPDATE({}, STATE, 0.2)",
+    ).exec().unwrap();
+    let after_failure: String = lua.load(state).eval().unwrap();
+    assert_eq!(
+        after_failure, before,
+        "a partial tally must not change persisted state"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(
+            |line| line.starts_with("the companies' scores were not sampled:")
+                && line.contains("temporary town read failure")
+        ),
+        "{logged:?}"
+    );
+    lua.load(
+        "GAME_MODULES['/game_mechanics/towns/town_util.tl'].getRatingSensitivity = SAVED_SENSITIVITY \
+         UPDATE({}, STATE, 0.2)",
+    ).exec().unwrap();
+    let quarter: i64 = lua
+        .load("return STATE.value.progression.quarter")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        quarter, 1,
+        "the same quarter succeeds after the read recovers"
+    );
 }
 
 #[test]

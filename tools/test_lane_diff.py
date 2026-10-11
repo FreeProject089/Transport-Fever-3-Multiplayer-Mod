@@ -245,6 +245,19 @@ lane dump at step 300: lanes 3, 2 entries written
         self.assertIn("dumped by james only", text)
         self.assertIn("captures not paired", text)
 
+    def test_trailer_exposes_wholly_missing_requested_lane(self):
+        missing = JAMES.replace("lanes 3, 3 entries written", "lanes 3,4, 3 entries written")
+        code, text = self.run_diff(*self.logs(james=missing, bob=missing))
+        self.assertEqual(code, 2, text)
+        self.assertIn("lane 4 (economy) step 300", text)
+        self.assertIn("checkpoint requested lane but no rows captured", text)
+
+    def test_trailer_without_any_rows_is_an_incomplete_capture(self):
+        empty = "lane dump at step 300: lanes 3, 0 entries written\n"
+        code, text = self.run_diff(*self.logs(james=empty, bob=empty))
+        self.assertEqual(code, 2, text)
+        self.assertIn("checkpoint requested lane but no rows captured", text)
+
     def test_no_logs_with_a_dump_is_inconclusive(self):
         code, text = self.run_diff(*self.logs(james="nothing here\n", bob="also nothing\n"))
         self.assertEqual(code, 2)

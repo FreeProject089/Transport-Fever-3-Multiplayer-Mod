@@ -91,7 +91,7 @@ function data()
 	local applying, followUps, followUpsOn = false, nil, false
 	-- Lanes that could not be read, and kinds the registry could not list,
 	-- logged once per state.
-	local told, toldRegistry, toldOwnership = false, false, false
+	local told, toldRegistry, toldOwnership, toldProgression = false, false, false, false
 	-- The headquarters lines last logged in this state, by company id: a
 	-- line is logged again only when it changed (tpf3mp/companies.lua).
 	local toldHeadquarters = {}
@@ -554,6 +554,10 @@ function data()
 				end
 				-- The companies' ranks (tpf3mp/progression.lua).
 				local prog = progression.ensure(saved.progression)
+				if not toldProgression and progression.multi(roster) then
+					toldProgression = true
+					progression.describe(prog, roster, function(line) l:log(line) end)
+				end
 				if #failed > 0 and not toldRegistry then
 					toldRegistry = true
 					l:log("the registry could not list " .. table.concat(failed, "; "))
