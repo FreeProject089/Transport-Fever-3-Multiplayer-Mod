@@ -9,6 +9,7 @@ use std::{
 };
 
 use ring::hmac;
+use serde::Serialize;
 use tokio::{sync::mpsc, task::JoinHandle};
 use tpf3mp_proto::{
     BoundedVec, Code, CreateRoom, FixedBytes, Invite, ListedRoom, MAX_ROOM_MEMBERS, PlayerId,
@@ -61,6 +62,72 @@ struct Registered {
     /// private room, whose invite the server keeps only as its tag. Kept in
     /// memory only: a room restored after a restart is private.
     invite: Option<Invite>,
+}
+
+/// Which rooms the admin endpoint shows (`/rooms`).
+pub(crate) enum RoomFilter {
+    All,
+    /// The room an invite opens. Never logged: an invite lets anyone in.
+    Invite(Invite),
+    /// The rooms a player (`p-…`) is in.
+    Player(String),
+    /// The rooms with a member whose name holds this, in lower case.
+    Name(String),
+}
+
+/// A room as the operator's admin endpoint shows it: never its invite.
+#[derive(Debug, Serialize)]
+pub(crate) struct AdminRoom {
+    pub(crate) room: String,
+    pub(crate) name: String,
+    pub(crate) rules: String,
+    pub(crate) phase: &'static str,
+    /// Whether the room list shows it.
+    pub(crate) public: bool,
+    pub(crate) password: bool,
+    pub(crate) competitive: bool,
+    pub(crate) players: u8,
+    pub(crate) connected: u8,
+    pub(crate) max_players: u8,
+    pub(crate) owner: String,
+    pub(crate) members: Vec<AdminMember>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct AdminMember {
+    pub(crate) player: String,
+    pub(crate) name: String,
+    pub(crate) connected: bool,
+}
+
+impl AdminRoom {
+    fn new(id: RoomId, summary: &crate::room::Summary) -> Self {
+        Self {
+            room: id.to_string(),
+            name: summary.name.as_str().to_owned(),
+            rules: summary.rules.as_str().to_owned(),
+            phase: match summary.phase {
+                RoomPhase::Lobby => "lobby",
+                RoomPhase::Running => "running",
+            },
+            public: summary.listing.is_some(),
+            password: summary.has_password,
+            competitive: summary.competitive,
+            players: summary.players,
+            connected: summary.connected,
+            max_players: summary.max_players,
+            owner: summary.owner.to_string(),
+            members: summary
+                .members
+                .iter()
+                .map(|member| AdminMember {
+                    player: member.player.to_string(),
+                    name: member.name.as_str().to_owned(),
+                    connected: member.connected,
+                })
+                .collect(),
+        }
+    }
 }
 
 pub(crate) struct DirectoryConfig {
@@ -307,6 +374,43 @@ impl Directory {
                 warn!("a room did not stop in time");
             }
         }
+    }
+
+    /// The rooms open now that `filter` keeps, for the operator's admin
+    /// endpoint, by room ID.
+    pub(crate) fn admin_view(&self, filter: &RoomFilter) -> Vec<AdminRoom> {
+        let tag = match filter {
+            RoomFilter::Invite(invite) => Some(self.invite_tag(invite)),
+            _ => None,
+        };
+        let rooms = self.rooms.lock().unwrap_or_else(PoisonError::into_inner);
+        let ids: Vec<RoomId> = match &tag {
+            Some(tag) => rooms.by_invite.get(tag).copied().into_iter().collect(),
+            None => rooms.by_id.keys().copied().collect(),
+        };
+        let mut shown: Vec<AdminRoom> =
+            ids.into_iter()
+                .filter_map(|id| {
+                    let registered = rooms.by_id.get(&id)?;
+                    let summary = registered
+                        .summary
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    let kept = match filter {
+                        RoomFilter::All | RoomFilter::Invite(_) => true,
+                        RoomFilter::Player(player) => summary
+                            .members
+                            .iter()
+                            .any(|member| member.player.to_string() == *player),
+                        RoomFilter::Name(name) => summary.members.iter().any(|member| {
+                            member.name.as_str().to_lowercase().contains(name.as_str())
+                        }),
+                    };
+                    kept.then(|| AdminRoom::new(id, &summary))
+                })
+                .collect();
+        shown.sort_by(|a, b| a.room.cmp(&b.room));
+        shown
     }
 
     /// Page `page` of the public rooms, [`ROOMS_PER_PAGE`] a page: those in
