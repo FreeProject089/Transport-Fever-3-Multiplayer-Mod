@@ -121,6 +121,14 @@ function Get-SteamRoots {
     }
 }
 
+# Whether a file or folder in a Steam library is there. On a network share
+# that cannot be reached, Test-Path throws ("The network path was not
+# found") instead of saying no.
+function Test-LibraryPath([string]$Path, [string]$Type) {
+    try { return [bool](Test-Path -LiteralPath $Path -PathType $Type) }
+    catch { return $false }
+}
+
 # The game's folder, from Steam's list of libraries and the game's manifest
 # in one of them: only to see whether the game is running.
 function Find-Game {
@@ -133,16 +141,17 @@ function Find-Game {
             }
         }
         foreach ($library in $libraries) {
-            # A library on a drive that is gone (an unplugged disk) cannot
-            # be running the game, and Join-Path throws on a missing drive.
-            if (-not (Test-Path -LiteralPath $library -PathType Container)) { continue }
+            # A library on a drive that is gone (an unplugged disk) or a
+            # network share that is offline cannot be running the game.
+            # Join-Path throws on a missing drive.
+            if (-not (Test-LibraryPath $library Container)) { continue }
             $manifest = Join-Path $library "steamapps\appmanifest_$SteamApp.acf"
-            if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) { continue }
+            if (-not (Test-LibraryPath $manifest Leaf)) { continue }
             foreach ($line in Get-Content -LiteralPath $manifest) {
                 # One plain folder name under steamapps\common, nothing more.
                 if ($line -match '^\s*"installdir"\s+"([^"\\/:*?<>|]+)"\s*$' -and $Matches[1] -notmatch '^\.+$') {
                     $dir = Join-Path $library ('steamapps\common\' + $Matches[1])
-                    if (Test-Path -LiteralPath $dir -PathType Container) { return $dir }
+                    if (Test-LibraryPath $dir Container) { return $dir }
                 }
             }
         }
