@@ -904,6 +904,18 @@ pub(crate) struct Summary {
     /// room out of every list. A room restored after a restart is private
     /// until created again: its log keeps no listing and no invite.
     pub(crate) listing: Option<RoomListing>,
+    /// Who is in the room, for the operator's admin endpoint (`/rooms`);
+    /// never in the room list.
+    pub(crate) members: Vec<SummaryMember>,
+}
+
+/// A member as the admin endpoint shows it: who, under which name, and
+/// whether connected now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SummaryMember {
+    pub(crate) player: PlayerId,
+    pub(crate) name: Text<32>,
+    pub(crate) connected: bool,
 }
 
 /// A room's [`Summary`], shared with the directory.
@@ -968,6 +980,7 @@ impl Room {
                 phase: RoomPhase::Lobby,
                 competitive: false,
                 listing: spec.listing,
+                members: Vec::new(),
             })),
         };
         room.members.push(Member::new(owner));
@@ -1243,6 +1256,7 @@ impl Room {
                 phase: RoomPhase::Running,
                 competitive: false,
                 listing: None,
+                members: Vec::new(),
             })),
         };
         room.refresh_summary();
@@ -1276,6 +1290,15 @@ impl Room {
             Phase::Lobby => RoomPhase::Lobby,
             Phase::Running(_) => RoomPhase::Running,
         };
+        summary.members = self
+            .members
+            .iter()
+            .map(|member| SummaryMember {
+                player: member.player,
+                name: member.name.clone(),
+                connected: member.link.is_some(),
+            })
+            .collect();
     }
 
     /// The owner of a public room updates what the list shows of it.
