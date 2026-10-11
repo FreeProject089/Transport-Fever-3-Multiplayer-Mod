@@ -174,6 +174,13 @@ Test 'refuses a record that names anything but the mod' {
     }
 }
 
+Test "installs into a mods folder given when Steam's folder is on a share that cannot be reached" {
+    $s = New-Setup 'offline steam'
+    $s.Steam = '\\tpf3mp-offline.invalid\Steam'
+    Assert-Code (Invoke-Installer $s @($s.Mods)) 0
+    Check ((Read-File "$($s.Mods)\tpf3mp_1\res\x.lua") -eq '-- x') 'the mod installed'
+}
+
 Test 'says when Steam has no mods folder for the game yet' {
     $s = New-Setup 'fresh'
     Remove-Item -Recurse "$($s.Steam)\userdata"

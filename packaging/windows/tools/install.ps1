@@ -113,7 +113,7 @@ function Get-SteamRoots {
     }
     $seen = @{}
     foreach ($candidate in $candidates) {
-        if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
+        if (-not (Test-LibraryPath $candidate Container)) { continue }
         $full = [IO.Path]::GetFullPath($candidate).TrimEnd('\')
         if ($seen.ContainsKey($full.ToLowerInvariant())) { continue }
         $seen[$full.ToLowerInvariant()] = $true
@@ -121,9 +121,9 @@ function Get-SteamRoots {
     }
 }
 
-# Whether a file or folder in a Steam library is there. On a network share
-# that cannot be reached, Test-Path throws ("The network path was not
-# found") instead of saying no.
+# Whether a file or folder of Steam or one of its libraries is there. On a
+# network share that cannot be reached, Test-Path throws ("The network path
+# was not found") instead of saying no.
 function Test-LibraryPath([string]$Path, [string]$Type) {
     try { return [bool](Test-Path -LiteralPath $Path -PathType $Type) }
     catch { return $false }
