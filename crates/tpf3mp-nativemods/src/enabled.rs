@@ -45,12 +45,13 @@ pub const FORMAT: u32 = 1;
 /// Largest file the hook reads.
 pub const MAX_BYTES: u64 = 256 * 1024;
 
-/// Whether rooms compare native mods yet. They do not: the protocol does
-/// not carry them ([`crate::terms`] says how it would), so a package that
-/// changes the simulation would let one game of a room run a different
-/// world. Until it does, such a package refuses multiplayer (PLAN.md,
-/// Part 3: a channel not checked yet is refused, never used unchecked).
-pub const ROOM_TERMS_CARRIED: bool = false;
+/// Whether rooms compare native mods. They do since protocol 20: the
+/// launcher declares the simulation-changing packages it started the game
+/// with in the content manifest ([`crate::terms`]), and the room compares
+/// them as it compares mods, so no two games of a room run different
+/// worlds. Before, such a package refused multiplayer (PLAN.md, Part 3: a
+/// channel not checked yet is refused, never used unchecked).
+pub const ROOM_TERMS_CARRIED: bool = true;
 
 /// The packages the launcher enabled for one build.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,11 +261,21 @@ mod tests {
     }
 
     #[test]
-    fn simulation_packages_refuse_until_rooms_compare_them() {
+    fn simulation_packages_run_only_where_rooms_compare_them() {
         let list = enabled(vec![package("bigmap", true, &["bigmap.octree"])]);
-        let plan = plan(&list, BUILD, BIG_MAPS, every_target, ROOM_TERMS_CARRIED);
-        assert!(plan.active.is_empty());
-        assert!(plan.refusal.unwrap().contains("do not compare native mods"));
+        let refused = plan(&list, BUILD, BIG_MAPS, every_target, false);
+        assert!(refused.active.is_empty());
+        assert!(
+            refused
+                .refusal
+                .unwrap()
+                .contains("do not compare native mods")
+        );
+        // Rooms compare them (protocol 20): they run.
+        const { assert!(ROOM_TERMS_CARRIED) };
+        let runs = plan(&list, BUILD, BIG_MAPS, every_target, ROOM_TERMS_CARRIED);
+        assert_eq!(runs.refusal, None);
+        assert!(runs.feature("bigmap.octree").is_some());
     }
 
     #[test]

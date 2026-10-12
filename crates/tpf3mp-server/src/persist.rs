@@ -29,8 +29,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tpf3mp_proto::{
-    ContentFingerprint, ContentManifest, Platform, PlayerId, RoomId, RoomSettings, RulesName,
-    Speed, TURN_MAX_FRAME, Text,
+    ContentFingerprint, ContentManifest, ModRef, NATIVE_PREFIX, Platform, PlayerId, RoomId,
+    RoomSettings, RulesName, Speed, TURN_MAX_FRAME, Text, Unlisted,
 };
 
 /// Version of the log's layout. Version 2 added histories: the start
@@ -68,7 +68,7 @@ pub(crate) struct StartRecord {
     pub(crate) rules: RulesName,
     /// What the game runs, by name, to tell players who join with other
     /// content how theirs differs. `None` if the owner declared none.
-    pub(crate) manifest: Option<ContentManifest>,
+    pub(crate) manifest: Option<StoredManifest>,
     pub(crate) owner: PlayerId,
     pub(crate) max_players: u8,
     pub(crate) settings: RoomSettings,
@@ -414,6 +414,50 @@ fn private_options() -> OpenOptions {
     options
 }
 
+/// A content manifest as the log keeps it, in the layout logs of this
+/// version always had: the native mods (protocol 20) follow the mods,
+/// named as they are (`native:<id>`), so that a log written before
+/// manifests had them reads unchanged and the same manifest comes back.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct StoredManifest {
+    game: Text<64>,
+    mods: Vec<ModRef>,
+    unlisted: Option<Unlisted>,
+}
+
+impl From<&ContentManifest> for StoredManifest {
+    fn from(manifest: &ContentManifest) -> Self {
+        Self {
+            game: manifest.game.clone(),
+            mods: manifest
+                .mods
+                .iter()
+                .chain(&manifest.native)
+                .cloned()
+                .collect(),
+            unlisted: manifest.unlisted,
+        }
+    }
+}
+
+impl StoredManifest {
+    /// The manifest kept. A mod named as a native one is taken as one: a
+    /// game that declared such a mod among its mods gets another
+    /// fingerprint back, and the room then tells nothing from it.
+    pub(crate) fn manifest(self) -> ContentManifest {
+        let (native, mods) = self
+            .mods
+            .into_iter()
+            .partition(|listed| listed.id.as_str().starts_with(NATIVE_PREFIX));
+        ContentManifest {
+            game: self.game,
+            mods,
+            unlisted: self.unlisted,
+            native,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tpf3mp_proto::FixedBytes;
@@ -424,6 +468,33 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tpf3mp-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// A manifest comes back from the log as it was, native mods and all,
+    /// and a log written before manifests had native mods reads unchanged.
+    #[test]
+    fn a_manifest_comes_back_from_the_log_whole() {
+        let listed = |id: &str| ModRef {
+            id: Text::new(id).unwrap(),
+            version: Text::new("1.0.0+0123456789").unwrap(),
+        };
+        let plain = ContentManifest::new(
+            Text::new("40420").unwrap(),
+            vec![listed("signals"), listed("tpf3mp_1")],
+        );
+        let native = plain.clone().with_native(vec![listed("native:bigmap")]);
+        for manifest in [plain.clone(), native] {
+            let bytes = postcard::to_allocvec(&StoredManifest::from(&manifest)).unwrap();
+            let back: StoredManifest = postcard::from_bytes(&bytes).unwrap();
+            let back = back.manifest();
+            assert_eq!(back, manifest);
+            assert_eq!(back.fingerprint(), manifest.fingerprint());
+        }
+        // The layout of a manifest before native mods.
+        let old = (&plain.game, &plain.mods, &plain.unlisted);
+        let bytes = postcard::to_allocvec(&old).unwrap();
+        let read: StoredManifest = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(read.manifest(), plain);
     }
 
     fn start() -> StartRecord {

@@ -156,7 +156,10 @@ impl Declared {
     /// `ContentDiff` names. What players were told of each (name, source,
     /// Mod Hub number) and the settings are not kept: the game's world
     /// carries its own settings. A manifest that is no room's list (a
-    /// summarised tail, too many mods) tells none, as before.
+    /// summarised tail, too many mods) tells none, as before. Its native
+    /// mods are told by id and version, without their settings, which a
+    /// log does not keep: a member whose launcher must install one then runs
+    /// it with its defaults, and matches only if those are the room's.
     pub(crate) fn restored(manifest: ContentManifest) -> Self {
         let info = manifest
             .mods
@@ -167,11 +170,29 @@ impl Declared {
                 modio: None,
             })
             .collect();
+        let native = manifest
+            .native
+            .iter()
+            .map(|term| {
+                let id = term
+                    .id
+                    .as_str()
+                    .strip_prefix(tpf3mp_proto::NATIVE_PREFIX)
+                    .unwrap_or_default();
+                tpf3mp_proto::NativeMod {
+                    id: Text::lossy(id),
+                    version: term.version.clone(),
+                    name: Text::lossy(id),
+                    settings: Vec::new(),
+                }
+            })
+            .collect();
         let declaration = RoomDeclaration {
             manifest,
             room: tpf3mp_proto::RoomConfig {
                 info,
                 params: Vec::new(),
+                native,
             },
         };
         match declaration.validate() {
@@ -1135,7 +1156,7 @@ impl Room {
         let game_content = start
             .manifest
             .clone()
-            .map(Declared::restored)
+            .map(|stored| Declared::restored(stored.manifest()))
             .filter(|declared| Some(declared.fingerprint) == content)
             .map(Arc::new);
         let members: Vec<Member> = game
@@ -2172,7 +2193,7 @@ impl Room {
             manifest: self
                 .game_content
                 .as_ref()
-                .map(|declared| declared.manifest.clone()),
+                .map(|declared| persist::StoredManifest::from(&declared.manifest)),
             owner: self.owner,
             max_players: self.max_players,
             settings: self.settings,
