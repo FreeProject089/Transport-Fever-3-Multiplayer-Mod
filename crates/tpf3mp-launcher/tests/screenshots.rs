@@ -454,13 +454,13 @@ fn screens() {
         0.0,
     );
     render_clicking(
-        "9c-settings-native-mods",
+        "9c-mods",
         State {
             native: native(),
             ..connected()
         },
-        380.0,
-        Some("Settings"),
+        0.0,
+        Some("Mods"),
         Place::Launcher,
     );
     render(

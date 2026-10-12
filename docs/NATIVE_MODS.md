@@ -327,10 +327,10 @@ game and Mod Hub account (D28).
 
 ## In the launcher
 
-Settings has a **Native mods** group, shown only in a launcher built with
-the native-mods key. It lists each package of the last accepted index for
-this game's build and each installed one, with its description, a link to
-its own project page (`homepage`), whether it changes the simulation, and
+The **Mods** button, beside Settings at the top of the window, opens the
+**Mods** dialog. Its **Native mods** group lists each package of the last
+accepted index for this game's build and each installed one, with its
+description, a link to its own project page (`homepage`), whether it changes the simulation, and
 **Install** or **Update**, **Switch on**/**Switch off**, **Roll back** and
 **Uninstall**. It has no controls for a mod's settings: a mod runs with
 its defaults, or with the settings of the room it was matched to.

@@ -157,6 +157,8 @@ pub struct LauncherApp<B> {
     /// The look is set on the first frame.
     styled: bool,
     settings: bool,
+    /// The Mods dialog: the native mods the server offers.
+    mods: bool,
     /// The server setting's field, as the player types it, and the server
     /// it was last filled from.
     server_setting: String,
@@ -196,6 +198,7 @@ impl<B: Backend> LauncherApp<B> {
             looked_for_update: false,
             styled: false,
             settings: false,
+            mods: false,
             server_setting: String::new(),
             server_setting_for: None,
             toast: None,
@@ -293,7 +296,7 @@ impl<B: Backend> LauncherApp<B> {
         self.sidebar(ui, &geometry, &state, &view, &assets);
         self.files(ui, &geometry, &state, &assets);
         self.footer(ui, &geometry, &state);
-        if self.settings || self.confirm.is_some() {
+        if self.settings || self.mods || self.confirm.is_some() {
             // Behind a dialog the page is blurred, as the page's
             // `::backdrop` does: the city blurred, over it all.
             let painter =
@@ -301,6 +304,7 @@ impl<B: Backend> LauncherApp<B> {
             theme::blur_behind(&painter, geometry.window, &assets);
         }
         self.settings_dialog(&ctx, &state, &view);
+        self.mods_dialog(&ctx, &state);
         self.confirm_dialog(&ctx);
         self.draw_toast(&ctx, geometry.window);
         ctx.request_repaint_after(REFRESH);
@@ -342,6 +346,9 @@ impl<B: Backend> LauncherApp<B> {
                 };
                 if theme::quiet_button(ui, true, Some("settings"), "Settings", settings).clicked() {
                     self.settings = true;
+                }
+                if theme::quiet_button(ui, true, Some("download"), "Mods", settings).clicked() {
+                    self.mods = true;
                 }
                 if let Some(badge) = &view.updates.badge
                     && update_badge(ui, badge).clicked()
@@ -1203,6 +1210,50 @@ impl<B: Backend> LauncherApp<B> {
         }
     }
 
+    /// The Mods dialog, from the button beside Settings: the native mods
+    /// the server offers, those installed, and the proposed ones.
+    fn mods_dialog(&mut self, ctx: &egui::Context, state: &State) {
+        if !self.mods {
+            return;
+        }
+        let height = ctx.content_rect().height() - 48.0;
+        let modal = Modal::new(Id::new("mods"))
+            .frame(dialog_frame())
+            .backdrop_color(theme::rgba(4, 16, 20, 0.66))
+            .show(ctx, |ui| {
+                ui.set_width(524.0);
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let mut close = false;
+                ui.horizontal(|ui| {
+                    ui.label(
+                        theme::text("Mods", theme::semibold(26.0), theme::TEXT)
+                            .extra_letter_spacing(-0.6),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        close |= theme::icon_button(ui, "close", "Close mods").clicked();
+                    });
+                });
+                ui.add_space(24.0);
+                ScrollArea::vertical()
+                    .id_salt("mods-body")
+                    .max_height(height - 170.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        self.native_settings(ui, state);
+                    });
+                ui.add_space(16.0);
+                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                    close |= theme::quiet_button(ui, true, None, "Done", Quiet::new().width(100.0))
+                        .clicked();
+                });
+                close
+            });
+        if modal.inner || modal.should_close() {
+            self.mods = false;
+        }
+    }
+
     fn settings_body(&mut self, ui: &mut Ui, state: &State, view: &View) {
         if cfg!(windows) && crate::update::Install::of_running().is_ok() {
             group(ui, |ui| {
@@ -1290,10 +1341,6 @@ impl<B: Backend> LauncherApp<B> {
                 }
             });
         });
-        if state.native.available {
-            ui.add_space(14.0);
-            self.native_settings(ui, state);
-        }
         if let Some(on) = state.diagnostics {
             ui.add_space(14.0);
             group(ui, |ui| {
@@ -1859,7 +1906,7 @@ impl<B: Backend> LauncherApp<B> {
         }
     }
 
-    /// Settings' native mods: the signed index's mods for this game, each
+    /// The Mods dialog's native mods: the index's mods for this game, each
     /// with its own project page, and those installed.
     fn native_settings(&mut self, ui: &mut Ui, state: &State) {
         let native = &state.native;
@@ -1902,7 +1949,9 @@ impl<B: Backend> LauncherApp<B> {
             }
             if native.packages.is_empty() {
                 ui.label(theme::text(
-                    if native.serial.is_some() {
+                    if !native.available {
+                        "Your server offers no native mods yet."
+                    } else if native.serial.is_some() {
                         "The index lists no native mod for this game yet."
                     } else {
                         "Check the index to see the native mods for this game."

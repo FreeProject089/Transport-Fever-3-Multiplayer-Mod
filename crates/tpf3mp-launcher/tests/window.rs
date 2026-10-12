@@ -520,7 +520,7 @@ fn diagnostics_can_be_switched_off_in_settings() {
 }
 
 #[test]
-fn native_mods_are_managed_in_settings() {
+fn native_mods_are_managed_in_the_mods_dialog() {
     let row = tpf3mp_agent::native_mods::NativeRow {
         id: "bigmap".into(),
         name: "Big Maps".into(),
@@ -545,7 +545,7 @@ fn native_mods_are_managed_in_settings() {
         },
         ..State::default()
     });
-    window.get_by_label("Settings").click();
+    window.get_by_label("Mods").click();
     window.run_steps(4);
     window.get_by_label("Native mods");
     window.get_by_label("Project page");
@@ -570,11 +570,13 @@ fn native_mods_are_managed_in_settings() {
         ]
     );
 
-    // A launcher built without the native-mods key offers none.
+    // Without an index from the server or the project, the dialog says
+    // the server offers none.
     let mut window = self::window(State::default());
-    window.get_by_label("Settings").click();
+    window.get_by_label("Mods").click();
     window.run_steps(4);
-    assert!(window.query_by_label("Native mods").is_none());
+    window.get_by_label("Your server offers no native mods yet.");
+    assert!(window.query_by_label("Update").is_none());
 }
 
 #[test]
