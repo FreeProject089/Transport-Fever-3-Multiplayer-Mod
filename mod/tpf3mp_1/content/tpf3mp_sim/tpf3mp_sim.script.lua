@@ -576,7 +576,7 @@ function data()
 					-- The seal of the password sent with it (a company's),
 					-- which the room made; never the password.
 					local seal = work.seals and work.seals[i] or nil
-					local ok, why, made = apply.run(action, {
+					local ok, why, made, uncertain = apply.run(action, {
 						registry = reg,
 						roster = roster,
 						player = player,
@@ -585,6 +585,15 @@ function data()
 						progression = prog,
 						seal = type(seal) == "table" and seal or nil,
 					})
+					if uncertain then
+						-- The native command may already have changed this world.
+						-- Do not persist a registry guessed from its unreadable result
+						-- or release another room update into that state.
+						l:log("action " .. i .. " of this step has an uncertain result: " .. tostring(why))
+						l:replaying(false)
+						applying = false
+						return false, why
+					end
 					local name = next(action)
 					-- What it changed keeps its id on whatever entity it is
 					-- now, bound before the sync would retire it.
@@ -915,9 +924,10 @@ function data()
 					if seed then math.randomseed(seed) end
 					-- Only action processing: no monthly charges, progression
 					-- sampling, simulation updates or checkpoint reports.
-					script.postUpdate(_params, state, 0, {
+					local finished, failed = script.postUpdate(_params, state, 0, {
 						actions = actions, origins = origins, seals = seals,
 					})
+					if finished == false then error(failed, 0) end
 				end)
 				l:replaying(false)
 				applying = false

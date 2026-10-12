@@ -1131,11 +1131,15 @@ pub mod freed_ids {
                     }
                 }
                 let retained = relevant.iter().map(|w| w.operations.len()).sum::<usize>();
+                // Expiry before the selected window is historical context,
+                // not a missing record in these 64 checkpoints. A delayed
+                // notice with fewer than 64 retained windows is incomplete.
                 lines.insert(0, format!(
                     "free operations: diverged={diverged} retained_checkpoints={} expired_checkpoints={} oldest={} newest={} recorded={printed}/{retained} omitted={omitted} unfit={unfit} unread={unread} byte_limit={MAX_FLUSH_BYTES} complete={}",
                     relevant.len(), self.expired, first.map_or_else(|| "-".into(), |n| n.to_string()),
                     last.map_or_else(|| "-".into(), |n| n.to_string()),
-                    !relevant.is_empty() && !cut && omitted == 0 && unfit == 0 && unread == 0 && self.expired == 0
+                    !relevant.is_empty() && !cut && omitted == 0 && unfit == 0 && unread == 0
+                        && (self.expired == 0 || relevant.len() == INCIDENT_CHECKPOINTS)
                 ));
                 lines
             }
@@ -1702,6 +1706,40 @@ pub mod freed_ids {
             }
 
             #[test]
+            fn old_expired_checkpoints_do_not_mark_a_complete_incident_window_incomplete() {
+                let mut trace = Trace::new();
+                for checkpoint in 1..=(KEPT_CHECKPOINTS + 1) {
+                    trace.count(
+                        Seen {
+                            table: 100,
+                            queued: checkpoint as u64,
+                            freed: 1,
+                        },
+                        &[checkpoint as i32],
+                        Place::Update,
+                        Some(checkpoint as u64),
+                        Some(0x123),
+                    );
+                    trace.checkpoint(checkpoint as u64, queue());
+                }
+                let lines = trace.incident((KEPT_CHECKPOINTS + 1) as u64);
+                assert!(lines[0].contains("expired_checkpoints=1"), "{}", lines[0]);
+                assert!(lines[0].contains("oldest=66 newest=129"), "{}", lines[0]);
+                assert!(lines[0].contains("complete=true"), "{}", lines[0]);
+            }
+
+            #[test]
+            fn delayed_incident_without_its_full_retained_window_is_incomplete() {
+                let mut trace = Trace::new();
+                for checkpoint in 1..=(KEPT_CHECKPOINTS + 1) {
+                    trace.checkpoint(checkpoint as u64, queue());
+                }
+                let lines = trace.incident(2);
+                assert!(lines[0].contains("retained_checkpoints=1"), "{}", lines[0]);
+                assert!(lines[0].contains("complete=false"), "{}", lines[0]);
+            }
+
+            #[test]
             fn caps_and_expiry_are_visible_in_the_incident_header() {
                 let mut trace = Trace::new();
                 for i in 0..=MAX_OPERATIONS {
@@ -1732,7 +1770,7 @@ pub mod freed_ids {
                 let lines = trace.incident(6_450);
                 assert!(lines[0].contains("expired_checkpoints=1"), "{}", lines[0]);
                 assert!(lines[0].contains("oldest=3300"), "{}", lines[0]);
-                assert!(lines[0].contains("complete=false"), "{}", lines[0]);
+                assert!(lines[0].contains("complete=true"), "{}", lines[0]);
             }
 
             #[test]

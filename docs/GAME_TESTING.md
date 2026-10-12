@@ -280,6 +280,35 @@ step that differs (exit code 1). Equal probes after a test, plus every
 action applied everywhere, is the evidence that the change works in
 multiplayer.
 
+### Next desync trial
+
+Use a fresh local two-player room with the candidate hook and mod, starting
+through the ordinary launcher flow. Keep both `hook.log` files from the
+beginning of the room; compare the same checkpoint steps, not just the final
+world. Each player builds roads and tracks, buys and assigns a vehicle, then
+replaces a vehicle and uses it in another ordered action. Keep vehicles and
+traffic active at both 1x and 4x rather than waiting in an empty world. A
+first 30–45 minute session can expose a failure but is only a bounded first
+stage. For the longer acceptance run, cover more than 42,600 room steps
+after the shared load (twice the earlier 21,300-step lane symptom), at least
+60 in-game days, and a rejoin from the room's save followed by another
+vehicle action. Read the actual step numbers in both logs; elapsed wall time
+and game days alone do not establish this coverage. The pass condition is
+that every ordered action applies in both games, every overlapping checkpoint
+digest agrees, and no canonical vehicle or line id changes merely because
+its entity was replaced or briefly omitted from a game list. This is the
+ordinary-start evidence for PLAN.md's Test A; the offline Lua tests establish
+the injected read-error behavior only. Do not inject component-read failures
+in the real game to test that failure path.
+
+If a checkpoint differs, preserve both complete logs and run
+`tools/lane_diff.py` on the resulting lane dumps. Compare the `free ids: step`
+lines at the earliest differing checkpoint and the `free operations:` burst
+in both logs. A `complete=false` burst, missing peer interval or omitted log
+lines leaves the native operation order unproved; rerun with capture intact
+before changing an engine sort. Do not infer the first cause from a later
+vehicle position difference alone.
+
 ## Investigating without the room
 
 To see what a change would send without letting the games apply it,

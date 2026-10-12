@@ -6062,6 +6062,38 @@ fn the_registry_names_vehicles_in_the_order_they_came_and_never_again() {
 }
 
 #[test]
+fn an_unreadable_component_does_not_retire_a_rooms_canonical_id() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    let named: String = lua
+        .load(
+            "local registry = ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua')
+             local reg = registry.sync(nil)
+             local old = api.engine.getComponent
+             LINES = {} -- the line system temporarily omits an existing line
+             api.engine.getComponent = function(e, kind)
+                 if e == 301 and kind == api.type.ComponentType.LINE then error('component unreadable') end
+                 return old(e, kind)
+             end
+             reg = registry.sync(reg)
+             local during = tostring(registry.id(reg, 'lines', 301))
+             api.engine.getComponent = old
+             LINES = { 301 }
+             reg = registry.sync(reg)
+             local recovered = tostring(registry.id(reg, 'lines', 301))
+             LINES = {}
+             reg = registry.sync(reg)
+             return table.concat({ during, recovered, tostring(registry.id(reg, 'lines', 301)) }, ',')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        named, "0,0,nil",
+        "an unreadable entity keeps its id until absence is established"
+    );
+}
+
+#[test]
 fn the_game_script_buys_the_vehicle_and_tells_the_buyer_which() {
     let (lua, _script) = engine();
     lua.load(FAKE_FLEET).exec().unwrap();
@@ -9362,6 +9394,53 @@ fn a_vehicle_the_game_makes_anew_keeps_its_id() {
     assert_eq!(
         named, "450 0 nil 1 2",
         "vehicle-0 names the new entity; the old is gone, and no new id is made"
+    );
+}
+
+#[test]
+fn an_unreadable_replacement_result_holds_replay_without_reassigning_vehicle_id() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(FAKE_TRAINS).exec().unwrap();
+    lua.load(format!(
+        "HOOK.room = true UPDATE({{}}, STATE, 0.2) REPLACE_AS = 450 \
+         local original = api.engine.getComponent local unread = true \
+         api.engine.getComponent = function(e, kind) \
+             if unread and e == 450 and kind == api.type.ComponentType.TRANSPORT_VEHICLE then \
+                 unread = false error('replacement component unreadable') end \
+             return original(e, kind) end \
+         HOOK.replayToken = 'replace' HOOK.replayBatch = {{ {}, \
+             {{ SellVehicle = {{ vehicles = {{ 0 }} }} }} }} \
+         SCRIPT.handleEvent({{}}, STATE, '', 'tpf3mp', 'replay', 'replace')",
+        replace_train(0, LOCO, 0, COACH)
+    ))
+    .exec()
+    .unwrap();
+    let (held, reason, old_id, new_id, sent): (bool, String, Option<u32>, Option<u32>, usize) = lua
+        .load(
+            "local reg = STATE.value.registry \
+             local registry = ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua') \
+             return not HOOK.replayDone.ok, tostring(HOOK.replayDone.why), \
+                 registry.id(reg, 'vehicles', 401), registry.id(reg, 'vehicles', 450), #SENT",
+        )
+        .eval()
+        .unwrap();
+    assert!(
+        held,
+        "an uncertain post-command result must stop room replay"
+    );
+    assert!(
+        reason.contains("replacement component unreadable"),
+        "{reason}"
+    );
+    assert_eq!(
+        (old_id, new_id),
+        (Some(0), None),
+        "the saved id must not be silently rebound"
+    );
+    assert_eq!(
+        sent, 1,
+        "no later ordered command runs after the uncertain result"
     );
 }
 

@@ -1970,7 +1970,13 @@ end
 local function isVehicle(e)
 	if type(e) ~= "number" or e < 0 then return false end
 	local ok, c = pcall(api.engine.getComponent, e, api.type.ComponentType.TRANSPORT_VEHICLE)
-	return ok and c ~= nil
+	if not ok then
+		-- The replacement command already ran. Treat an unreadable result
+		-- as uncertain, so replay holds before the registry could assign a
+		-- new canonical id to the vehicle.
+		error({ replayFatal = "replacement vehicle " .. tostring(e) .. " could not be read: " .. tostring(c) }, 0)
+	end
+	return c ~= nil
 end
 
 -- A vehicle's consist replaced, as the store's HandleVehicleChanges sends it
@@ -2471,7 +2477,9 @@ end
 -- entity), which the action is booked to, and `progression`, the companies'
 -- ranks (tpf3mp/progression.lua). Returns true, nil
 -- and the entity it made or changed (for the kinds in CREATES and KEEPS,
--- where the game said), or false and why not; never raises.
+-- where the game said), or false and why not; never raises. A fourth true
+-- marks a post-command read failure: the caller must stop ordered replay
+-- before persisting any inferred registry mapping.
 function apply.run(action, ctx)
 	if type(action) ~= "table" then return false, "an action is a table" end
 	local allowed, why = acceptance.check(action)
@@ -2487,6 +2495,9 @@ function apply.run(action, ctx)
 	acting = ctx
 	local ok, applied, detail = pcall(handler, body, ctx)
 	acting = nil
+	if not ok and type(applied) == "table" and applied.replayFatal then
+		return false, applied.replayFatal, nil, true
+	end
 	if not ok then return false, tostring(applied) end
 	if applied == true then return true, nil, detail end
 	return false, detail

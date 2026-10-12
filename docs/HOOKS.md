@@ -1629,7 +1629,13 @@ reference of its own to either. Once linked, the GUI wraps every
   first update, and retires the ids of those gone; an id never comes back.
   What an action made, as the game answered its command, is bound at
   once, whatever the game's lists say, and an id is retired only when its
-  entity no longer exists, never because a list left it out.
+  entity no longer exists, never because a list left it out. If checking an
+  omitted entity's component raises an error, its binding stays until the
+  game can establish whether it still exists; this also keeps one replica's
+  transient read failure from changing later action references.
+  A vehicle replacement whose returned entity cannot be read holds ordered
+  replay before another room update runs; it cannot silently give the
+  replacement a new canonical id.
   It keeps the registry in its state, which the game saves with the world,
   so a player who joins or reloads from the room's save has it as the
   others do. The GUI reads it from the script's state
@@ -5347,7 +5353,9 @@ the room's game's step. The replicated engine is left out.
   divergent step. The header gives the oldest and newest retained
   checkpoints, expired checkpoints, recorded/retained operations, omitted
   operations, unfit counts and unreadable native observations.
-  `complete=true` means none of those gaps occurred. The launcher's source
+  `complete=true` means none of those gaps occurred within the selected
+  incident window. Older expired checkpoints are reported separately and do
+  not make an intact recent window incomplete. The launcher's source
   and run budgets can still skip old log
   lines, which its own diagnostics report.
 
