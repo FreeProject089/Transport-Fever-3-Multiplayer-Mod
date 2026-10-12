@@ -77,6 +77,9 @@ pub(crate) struct View {
     /// What the launcher is doing with native mods now, such as installing
     /// the room's.
     pub(crate) native_busy: Option<String>,
+    /// Whether the player asked to see the mods proposed for the server's
+    /// registry.
+    pub(crate) native_proposed: bool,
 }
 
 /// Something the player asks for.
@@ -219,6 +222,15 @@ pub enum Action {
     },
     /// Puts a native mod's settings back to its defaults.
     NativeReset {
+        id: String,
+    },
+    /// Shows or hides the mods proposed for the server's registry: open
+    /// pull requests nobody has reviewed yet.
+    NativeShowProposed {
+        on: bool,
+    },
+    /// Installs a mod only proposed for the server's registry.
+    NativeInstallProposed {
         id: String,
     },
     /// Gets the room's native mods with the room's settings, and starts the

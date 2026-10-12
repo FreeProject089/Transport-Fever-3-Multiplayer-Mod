@@ -87,6 +87,74 @@ the index in a GitHub environment whose required reviewer approves each
 signing, as `sign.yml` does for releases. No key is in the repository; the
 tests make a fresh test key each time.
 
+## A server's own index
+
+*Built on a proposed amendment to D29 ([DECISIONS.md](DECISIONS.md)), not
+decided: until the owner approves it, this belongs on the branch that
+proposes it.* A server can offer native mods without the project's key:
+its operator names a **registry** (`--native-mods-registry`,
+[OPERATIONS.md](OPERATIONS.md), "Native mods"), and the server makes an
+index of it and serves it to its players (protocol 21,
+[PROTOCOL.md](PROTOCOL.md)). The launcher trusts it as it trusts the
+server's rooms (D4).
+
+The registry is a git repository, as CKAN's metadata repository is for
+Kerbal mods, holding one file, `mods.txt`: one address of a mod's own
+repository per line, `#` for comments.
+
+```text
+# Native mods this server offers
+https://github.com/<author>/tpf3mp-bigmap
+https://gitlab.com/<author>/trees
+```
+
+Each mod's repository holds `tpf3mp-native.json` at its top, read from its
+default branch (GitHub's and GitLab's raw files; any other host by naming
+the file's own address in the list). It holds the mod's packages in this
+page's format; their names and descriptions (at most 500 bytes) are the
+preview players see, and the repository is each package's `homepage`
+unless the file names another:
+
+```json
+{
+  "format": 1,
+  "packages": [
+    {"id": "bigmap", "version": "0.3.0", "name": "Big Maps",
+     "description": "Maps up to 128 km a side.",
+     "simulation": true, "builds": ["<SHA-256 of the game's executable>"],
+     "features": ["bigmap.octree"], "settings": {"octree_depth": 10},
+     "files": [{"path": "mod/tpf3mp_bigmap_1/mod.lua",
+                "url": "https://github.com/<author>/tpf3mp-bigmap/releases/download/v0.3.0/mod.lua",
+                "size": 1234, "sha256": "<lowercase hex>"}]}
+  ]
+}
+```
+
+The server reads the list and every mod's file again every hour by
+default. Each mod stands on its own: one whose file cannot be read, holds a
+malformed package or claims an id an earlier mod in the list has is left
+out, with the reason in the server's log; the others are served. Its index
+is numbered by the time it was made, always past the one before, and the
+launcher refuses one older than it kept from that server.
+
+**Proposed mods.** A mod joins the registry through a pull request that
+adds its repository to `mods.txt`. For a registry on GitHub the server also
+reads the open pull requests and serves the mods they would add apart, as
+*proposals*, each with its pull request (`registry::Proposals`). In the
+launcher's Native mods group **Show proposed mods** lists them, marked
+"Proposed in pull request #N: not reviewed" with a link to it; a player
+installs one only by choosing it. A room never gets a proposed mod by
+itself: its members install it the same way, by choosing it.
+
+**What the launcher does with it.** On connecting, and on **Check the
+index**, it reads the server's index (and with proposals shown, the
+proposals), keeps them per server (`native-mods/servers/<…>/`), and
+installs from the server's index first, then from the project's signed
+index when it was built with the key. It gets a room's native mods by
+itself only from a server the release lists (or with the project's key);
+from a server the player set in Settings it does so when the player presses
+**Get the room's native mods**.
+
 ## Installing
 
 The launcher keeps native mods in its own data folder, never the game's:
@@ -297,7 +365,8 @@ temporary test keys.
 
 Still open:
 
-- the native-mods key, its signing workflow and the first index;
+- the native-mods key, its signing workflow and the first index (or, with
+  the proposed amendment, a server's registry: built);
 - copying a package's Lua mod folder where the game loads mods, the way
   TPF3-MP's own mod is installed ([MODS.md](MODS.md), "TPF3-MP's own mod");
 - Big Maps as the first package, with its features built into the hook;

@@ -1877,13 +1877,21 @@ impl<B: Backend> LauncherApp<B> {
             });
             ui.add_space(8.0);
             ui.label(theme::text(
-                "Mods that change the game itself, such as Big Maps. They come only from \
-                 TPF3-MP's signed index; each links to its own project. Joining a room installs \
-                 the room's for you and starts the game again with them. Mods from Mod Hub stay \
-                 in the game's own Mods page.",
+                "Mods that change the game itself, such as Big Maps, from the list of mods your \
+                 server offers; each links to its own project. Joining a room installs the \
+                 room's for you and starts the game again with them. Mods from Mod Hub stay in \
+                 the game's own Mods page.",
                 theme::body(12.0),
                 theme::MUTED,
             ));
+            if let Some(server) = &native.server {
+                ui.add_space(6.0);
+                ui.label(theme::text(
+                    format!("Offered by {server}."),
+                    theme::body(12.0),
+                    theme::MUTED,
+                ));
+            }
             ui.add_space(12.0);
             if let Some(busy) = &state.native_busy {
                 ui.label(theme::text(busy, theme::body(12.0), theme::TEXT));
@@ -1909,10 +1917,33 @@ impl<B: Backend> LauncherApp<B> {
                 self.native_row(ui, row, idle);
                 ui.add_space(12.0);
             }
-            if theme::quiet_button(ui, idle, Some("refresh"), "Check the index", Quiet::new())
-                .clicked()
-            {
-                self.backend.act(Action::NativeRefresh);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if theme::quiet_button(ui, idle, Some("refresh"), "Check the index", Quiet::new())
+                    .clicked()
+                {
+                    self.backend.act(Action::NativeRefresh);
+                }
+                if native.server.is_some() {
+                    let words = if native.proposed_shown {
+                        "Hide proposed mods"
+                    } else {
+                        "Show proposed mods"
+                    };
+                    if theme::quiet_button(ui, idle, None, words, Quiet::new()).clicked() {
+                        self.backend.act(Action::NativeShowProposed {
+                            on: !native.proposed_shown,
+                        });
+                    }
+                }
+            });
+            if native.proposed_shown {
+                ui.add_space(6.0);
+                ui.label(theme::text(
+                    "Proposed mods are open pull requests to the server's list of mods: nobody                      has reviewed them yet. Install one only if you trust its authors.",
+                    theme::body(11.0),
+                    theme::DIFFERS_TEXT,
+                ));
             }
         });
     }
@@ -1938,6 +1969,20 @@ impl<B: Backend> LauncherApp<B> {
                 theme::body(12.0),
                 theme::MUTED,
             ));
+        }
+        if let Some(proposal) = &row.proposed {
+            ui.add_space(2.0);
+            ui.hyperlink_to(
+                theme::text(
+                    format!(
+                        "Proposed in pull request #{}: not reviewed",
+                        proposal.number
+                    ),
+                    theme::body(12.0),
+                    theme::DIFFERS_TEXT,
+                ),
+                &proposal.url,
+            );
         }
         if row.simulation {
             ui.add_space(2.0);
@@ -1977,7 +2022,11 @@ impl<B: Backend> LauncherApp<B> {
                     "Install"
                 };
                 if theme::quiet_button(ui, idle, Some("download"), words, Quiet::new()).clicked() {
-                    self.backend.act(Action::NativeInstall { id: id.clone() });
+                    self.backend.act(if row.proposed.is_some() {
+                        Action::NativeInstallProposed { id: id.clone() }
+                    } else {
+                        Action::NativeInstall { id: id.clone() }
+                    });
                 }
             }
             if row.installed.is_some() {

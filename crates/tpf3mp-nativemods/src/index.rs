@@ -183,6 +183,13 @@ impl Index {
         if !signed::verify(json, signature, keys) {
             return Err(IndexError::BadSignature);
         }
+        Self::parse(json)
+    }
+
+    /// The index in `json` if every entry checks out, whoever vouches for
+    /// it: the project's signature ([`Self::verified`]) or the server that
+    /// served it ([`crate::registry`]).
+    pub fn parse(json: &[u8]) -> Result<Self, IndexError> {
         let index: Self = serde_json::from_slice(json)
             .map_err(|error| IndexError::Malformed(error.to_string()))?;
         if index.format != FORMAT {

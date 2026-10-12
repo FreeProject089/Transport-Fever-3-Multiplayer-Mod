@@ -960,6 +960,8 @@ fn action_kind(action: &Action) -> &'static str {
         Action::NativeEnable { .. } => "native_enable",
         Action::NativeSetting { .. } => "native_setting",
         Action::NativeReset { .. } => "native_reset",
+        Action::NativeInstallProposed { .. } => "native_install_proposed",
+        Action::NativeShowProposed { .. } => "native_show_proposed",
         Action::NativeMatchRoom => "native_match_room",
     }
 }
@@ -1253,6 +1255,26 @@ async fn act(
         }
         Action::NativeReset { id } => {
             native_change(shared, config, Change::Reset(id), connected, session, game).await
+        }
+        Action::NativeInstallProposed { id } => {
+            native_change(
+                shared,
+                config,
+                Change::InstallProposed(id),
+                connected,
+                session,
+                game,
+            )
+            .await
+        }
+        Action::NativeShowProposed { on } => {
+            shared.view().native_proposed = on;
+            let server = shared.view().server.clone();
+            if on && let (Some(current), Some(server)) = (connected.as_ref(), server.as_deref()) {
+                fetch_server_native(shared, &current.client, server, true).await;
+            }
+            refresh_native(shared, config, true).await;
+            Ok(())
         }
         Action::NativeMatchRoom => {
             let room = shared
@@ -1597,11 +1619,21 @@ async fn refresh_native(shared: &Arc<Shared>, config: &LauncherConfig, game_runs
     };
     let setup = config.native.clone();
     let exe = game_exe(config).ok();
+    let (server, proposed) = {
+        let view = shared.view();
+        (view.server.clone(), view.native_proposed)
+    };
     let read = tokio::task::spawn_blocking(move || {
         let build = exe
             .as_deref()
             .and_then(|exe| crate::native_mods::build_of(exe).ok());
-        let view = crate::native_mods::view(&data, setup.as_ref(), build.as_deref());
+        let view = crate::native_mods::view(
+            &data,
+            setup.as_ref(),
+            build.as_deref(),
+            server.as_deref(),
+            proposed,
+        );
         let next = exe
             .as_deref()
             .map(|exe| crate::native_mods::next_terms(&data, exe));
@@ -1621,6 +1653,60 @@ async fn refresh_native(shared: &Arc<Shared>, config: &LauncherConfig, game_runs
             None => {}
         }
     }
+}
+
+/// Takes in the native mods `server` offers over `client`: its index, and
+/// with `proposed` the mods proposed for its registry. A server that offers
+/// none, or one that cannot be read, leaves what was kept; why is logged.
+async fn fetch_server_native(shared: &Shared, client: &Client, server: &str, proposed: bool) {
+    let Ok(data) = setup::data_dir() else {
+        return;
+    };
+    for proposals in [false, true] {
+        if proposals && !proposed {
+            continue;
+        }
+        match client.native_index(proposals).await {
+            Ok(Some((serial, json))) => {
+                let (data, server) = (data.clone(), server.to_owned());
+                let kept = tokio::task::spawn_blocking(move || {
+                    crate::native_mods::accept_server_index(
+                        &data, &server, serial, &json, proposals,
+                    )
+                })
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|kept| kept);
+                if let Err(error) = kept {
+                    warn!(%error, "cannot take in the server's native mods");
+                    shared.view().error = Some(error);
+                }
+            }
+            Ok(None) => {}
+            Err(error) => warn!(%error, "the server did not say which native mods it offers"),
+        }
+    }
+}
+
+/// Whether the launcher may get a room's native mods by itself: from the
+/// project's signed index, or from the index of a server the release lists.
+/// From a server the player set themselves it does so only when asked.
+fn auto_native(shared: &Shared, config: &LauncherConfig) -> bool {
+    if config
+        .native
+        .as_ref()
+        .is_some_and(|setup| !setup.keys.is_empty())
+    {
+        return true;
+    }
+    let view = shared.view();
+    view.server.as_deref().is_some_and(|server| {
+        servers::find(&config.servers, server).is_some()
+            || view
+                .server_default
+                .as_deref()
+                .is_some_and(|default| same_server(default, server))
+    })
 }
 
 /// Declares this player's content anew: in the room, or on the server.
@@ -1657,20 +1743,30 @@ async fn native_change(
     let setup = config
         .native
         .clone()
-        .filter(|setup| !setup.keys.is_empty())
         .ok_or("this launcher was built without native mods")?;
     let data = setup::data_dir().map_err(|error| error.to_string())?;
     let exe = game_exe(config).ok();
+    let (server, proposed) = {
+        let view = shared.view();
+        (view.server.clone(), view.native_proposed)
+    };
+    if change == Change::Refresh
+        && let (Some(current), Some(server)) = (connected.as_ref(), server.as_deref())
+    {
+        shared.view().native_busy = Some("Looking for native mods".to_owned());
+        fetch_server_native(shared, &current.client, server, proposed).await;
+    }
     shared.view().native_busy = Some(match &change {
         Change::Refresh => "Looking for native mods".to_owned(),
         Change::Install(id) => format!("Installing {id}"),
+        Change::InstallProposed(id) => format!("Installing {id}, proposed and not reviewed"),
         _ => "Changing native mods".to_owned(),
     });
     let result = tokio::task::spawn_blocking(move || {
         let build = exe
             .as_deref()
             .and_then(|exe| crate::native_mods::build_of(exe).ok());
-        crate::native_mods::apply(&data, &setup, build.as_deref(), change)
+        crate::native_mods::apply(&data, &setup, build.as_deref(), server.as_deref(), change)
     })
     .await
     .map_err(|error| error.to_string())
@@ -1695,11 +1791,11 @@ fn native_to_match(
     session: Option<&Session>,
     tried: &Option<Vec<tpf3mp_proto::NativeMod>>,
 ) -> Option<Vec<tpf3mp_proto::NativeMod>> {
-    config
-        .native
-        .as_ref()
-        .filter(|setup| !setup.keys.is_empty())?;
+    config.native.as_ref()?;
     session?;
+    if !auto_native(shared, config) {
+        return None;
+    }
     let me = shared.view().player;
     let status = shared.status();
     let room = status.room.as_ref()?;
@@ -1731,10 +1827,10 @@ async fn get_room_native(
     let setup = config
         .native
         .clone()
-        .filter(|setup| !setup.keys.is_empty())
         .ok_or("the room runs native mods, and this launcher was built without them")?;
     let data = setup::data_dir().map_err(|error| error.to_string())?;
     let exe = game_exe(config)?;
+    let server = shared.view().server.clone();
     let names = room
         .iter()
         .map(|m| m.name.as_str())
@@ -1748,7 +1844,7 @@ async fn get_room_native(
     });
     let result = tokio::task::spawn_blocking(move || {
         let build = crate::native_mods::build_of(&exe)?;
-        crate::native_mods::match_room(&data, &setup, &build, &room)?;
+        crate::native_mods::match_room(&data, &setup, &build, server.as_deref(), &room)?;
         crate::native_mods::next_terms(&data, &exe)
     })
     .await
@@ -2316,7 +2412,14 @@ async fn connect_to(
         // What the game runs goes with every connection, so rooms can
         // compare it and say how it differs.
         Ok((client, events)) => match client.declare(shared.content(config)).await {
-            Ok(()) => Ok((client, events)),
+            Ok(()) => {
+                // The native mods this server offers, for the panel and for
+                // its rooms.
+                let proposed = shared.view().native_proposed;
+                fetch_server_native(shared, &client, server, proposed).await;
+                refresh_native(shared, config, true).await;
+                Ok((client, events))
+            }
             Err(error) => Err(error.to_string()),
         },
         Err(error) => {
@@ -3002,6 +3105,12 @@ async fn join(
                     .iter()
                     .map(|m| (&m.id, &m.version))) =>
             {
+                // The server's index as it is now: the room's versions are in it.
+                let server = shared.view().server.clone();
+                if let (Some(current), Some(server)) = (connected.as_ref(), server.as_deref()) {
+                    let proposed = shared.view().native_proposed;
+                    fetch_server_native(shared, &current.client, server, proposed).await;
+                }
                 let next = get_room_native(shared, config, native).await?;
                 if game_runs(game) && shared.view().native_terms != next {
                     close_game(shared, game, idle).await;

@@ -38,10 +38,11 @@ pub use content::{
 pub use control::{
     AUTH_DOMAIN, AUTH_EXPORTER_LABEL, BANNERS, BannerId, ChatText, ClientMessage,
     ContentFingerprint, ContentStatus, CreateRoom, GameMessage, Hello, IntentRejection, JoinRoom,
-    LaneDigest, ListedRoom, LoadingStage, MAX_CHECKPOINT_LANES, MAX_PREVIEW, MAX_ROOM_MEMBERS,
-    MemberView, PORTRAITS, ROOMS_PER_PAGE, Reject, RejectReason, Request, RequestError, Response,
-    Resume, RoomListing, RoomPage, RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer,
-    Secret, ServerMessage, Speed, StartSave, StartView, Welcome, is_banner, is_portrait,
+    LaneDigest, ListedRoom, LoadingStage, MAX_CHECKPOINT_LANES, MAX_NATIVE_INDEX_PAGES,
+    MAX_PREVIEW, MAX_ROOM_MEMBERS, MemberView, NATIVE_INDEX_PAGE, NativeIndexPage, PORTRAITS,
+    ROOMS_PER_PAGE, Reject, RejectReason, Request, RequestError, Response, Resume, RoomListing,
+    RoomPage, RoomPhase, RoomSettings, RoomView, RulesName, RulesOffer, Secret, ServerMessage,
+    Speed, StartSave, StartView, Welcome, is_banner, is_portrait,
 };
 pub use diagnostics::{
     DiagnosticBatch, DiagnosticEvent, DiagnosticLevel, DiagnosticTarget, DiagnosticText, LogSource,
@@ -95,8 +96,10 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// joining its room ([`Request::ResolveInvite`], [`Response::InviteMatch`]);
 /// version 20 carries a game's native mods that change the simulation in its
 /// content manifest ([`ContentManifest::native`]) and the room's, with their
-/// settings, beside its mods ([`RoomConfig::native`], [`RoomMods::native`]).
-pub const PROTOCOL_VERSION: u32 = 20;
+/// settings, beside its mods ([`RoomConfig::native`], [`RoomMods::native`]);
+/// version 21 lets a server hand out its own index of native mods and the
+/// mods proposed for it ([`Request::NativeIndex`], [`NativeIndexPage`]).
+pub const PROTOCOL_VERSION: u32 = 21;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";
@@ -384,6 +387,26 @@ mod tests {
             decode_frame::<ServerMessage>(payload(&frame)).unwrap(),
             response
         );
+    }
+
+    /// A native-mods index goes in pages that each fit a control frame, and
+    /// one too large for every page is not offered.
+    #[test]
+    fn native_index_pages_fit_a_frame() {
+        let json = vec![b'{'; NATIVE_INDEX_PAGE * 2 + 1];
+        let pages = NativeIndexPage::split(3, &json).unwrap();
+        assert_eq!(pages.len(), 3);
+        assert!(pages.iter().all(|p| p.serial == 3 && p.pages == 3));
+        let joined: Vec<u8> = pages.iter().flat_map(|p| p.bytes.to_vec()).collect();
+        assert_eq!(joined, json);
+        let full = ServerMessage::Response {
+            id: u32::MAX,
+            result: Ok(Response::NativeIndex(Some(pages[0].clone()))),
+        };
+        assert!(encode_frame(&full, CONTROL_MAX_FRAME).is_ok());
+        let huge = vec![0; NATIVE_INDEX_PAGE * usize::from(MAX_NATIVE_INDEX_PAGES) + 1];
+        assert!(NativeIndexPage::split(1, &huge).is_none());
+        assert_eq!(NativeIndexPage::split(1, b"").unwrap().len(), 1);
     }
 
     #[test]

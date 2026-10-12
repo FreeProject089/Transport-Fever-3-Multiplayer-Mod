@@ -533,11 +533,14 @@ fn native_mods_are_managed_in_settings() {
         enabled: true,
         listed: true,
         settings: Vec::new(),
+        proposed: None,
     };
     let mut window = window(State {
         native: tpf3mp_agent::native_mods::NativeView {
             available: true,
             serial: Some(3),
+            server: None,
+            proposed_shown: false,
             packages: vec![row],
             problem: None,
         },

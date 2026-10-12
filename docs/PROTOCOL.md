@@ -1,6 +1,6 @@
 # Protocol
 
-Current integration: protocol **20**, bridge **28**, action schema **26**.
+Current integration: protocol **21**, bridge **28**, action schema **26**.
 This selective combination differs from both prior dev and PR #37; all
 participants and the relay must be upgraded together. Numbers in feature
 history below describe their original introduction.
@@ -271,6 +271,18 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   The log's layout is unchanged (format 8): it keeps the native mods after
   the mods under their `native:` ids, and a restored game tells them again
   by id and version, without their settings.
+- **A server's native mods** (protocol 21). `NativeIndex { proposed,
+  page }` asks for one page of the native mods the server offers: its
+  index of native mods, the JSON of [NATIVE_MODS.md](NATIVE_MODS.md)'s
+  format, or with `proposed` the mods open pull requests to its registry
+  would add (`Proposals`). The answer is `Response::NativeIndex(Some(
+  NativeIndexPage))`: the index's serial, the page, how many pages there
+  are and up to 48 KiB of its bytes, at most 32 pages; or `None` from a
+  server that offers none. A page past the last answers with the first. A
+  client reads pages 0, 1, … until it has them all, every one with the same
+  serial, and starts again once if the serial changed between pages. The
+  launcher keeps each server's index apart, refuses one older than the one
+  it kept from that server, and installs from it as from a signed index.
 - **Starting.** In the lobby, members declare their content and toggle
   **ready**. The owner can start the game only when every member is ready,
   all fingerprints are equal, and the world the owner handed over, if any,

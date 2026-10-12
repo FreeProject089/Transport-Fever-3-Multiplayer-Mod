@@ -472,6 +472,33 @@ the others play on. Their saves are larger too: a 1.4 GB world must upload
 within the 90-minute limit, so at least about 260 KB/s from the player who
 uploads it.
 
+## Native mods
+
+A server can offer its players native mods such as Big Maps
+([NATIVE_MODS.md](NATIVE_MODS.md), "A server's own index"; a proposed
+amendment to D29). Name a registry, a git repository whose `mods.txt` lists
+the mods' own repositories:
+
+```sh
+tpf3mp-server ... --native-mods-registry https://github.com/<owner>/<registry>   --native-mods-every-minutes 60
+```
+
+The server reads the list and each mod's `tpf3mp-native.json` when it
+starts and again every hour (at least every five minutes), and serves the
+index made of them to every launcher that connects. A mod that cannot be
+read, or is malformed, or claims another mod's id is left out with a
+warning in the log; a registry that cannot be read keeps the last index.
+For a GitHub registry it also reads the open pull requests and serves the
+mods they would add as *proposed*, which players see only when they ask
+and install only by choosing them. GitHub lets an unnamed caller read 60
+times an hour; give a token (`TPF3MP_GITHUB_TOKEN`, read-only, public
+repositories) for more. Without `--native-mods-registry` the server offers
+none.
+
+Players trust a server's index as they trust its rooms: the launcher gets
+a room's native mods by itself only from a server the release lists; from a
+server a player set in Settings, only when they ask.
+
 ## Before the first release
 
 Once, in this order. The update key and the server are built into the
