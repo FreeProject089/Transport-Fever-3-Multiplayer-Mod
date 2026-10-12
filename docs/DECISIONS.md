@@ -1390,3 +1390,70 @@ there), D4 (trust in the project, fail closed). PLAN.md, Part 3: a new item.
 Not covered yet: the room's terms on the wire (an additive field of the
 content declaration, with a protocol version bump), the launcher's page for
 native mods, and Big Maps itself as the first package.
+
+### D29 amendment (PROPOSED amendment, not decided, 2026-10-12): the room's server serves the native-mods index
+
+**Proposed, for the owner (Juliansgith) to approve or refuse in the pull
+request. D29 above stays in force until then.**
+
+The user asked on 2026-10-12 to "build the index into the server": the
+index of native mods should come from the server a player plays on, not
+from a release asset that only a reviewer of the project's signing
+workflow can publish. As D29 stands, no native mod reaches a player until
+the project makes a native-mods key, a signing workflow and a first index,
+and every launcher is built with the key; a server's operator who wants to
+offer Big Maps cannot.
+
+- **Each server serves its own index.** The operator keeps
+  `native-mods.json` beside the server (a file, `--native-mods`), and the
+  server hands it to its clients on the control stream (a new request,
+  `NativeIndex`, with a `PROTOCOL_VERSION` bump), with the files' addresses
+  as the index gives them. The format is D29's unchanged: every package
+  pins the game builds it runs on, every file its size and SHA-256, its
+  dependencies, conflicts and settings, and the hook features it enables.
+  Files may live anywhere over HTTPS, the mod's own repository's releases
+  included; each is checked against the index as it downloads, as now.
+- **The server's word is the signature.** A launcher trusts the index of
+  the server it plays on as it trusts that server's rooms (D4): reached
+  over TLS with a certificate from a public authority, as every server is.
+  No separate key is needed. An index signed with the project's
+  native-mods key (D29) is still accepted from anywhere, so the project can
+  publish one later without changing the launcher.
+- **Only built-in code runs, as in D29.** A package still only enables
+  features compiled into TPF3-MP's hook (`features::BUILT_IN`) and ships
+  data, Lua and settings; one with plugin libraries is refused. A server
+  therefore cannot make a game run native code TPF3-MP does not ship; what
+  it can add is Lua and data, which a Mod Hub mod can add too.
+- **A room installs from its own server.** A member gets the room's
+  native mods from the index of the server that hosts the room, in the
+  room's versions, never from another player. The serial floor and the
+  cached index are kept per server, so one server's index cannot replay or
+  replace another's.
+- **The player sees whose index it is.** The launcher's Native mods group
+  names the server whose index it shows, and installing from a server the
+  release does not list (one the player set in Settings, D12) asks the
+  player once per server.
+
+Rejected:
+
+- **Keep the project's signing workflow as the only way** (D29 as it is):
+  safest, but nothing ships until the project builds it, and an operator
+  of another listed server cannot offer a mod the project has not signed.
+- **Each operator signs with their own key, built into launchers**: the
+  same wait, once per operator, and launchers would need a key list per
+  release.
+- **Any address, as CKAN reads netkans**: D29's reason stands; an index
+  comes from a server the player chose, or from the project.
+
+Trade-off for the owner: trust moves from one reviewed key to every
+server's operator. A rogue or hacked server could offer a package of Lua
+and data to its own players, and switch built-in features on for them; it
+could not run native code the hook does not have. Players on the project's
+servers trust the project, as now.
+
+Touches: D29 (where the index comes from and who vouches for it; the
+format, built-in features only, per-file checks and room terms stay), D4
+(servers trusted by clients), D12 and its approved amendment (several
+operated servers; a server set in Settings). PLAN.md, Part 3, the D29
+item: the key and signing workflow would no longer be needed before
+players can use a native mod.

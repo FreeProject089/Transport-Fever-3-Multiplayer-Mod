@@ -399,6 +399,9 @@ Dev B:
   players cannot install or use a native mod yet. Open: the key and signing
   workflow, the launcher's page, Big Maps as the first package, and the
   room's terms on the wire.
+  *Proposed (D29 amendment, not decided, 2026-10-12):* each server serves
+  its own index to its players, trusted as the server is (D4), so a native
+  mod needs no project key or signing workflow before it can be offered.
 
 Dev C:
 
