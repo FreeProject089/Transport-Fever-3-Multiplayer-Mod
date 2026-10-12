@@ -1404,15 +1404,27 @@ the project makes a native-mods key, a signing workflow and a first index,
 and every launcher is built with the key; a server's operator who wants to
 offer Big Maps cannot.
 
-- **Each server serves its own index.** The operator keeps
-  `native-mods.json` beside the server (a file, `--native-mods`), and the
-  server hands it to its clients on the control stream (a new request,
-  `NativeIndex`, with a `PROTOCOL_VERSION` bump), with the files' addresses
-  as the index gives them. The format is D29's unchanged: every package
+- **Each server serves its own index, made from a registry.** The operator
+  names a registry (`--native-mods-registry`): a git repository whose
+  `mods.txt` lists the mods' own repositories, as CKAN's metadata
+  repository lists Kerbal mods. Each mod's repository holds
+  `tpf3mp-native.json`, its packages in D29's format, whose names and
+  descriptions are the preview players see. The server reads them again
+  every hour and hands the index made of them to its clients on the control
+  stream (a new request, `NativeIndex`, in pages, with a `PROTOCOL_VERSION`
+  bump). A mod that cannot be read, is malformed or claims another's id is
+  left out, the others served. The format is D29's unchanged: every package
   pins the game builds it runs on, every file its size and SHA-256, its
   dependencies, conflicts and settings, and the hook features it enables.
-  Files may live anywhere over HTTPS, the mod's own repository's releases
-  included; each is checked against the index as it downloads, as now.
+  Files may live anywhere over HTTPS, the mod's own releases included; each
+  is checked against the index as it downloads, as now.
+- **Proposed mods are shown apart, never installed by themselves.** A mod
+  joins a registry through a pull request adding its repository. For a
+  GitHub registry the server also serves what open pull requests would add,
+  as proposals, each with its pull request. The launcher shows them only
+  when the player asks ("Show proposed mods"), marks them as not reviewed,
+  and installs one only when the player chooses it; a room never gets one
+  by itself.
 - **The server's word is the signature.** A launcher trusts the index of
   the server it plays on as it trusts that server's rooms (D4): reached
   over TLS with a certificate from a public authority, as every server is.
@@ -1430,9 +1442,9 @@ offer Big Maps cannot.
   cached index are kept per server, so one server's index cannot replay or
   replace another's.
 - **The player sees whose index it is.** The launcher's Native mods group
-  names the server whose index it shows, and installing from a server the
-  release does not list (one the player set in Settings, D12) asks the
-  player once per server.
+  names the server whose index it shows. It gets a room's native mods by
+  itself only from a server the release lists; from a server the player set
+  in Settings (D12), only when the player asks.
 
 Rejected:
 
@@ -1446,7 +1458,8 @@ Rejected:
   comes from a server the player chose, or from the project.
 
 Trade-off for the owner: trust moves from one reviewed key to every
-server's operator. A rogue or hacked server could offer a package of Lua
+server's operator, and to whoever merges pull requests into that server's
+registry. A rogue or hacked server could offer a package of Lua
 and data to its own players, and switch built-in features on for them; it
 could not run native code the hook does not have. Players on the project's
 servers trust the project, as now.
