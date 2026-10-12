@@ -1940,7 +1940,8 @@ impl<B: Backend> LauncherApp<B> {
             if native.proposed_shown {
                 ui.add_space(6.0);
                 ui.label(theme::text(
-                    "Proposed mods are open pull requests to the server's list of mods: nobody                      has reviewed them yet. Install one only if you trust its authors.",
+                    "Proposed mods are open pull requests to the server's list of mods: nobody \
+                     has reviewed them yet. Install one only if you trust its authors.",
                     theme::body(11.0),
                     theme::DIFFERS_TEXT,
                 ));
