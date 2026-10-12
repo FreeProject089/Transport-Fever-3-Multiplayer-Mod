@@ -18,9 +18,10 @@ use std::{cell::RefCell, path::PathBuf};
 use eframe::egui;
 use egui_kittest::{Harness, kittest::Queryable};
 use tpf3mp_agent::launcher::{
-    Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent, Phase,
-    Room, RulesChoice, ServerRow, State, World,
+    Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent, ModHave,
+    Phase, Room, RoomNativeRow, RulesChoice, ServerRow, State, World,
 };
+use tpf3mp_agent::native_mods::{NativeRow, NativeSettingRow, NativeView};
 use tpf3mp_launcher::{
     app::{Extras, LauncherApp, Shown},
     backend::Backend,
@@ -29,6 +30,7 @@ use tpf3mp_launcher::{
     update::UpdateState,
     view::Place,
 };
+use tpf3mp_nativemods::{index::Setting, registry::Proposal};
 
 struct Still(RefCell<State>);
 
@@ -82,6 +84,10 @@ fn render_clicking(name: &str, state: State, scroll_left: f32, click: Option<&st
         .wgpu()
         .build_ui_state(|ui, app: &mut LauncherApp<Still>| app.show(ui), app);
     harness.run_steps(4);
+    if let Some(label) = click {
+        harness.get_by_label(label).click();
+        harness.run_steps(6);
+    }
     if scroll_left > 0.0 {
         harness.hover_at(egui::pos2(300.0, 300.0));
         harness.event(egui::Event::MouseWheel {
@@ -92,14 +98,67 @@ fn render_clicking(name: &str, state: State, scroll_left: f32, click: Option<&st
         });
         harness.run_steps(8);
     }
-    if let Some(label) = click {
-        harness.get_by_label(label).click();
-        harness.run_steps(6);
-    }
     let image = harness.render().unwrap();
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/launcher-screenshots");
     std::fs::create_dir_all(&dir).unwrap();
     image.save(dir.join(format!("{name}.png"))).unwrap();
+}
+
+/// A server's native mods in Settings: one installed with an update and
+/// settings, one proposed in a pull request, shown.
+fn native() -> NativeView {
+    NativeView {
+        available: true,
+        serial: Some(1_760_000_000),
+        server: Some("play.tpf3mp.example:29470".into()),
+        proposed_shown: true,
+        packages: vec![
+            NativeRow {
+                id: "big-maps".into(),
+                name: "Big Maps".into(),
+                description: "Maps up to four times the base size.".into(),
+                homepage: Some("https://github.com/example/tpf3-big-maps".into()),
+                simulation: true,
+                available: Some("1.2.0".into()),
+                installed: Some("1.1.0".into()),
+                previous: Some("1.0.3".into()),
+                enabled: true,
+                listed: true,
+                settings: vec![
+                    NativeSettingRow {
+                        key: "map_scale".into(),
+                        value: Setting::Int(4),
+                        default: Setting::Int(2),
+                    },
+                    NativeSettingRow {
+                        key: "keep_edges".into(),
+                        value: Setting::Bool(true),
+                        default: Setting::Bool(false),
+                    },
+                ],
+                proposed: None,
+            },
+            NativeRow {
+                id: "station-signs".into(),
+                name: "Station Signs".into(),
+                description: "Bigger, clearer signs at stations.".into(),
+                homepage: Some("https://github.com/example/station-signs".into()),
+                simulation: false,
+                available: Some("0.3.0".into()),
+                installed: None,
+                previous: None,
+                enabled: false,
+                listed: true,
+                settings: vec![],
+                proposed: Some(Proposal {
+                    number: 12,
+                    title: "Add Station Signs".into(),
+                    url: "https://github.com/example/tpf3mp-registry/pull/12".into(),
+                }),
+            },
+        ],
+        problem: None,
+    }
 }
 
 /// The page's `base` state.
@@ -407,6 +466,46 @@ fn screens() {
             ..connected()
         },
         0.0,
+    );
+    render_clicking(
+        "9c-settings-native-mods",
+        State {
+            native: native(),
+            ..connected()
+        },
+        380.0,
+        Some("Settings"),
+        Place::Launcher,
+    );
+    render(
+        "4c-in-the-lobby-native-mods",
+        State {
+            room: Some(room(Phase::Lobby, members())),
+            chat: chat(),
+            native: native(),
+            room_native: vec![
+                RoomNativeRow {
+                    id: "big-maps".into(),
+                    name: "Big Maps".into(),
+                    version: "1.2.0+3fa9c01b2e".into(),
+                    have: ModHave::OtherVersion,
+                },
+                RoomNativeRow {
+                    id: "faster-trains".into(),
+                    name: "Faster Trains".into(),
+                    version: "0.4.1+aa01b3c4d5".into(),
+                    have: ModHave::No,
+                },
+                RoomNativeRow {
+                    id: "terrain-tweaks".into(),
+                    name: "Terrain Tweaks".into(),
+                    version: "2.0.0+9be4410c7a".into(),
+                    have: ModHave::Yes,
+                },
+            ],
+            ..connected()
+        },
+        520.0,
     );
     render(
         "8-update-needed",
