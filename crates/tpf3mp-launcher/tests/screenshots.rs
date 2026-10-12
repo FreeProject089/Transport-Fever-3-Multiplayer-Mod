@@ -21,7 +21,7 @@ use tpf3mp_agent::launcher::{
     Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent, ModHave,
     Phase, Room, RoomNativeRow, RulesChoice, ServerRow, State, World,
 };
-use tpf3mp_agent::native_mods::{NativeRow, NativeSettingRow, NativeView};
+use tpf3mp_agent::native_mods::{NativeRow, NativeView};
 use tpf3mp_launcher::{
     app::{Extras, LauncherApp, Shown},
     backend::Backend,
@@ -30,7 +30,7 @@ use tpf3mp_launcher::{
     update::UpdateState,
     view::Place,
 };
-use tpf3mp_nativemods::{index::Setting, registry::Proposal};
+use tpf3mp_nativemods::registry::Proposal;
 
 struct Still(RefCell<State>);
 
@@ -104,8 +104,7 @@ fn render_clicking(name: &str, state: State, scroll_left: f32, click: Option<&st
     image.save(dir.join(format!("{name}.png"))).unwrap();
 }
 
-/// A server's native mods in Settings: one installed with an update and
-/// settings, one proposed in a pull request, shown.
+/// A server's native mods in Settings: one installed with an update, one proposed in a pull request, shown.
 fn native() -> NativeView {
     NativeView {
         available: true,
@@ -124,18 +123,6 @@ fn native() -> NativeView {
                 previous: Some("1.0.3".into()),
                 enabled: true,
                 listed: true,
-                settings: vec![
-                    NativeSettingRow {
-                        key: "map_scale".into(),
-                        value: Setting::Int(4),
-                        default: Setting::Int(2),
-                    },
-                    NativeSettingRow {
-                        key: "keep_edges".into(),
-                        value: Setting::Bool(true),
-                        default: Setting::Bool(false),
-                    },
-                ],
                 proposed: None,
             },
             NativeRow {
@@ -149,7 +136,6 @@ fn native() -> NativeView {
                 previous: None,
                 enabled: false,
                 listed: true,
-                settings: vec![],
                 proposed: Some(Proposal {
                     number: 12,
                     title: "Add Station Signs".into(),

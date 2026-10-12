@@ -214,16 +214,6 @@ pub enum Action {
         id: String,
         on: bool,
     },
-    /// Sets one of a native mod's settings, for the next game.
-    NativeSetting {
-        id: String,
-        key: String,
-        value: tpf3mp_nativemods::index::Setting,
-    },
-    /// Puts a native mod's settings back to its defaults.
-    NativeReset {
-        id: String,
-    },
     /// Shows or hides the mods proposed for the server's registry: open
     /// pull requests nobody has reviewed yet.
     NativeShowProposed {
@@ -1039,17 +1029,12 @@ mod tests {
             }
         );
         assert!(serde_json::from_str::<Action>(r#"{"action":"format_disk"}"#).is_err());
-        let action: Action = serde_json::from_str(
-            r#"{"action":"native_setting","id":"bigmap","key":"depth","value":12}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            action,
-            Action::NativeSetting {
-                id: "bigmap".into(),
-                key: "depth".into(),
-                value: tpf3mp_nativemods::index::Setting::Int(12),
-            }
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"action":"native_setting","id":"bigmap","key":"depth","value":12}"#,
+            )
+            .is_err(),
+            "a native mod's settings are not the player's to change"
         );
         let action: Action = serde_json::from_str(r#"{"action":"native_match_room"}"#).unwrap();
         assert_eq!(action, Action::NativeMatchRoom);

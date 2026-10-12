@@ -25,7 +25,6 @@ use tpf3mp_agent::{
     launcher::{Action, Connection, ModHave, State, server_address},
     native_mods::NativeRow,
 };
-use tpf3mp_nativemods::index::Setting;
 
 use crate::{
     backend::Backend,
@@ -1861,7 +1860,7 @@ impl<B: Backend> LauncherApp<B> {
     }
 
     /// Settings' native mods: the signed index's mods for this game, each
-    /// with its own project page, and those installed, with their settings.
+    /// with its own project page, and those installed.
     fn native_settings(&mut self, ui: &mut Ui, state: &State) {
         let native = &state.native;
         let idle = state.native_busy.is_none();
@@ -2052,37 +2051,6 @@ impl<B: Backend> LauncherApp<B> {
                 }
             }
         });
-        for setting in &row.settings {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(theme::text(&setting.key, theme::body(12.0), theme::MUTED));
-                let changed = match &setting.value {
-                    Setting::Bool(on) => {
-                        let mut on = *on;
-                        ui.add_enabled(idle, egui::Checkbox::without_text(&mut on))
-                            .changed()
-                            .then_some(Setting::Bool(on))
-                    }
-                    Setting::Int(n) => {
-                        let mut n = *n;
-                        let response = ui.add_enabled(idle, egui::DragValue::new(&mut n));
-                        (response.changed() && !response.dragged() || response.drag_stopped())
-                            .then_some(Setting::Int(n))
-                    }
-                    Setting::Text(text) => {
-                        ui.label(theme::text(text, theme::body(12.0), theme::TEXT));
-                        None
-                    }
-                };
-                if let Some(value) = changed {
-                    self.backend.act(Action::NativeSetting {
-                        id: row.id.clone(),
-                        key: setting.key.clone(),
-                        value,
-                    });
-                }
-            });
-        }
     }
 }
 

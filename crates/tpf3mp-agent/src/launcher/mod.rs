@@ -958,8 +958,6 @@ fn action_kind(action: &Action) -> &'static str {
         Action::NativeUninstall { .. } => "native_uninstall",
         Action::NativeRollback { .. } => "native_rollback",
         Action::NativeEnable { .. } => "native_enable",
-        Action::NativeSetting { .. } => "native_setting",
-        Action::NativeReset { .. } => "native_reset",
         Action::NativeInstallProposed { .. } => "native_install_proposed",
         Action::NativeShowProposed { .. } => "native_show_proposed",
         Action::NativeMatchRoom => "native_match_room",
@@ -1241,20 +1239,6 @@ async fn act(
                 game,
             )
             .await
-        }
-        Action::NativeSetting { id, key, value } => {
-            native_change(
-                shared,
-                config,
-                Change::Set(id, key, value),
-                connected,
-                session,
-                game,
-            )
-            .await
-        }
-        Action::NativeReset { id } => {
-            native_change(shared, config, Change::Reset(id), connected, session, game).await
         }
         Action::NativeInstallProposed { id } => {
             native_change(

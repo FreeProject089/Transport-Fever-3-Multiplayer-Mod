@@ -532,7 +532,6 @@ fn native_mods_are_managed_in_settings() {
         previous: None,
         enabled: true,
         listed: true,
-        settings: Vec::new(),
         proposed: None,
     };
     let mut window = window(State {

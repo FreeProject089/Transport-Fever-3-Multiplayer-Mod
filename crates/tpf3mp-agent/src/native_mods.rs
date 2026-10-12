@@ -225,19 +225,9 @@ pub struct NativeRow {
     pub enabled: bool,
     /// Whether the index still lists it.
     pub listed: bool,
-    pub settings: Vec<NativeSettingRow>,
     /// For a mod only proposed for the server's registry: its pull request.
     /// Nobody has reviewed it.
     pub proposed: Option<Proposal>,
-}
-
-/// One setting of an installed native mod: the player's value, else the
-/// default.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeSettingRow {
-    pub key: String,
-    pub value: Setting,
-    pub default: Setting,
 }
 
 /// Whether `package` changes the simulation: it says so, or a feature it
@@ -421,20 +411,6 @@ fn row(
         .find(|p| build.is_none_or(|build| p.runs_on(build)))
         .copied();
     let shown = installed.and_then(|i| i.package()).or(available)?;
-    let settings = installed
-        .and_then(|i| i.package().map(|p| (i, p)))
-        .map(|(i, package)| {
-            package
-                .settings
-                .iter()
-                .map(|(key, default)| NativeSettingRow {
-                    key: key.clone(),
-                    value: i.settings.get(key).unwrap_or(default).clone(),
-                    default: default.clone(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     Some(NativeRow {
         id: id.to_owned(),
         name: shown.name.clone(),
@@ -446,7 +422,6 @@ fn row(
         previous: installed.and_then(|i| i.previous.clone()),
         enabled: installed.is_some_and(|i| i.enabled),
         listed: !versions.is_empty(),
-        settings,
         proposed: proposal.cloned(),
     })
 }
@@ -464,8 +439,6 @@ pub enum Change {
     Uninstall(String),
     Rollback(String),
     Enable(String, bool),
-    Set(String, String, Setting),
-    Reset(String),
 }
 
 /// Carries out `change`, for a game whose executable hashes to `build`.
@@ -515,8 +488,6 @@ pub fn apply(
         Change::Uninstall(id) => store.uninstall(&id).map_err(error),
         Change::Rollback(id) => store.rollback(&id).map_err(error),
         Change::Enable(id, on) => store.set_enabled(&id, on).map_err(error),
-        Change::Set(id, key, value) => store.set_setting(&id, &key, value).map_err(error),
-        Change::Reset(id) => store.reset_settings(&id).map_err(error),
     }
 }
 

@@ -62,7 +62,7 @@ assets of the `native-mods` release of the repository
 | `simulation` | Whether it changes how the world runs. A feature the hook knows to change the simulation makes the package count as changing it too, whatever this says. |
 | `builds` | The game builds it runs on, by the executable's SHA-256, as hook profiles pin them ([HOOKS.md](HOOKS.md)). On any other build it is not installed, and not enabled if it was. |
 | `features` | The hook features it enables (below). |
-| `settings` | Its settings with their defaults: booleans, integers or text of at most 128 bytes (a room tells them to its members). A player's choice must name one of these and keep its type. |
+| `settings` | Its settings with their defaults: booleans, integers or text of at most 128 bytes (a room tells them to its members). The launcher has no controls for them: a mod runs with its defaults, or with the room's settings once it joins a room that sets them. |
 | `depends` | Packages it needs, with a semver requirement. |
 | `conflicts` | Packages that must not be installed beside it. |
 | `files` | Data, Lua and settings files: where each goes in the package's folder (plain names joined by `/`), where it comes from, its size and SHA-256. |
@@ -202,8 +202,8 @@ The launcher keeps native mods in its own data folder, never the game's:
 - Registry package paths are validated before use. Traversal paths and paths
   that cross a symlink, including a symlink above the store root, are refused
   before reads, writes, or deletes.
-- **Installing is not enabling.** The player switches a package on, and sets
-  its settings, separately.
+- **Installing is not enabling.** The player switches a package on
+  separately.
 
 ## What the game runs
 
@@ -332,7 +332,8 @@ the native-mods key. It lists each package of the last accepted index for
 this game's build and each installed one, with its description, a link to
 its own project page (`homepage`), whether it changes the simulation, and
 **Install** or **Update**, **Switch on**/**Switch off**, **Roll back** and
-**Uninstall**, then its settings (switches and numbers; text is shown).
+**Uninstall**. It has no controls for a mod's settings: a mod runs with
+its defaults, or with the settings of the room it was matched to.
 **Check the index** fetches the signed index again. A change takes effect
 in the next game the launcher starts; with no game running, the player
 declares the new terms at once.
