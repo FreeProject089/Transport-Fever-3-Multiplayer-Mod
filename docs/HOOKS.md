@@ -5370,10 +5370,19 @@ the room's game's step. The replicated engine is left out.
   `hook.log`.
   This includes an allocator split well before the first lane mismatch,
   without continuously filling the hook's 192 KiB/minute diagnostic upload
-  budget. An incident writes at most 128 KiB of operation detail, once per
-  divergent step. The header gives the oldest and newest retained
-  checkpoints, expired checkpoints, recorded/retained operations, omitted
-  operations, unfit counts and unreadable native observations.
+  budget. Native-operation trace bursts, whether triggered by a divergence or
+  an accepted room-chat ask, are limited to one per minute and at most 128
+  KiB including logger prefixes, the header and a short suppression notice.
+  Other hook lines share the 192 KiB/minute upload tail, so this trace bound
+  does not guarantee that every diagnostic line reaches the relay; collect
+  the local full log if the upload reports skipped bytes. Further distinct
+  divergence steps in that minute
+  produce one short rate-limit line; the next burst header reports how many
+  notices were suppressed and the latest suppressed step, then includes the
+  latest retained interval through the eligible divergence. The header gives
+  the oldest and newest retained checkpoints, expired checkpoints,
+  recorded/retained operations, omitted operations, unfit counts and
+  unreadable native observations.
   `complete=true` means none of those gaps occurred within the selected
   incident window. Older expired checkpoints are reported separately and do
   not make an intact recent window incomplete. The launcher's source

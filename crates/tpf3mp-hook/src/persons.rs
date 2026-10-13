@@ -875,6 +875,7 @@ pub mod freed_ids {
         use super::*;
         use crate::build_data::native::persons::freed_ids as layout;
         use crate::order::Fnv1a;
+        use std::time::Instant;
 
         /// `0` (or `off`, `false`, `no`) turns the trace off.
         pub const TOGGLE_ENV: &str = "TPF3MP_HOOK_FREED_ID_TRACE";
@@ -903,9 +904,17 @@ pub mod freed_ids {
         /// Dump only the 64 checkpoints leading to the reported mismatch.
         /// The incident's allocator split led its lane symptom by 53.
         pub const INCIDENT_CHECKPOINTS: usize = 64;
-        /// Cap one incident's detail below the hook upload's 192 KiB/minute
-        /// source budget, leaving room for ordinary hook lines.
+        /// Cap one minute of native-operation trace, including logger prefixes
+        /// and a rate-limit notice, below the 192 KiB/minute upload source cap.
+        /// Other hook lines can still consume that upload's remaining space.
         pub const MAX_FLUSH_BYTES: usize = 128 << 10;
+        // Logger::lines writes "[<u64 seconds>] " and a newline for each
+        // message. Reserve the maximum 20-digit timestamp, not today's size.
+        const LOG_LINE_OVERHEAD: usize = 24;
+        // One short rate-limit notice may follow the full burst in the same
+        // minute; both together must stay inside MAX_FLUSH_BYTES.
+        const SUPPRESSION_NOTICE_RESERVE: usize = 256;
+        const INCIDENT_HEADER_RESERVE: usize = 1024;
         /// Keep each line below DiagnosticText's 1024-byte limit after the
         /// agent tails hook.log. No record may be silently cut there.
         const OPERATIONS_PER_LINE: usize = 4;
@@ -1012,6 +1021,11 @@ pub mod freed_ids {
             unread: u64,
             history: std::collections::VecDeque<Window>,
             last_flushed: Option<u64>,
+            last_flushed_at: Option<Instant>,
+            suppressed: u64,
+            suppressed_through: Option<u64>,
+            last_suppressed_step: Option<u64>,
+            suppression_reported: bool,
             expired: u64,
         }
 
@@ -1032,6 +1046,11 @@ pub mod freed_ids {
                     unread: 0,
                     history: std::collections::VecDeque::new(),
                     last_flushed: None,
+                    last_flushed_at: None,
+                    suppressed: 0,
+                    suppressed_through: None,
+                    last_suppressed_step: None,
+                    suppression_reported: false,
                     expired: 0,
                 }
             }
@@ -1085,10 +1104,42 @@ pub mod freed_ids {
             }
 
             fn incident(&mut self, diverged: u64) -> Vec<String> {
+                self.incident_at(diverged, Instant::now())
+            }
+
+            fn incident_at(&mut self, diverged: u64, now: Instant) -> Vec<String> {
                 if self.last_flushed == Some(diverged) {
                     return Vec::new();
                 }
+                if self
+                    .last_flushed_at
+                    .is_some_and(|last| now.saturating_duration_since(last) < crate::lanedump::GAP)
+                {
+                    if self.last_suppressed_step != Some(diverged) {
+                        self.suppressed += 1;
+                        self.suppressed_through = Some(diverged);
+                        self.last_suppressed_step = Some(diverged);
+                    }
+                    if self.suppression_reported {
+                        return Vec::new();
+                    }
+                    self.suppression_reported = true;
+                    let notice = format!(
+                        "free operations: detail burst rate-limited; suppressed={} through={diverged}",
+                        self.suppressed
+                    );
+                    debug_assert!(
+                        notice.len() + LOG_LINE_OVERHEAD <= SUPPRESSION_NOTICE_RESERVE,
+                        "native-operation suppression notice exceeded its byte reserve"
+                    );
+                    return vec![notice];
+                }
                 self.last_flushed = Some(diverged);
+                self.last_flushed_at = Some(now);
+                let suppressed = std::mem::take(&mut self.suppressed);
+                let suppressed_through = self.suppressed_through.take();
+                self.last_suppressed_step = None;
+                self.suppression_reported = false;
                 let mut relevant = self
                     .history
                     .iter()
@@ -1100,7 +1151,10 @@ pub mod freed_ids {
                 let first = relevant.first().map(|w| w.step);
                 let last = relevant.last().map(|w| w.step);
                 let mut lines = Vec::new();
-                let mut bytes = 0usize;
+                // Reserve space for the summary line, including its rate-limit
+                // metadata, so the complete incident batch stays inside the
+                // same byte ceiling as its operation-detail rows.
+                let mut bytes = INCIDENT_HEADER_RESERVE;
                 let mut printed = 0usize;
                 let omitted = relevant.iter().map(|w| w.omitted).sum::<u64>();
                 let unfit = relevant.iter().map(|w| w.unfit).sum::<u64>();
@@ -1118,11 +1172,13 @@ pub mod freed_ids {
                             window.step,
                             part + 1
                         );
-                        if bytes + line.len() + 1 > MAX_FLUSH_BYTES {
+                        if bytes + line.len() + LOG_LINE_OVERHEAD
+                            > MAX_FLUSH_BYTES - SUPPRESSION_NOTICE_RESERVE
+                        {
                             cut = true;
                             break;
                         }
-                        bytes += line.len() + 1;
+                        bytes += line.len() + LOG_LINE_OVERHEAD;
                         printed += chunk.len();
                         lines.push(line);
                     }
@@ -1135,12 +1191,17 @@ pub mod freed_ids {
                 // not a missing record in these 64 checkpoints. A delayed
                 // notice with fewer than 64 retained windows is incomplete.
                 lines.insert(0, format!(
-                    "free operations: diverged={diverged} retained_checkpoints={} expired_checkpoints={} oldest={} newest={} recorded={printed}/{retained} omitted={omitted} unfit={unfit} unread={unread} byte_limit={MAX_FLUSH_BYTES} complete={}",
+                    "free operations: diverged={diverged} retained_checkpoints={} expired_checkpoints={} oldest={} newest={} recorded={printed}/{retained} omitted={omitted} unfit={unfit} unread={unread} suppressed={suppressed} suppressed_through={} byte_limit={MAX_FLUSH_BYTES} complete={}",
                     relevant.len(), self.expired, first.map_or_else(|| "-".into(), |n| n.to_string()),
                     last.map_or_else(|| "-".into(), |n| n.to_string()),
+                    suppressed_through.map_or_else(|| "-".into(), |n| n.to_string()),
                     !relevant.is_empty() && !cut && omitted == 0 && unfit == 0 && unread == 0
                         && (self.expired == 0 || relevant.len() == INCIDENT_CHECKPOINTS)
                 ));
+                debug_assert!(
+                    lines[0].len() + LOG_LINE_OVERHEAD <= INCIDENT_HEADER_RESERVE,
+                    "native-operation incident header exceeded its byte reserve"
+                );
                 lines
             }
         }
@@ -1680,6 +1741,74 @@ pub mod freed_ids {
             }
 
             #[test]
+            fn incident_detail_bursts_are_rate_limited_and_later_report_suppressed_steps() {
+                let mut trace = Trace::new();
+                let start = Instant::now();
+                for step in (50..=3_200).step_by(50) {
+                    trace.checkpoint(step, queue());
+                }
+
+                let first = trace.incident_at(3_200, start);
+                assert!(first[0].contains("complete=true"), "{}", first[0]);
+                assert!(first[0].contains("suppressed=0 suppressed_through=-"));
+
+                trace.checkpoint(3_250, queue());
+                let limited = trace.incident_at(3_250, start + std::time::Duration::from_secs(1));
+                assert_eq!(
+                    limited.len(),
+                    1,
+                    "one compact notice per suppression window"
+                );
+                assert!(
+                    limited[0].contains("detail burst rate-limited"),
+                    "{limited:?}"
+                );
+                assert!(
+                    limited[0].contains("suppressed=1 through=3250"),
+                    "{limited:?}"
+                );
+
+                trace.checkpoint(3_300, queue());
+                assert!(
+                    trace
+                        .incident_at(3_300, start + std::time::Duration::from_secs(2))
+                        .is_empty()
+                );
+                for step in (3_350..=6_450).step_by(50) {
+                    trace.checkpoint(step, queue());
+                }
+                trace.count(
+                    Seen {
+                        table: 100,
+                        queued: 1,
+                        freed: 1,
+                    },
+                    &[7],
+                    Place::Update,
+                    Some(6_449),
+                    Some(0x123),
+                );
+                trace.checkpoint(6_500, queue());
+                let later = trace.incident_at(6_500, start + std::time::Duration::from_secs(61));
+                assert!(
+                    later[0].contains("suppressed=2 suppressed_through=3300"),
+                    "{}",
+                    later[0]
+                );
+                assert!(later[0].contains("complete=true"), "{}", later[0]);
+                assert!(later.iter().any(|line| line.contains("step 6500 part 1")));
+                assert!(
+                    later
+                        .iter()
+                        .map(|line| line.len() + LOG_LINE_OVERHEAD)
+                        .sum::<usize>()
+                        + limited[0].len()
+                        + LOG_LINE_OVERHEAD
+                        <= MAX_FLUSH_BYTES
+                );
+            }
+
+            #[test]
             fn incident_selects_the_recent_sixty_four_checkpoints() {
                 let mut trace = Trace::new();
                 for checkpoint in 1..=KEPT_CHECKPOINTS {
@@ -1756,7 +1885,8 @@ pub mod freed_ids {
                     );
                 }
                 trace.checkpoint(50, queue());
-                let lines = trace.incident(50);
+                let first_at = Instant::now();
+                let lines = trace.incident_at(50, first_at);
                 assert!(
                     lines[0].contains("recorded=96/96 omitted=1"),
                     "{}",
@@ -1767,7 +1897,7 @@ pub mod freed_ids {
                 for step in (100..=6_450).step_by(50) {
                     trace.checkpoint(step, queue());
                 }
-                let lines = trace.incident(6_450);
+                let lines = trace.incident_at(6_450, first_at + crate::lanedump::GAP);
                 assert!(lines[0].contains("expired_checkpoints=1"), "{}", lines[0]);
                 assert!(lines[0].contains("oldest=3300"), "{}", lines[0]);
                 assert!(lines[0].contains("complete=true"), "{}", lines[0]);
@@ -1804,7 +1934,13 @@ pub mod freed_ids {
                 }
                 let lines = trace.incident(KEPT_CHECKPOINTS as u64);
                 assert!(lines[0].contains("complete=false"), "{}", lines[0]);
-                assert!(lines.iter().skip(1).map(String::len).sum::<usize>() <= MAX_FLUSH_BYTES);
+                assert!(
+                    lines
+                        .iter()
+                        .map(|line| line.len() + LOG_LINE_OVERHEAD)
+                        .sum::<usize>()
+                        <= MAX_FLUSH_BYTES - SUPPRESSION_NOTICE_RESERVE
+                );
                 assert!(lines.iter().all(|line| line.len() < 1024));
             }
 
