@@ -584,6 +584,7 @@ function data()
 						company = company and company.entity,
 						progression = prog,
 						seal = type(seal) == "table" and seal or nil,
+						actionIndex = i,
 					})
 					if uncertain then
 						-- The native command may already have changed this world.
@@ -621,6 +622,20 @@ function data()
 						l:log("action " .. i .. " of this step made no " .. kind .. " this game could name")
 					end
 					l:applied(i, ok, entity, why)
+					if name == "BuyVehicle" then
+						local canonical, canonicalStatus = nil, "unavailable"
+						if entity == nil then
+							canonicalStatus = "none"
+						else
+							local read, id = pcall(registry.id, reg, "vehicles", entity)
+							if read then
+								canonical, canonicalStatus = id, id == nil and "none" or "value"
+							end
+						end
+						local read, line = pcall(apply.vehicleBuyDiagnostic, action.BuyVehicle, ok,
+							entity, canonical, canonicalStatus, i)
+						if read then pcall(function() l:log(line) end) end
+					end
 					if ok and modbuild.BUILDS[name] then
 						local status = l:status()
 						lastBuild = (status and status.me_id ~= nil and player == status.me_id) and "mine" or "other"

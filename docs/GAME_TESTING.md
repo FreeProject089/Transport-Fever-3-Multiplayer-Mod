@@ -33,6 +33,11 @@ Test with the cheapest layer that can catch the problem:
 game ("place a bus stop as P2, does P1 see it?") is often quicker than
 scripting it. Say exactly what to do and what to look for.
 
+For company or asset incidents, record each player's active company and
+which company owns every edited asset. A shared-company test does not clear
+an incident reported with players in separate companies; reproduce that
+company and ownership arrangement.
+
 ## Rules
 
 - **Only the games you started.** Other agents may be testing on the same
@@ -279,6 +284,16 @@ It compares every step all players sampled, and prints the lanes of each
 step that differs (exit code 1). Equal probes after a test, plus every
 action applied everywhere, is the evidence that the change works in
 multiplayer.
+
+For a company or vehicle incident, keep the event-boundary lines from each
+`hook.log`: `company-event`, `assign-vehicle`, `buy-vehicle`,
+`bulldoze-construction` and `action-event`. They identify the sender's
+company transition, each vehicle/line assignment and its outcome, purchase
+model order and resulting IDs, and the construction actually resolved by a
+bulldoze. Compare canonical vehicle/line IDs across games; native entity IDs
+are local to each game. `owner=none` means no owner component/value was
+present, while `owner=unavailable` means the optional read could not be
+completed. These records contain no player key, invite, password or seal.
 
 ### Next desync trial
 

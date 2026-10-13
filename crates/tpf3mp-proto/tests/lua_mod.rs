@@ -6126,14 +6126,18 @@ fn the_game_script_buys_the_vehicle_and_tells_the_buyer_which() {
         .load("return table.concat(HOOK.logged, '\\n')")
         .eval()
         .unwrap();
-    for phase in ["before-assign", "after-assign"] {
-        assert!(
-            assignment_log.contains(&format!(
-                "vehicle-action {phase} vehicle-2 line-0 first=1 time=777000 entity=500"
-            )),
-            "missing assignment boundary: {assignment_log}"
-        );
-    }
+    assert!(
+        assignment_log.contains(
+            "assign-vehicle action_index=2 vehicle=2 native=500 line=0 native_line=301 first=1 carrier=none models=none mode=none owner=unavailable line_owner=unavailable outcome=applied"
+        ),
+        "missing assignment boundary: {assignment_log}"
+    );
+    assert!(
+        assignment_log.contains(
+            "buy-vehicle action_index=1 outcome=applied models=vehicle/bus/city.mdl native=500 canonical=2"
+        ),
+        "missing purchase boundary: {assignment_log}"
+    );
     let applied: String = lua
         .load(
             "local out = {} for _, a in ipairs(HOOK.applied) do \
@@ -15091,4 +15095,199 @@ fn a_signal_build_the_room_cannot_carry_says_why() {
         "{}",
         hook_log(&lua)
     );
+}
+
+/// Action-boundary company and assignment diagnostics name only the
+/// canonical/native entities needed to compare replicas. Unreadable optional
+/// components are markers, and a later vehicle refusal does not erase the
+/// successful earlier assignment.
+#[test]
+fn event_boundary_diagnostics_cover_company_and_partial_line_assignment() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        r#"
+        PLAYER = string.rep('a', 64)
+        HOOK.room = true
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Fixture Company' } } } }
+        HOOK.origins = { PLAYER }
+        HOOK.seals = { { scope = 'SENTINEL_SCOPE', tag = 'SENTINEL_SEAL' } }
+        UPDATE({}, STATE, 0.2)
+
+        local CT = api.type.ComponentType
+        CT.PLAYER_OWNED = 13
+        local base = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if kind == CT.PLAYER_OWNED then
+                if e == 301 or e == 401 or e == 402 then return { player = 901 } end
+                return nil
+            end
+            if kind == CT.TRANSPORT_VEHICLE then
+                if e == 401 then return { transportVehicleConfig = { vehicles = {
+                    { part = { modelId = 41 } }, { part = { modelId = 42 } } } } } end
+                if e == 402 then error('SENTINEL_COMPONENT_FAILURE') end
+            end
+            if kind == CT.LINE and e == 301 then
+                return { vehicleInfo = { transportModes = { [3] = true, [7] = true } } }
+            end
+            return base(e, kind)
+        end
+        api.res.modelRep.getName = function(id)
+            if id == 41 then return 'vehicle/bus/city.mdl' end
+            if id == 42 then return 'vehicle/bus/ferry.mdl' end
+        end
+        local send, setLineCalls = api.cmd.sendCommand, 0
+        api.cmd.sendCommand = function(command, ...)
+            if command.setLine then
+                setLineCalls = setLineCalls + 1
+                if setLineCalls == 2 then error('second vehicle refused') end
+            end
+            return send(command, ...)
+        end
+        SENT, HOOK.applied = {}, {}
+        HOOK.batch = { { AssignLine = { vehicles = { 0, 1 }, line = 0, first_stop = 1 } } }
+        HOOK.origins = { PLAYER }
+        UPDATE({}, STATE, 0.2)
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+
+    let logs: String = lua
+        .load("return table.concat(HOOK.logged, '\\n')")
+        .eval()
+        .unwrap();
+    assert!(
+        logs.contains("company-event action_index=1 op=Create actor_before=company-0/entity-25 actor_after=company-1/entity-901 local_before=company-0/entity-25 local_after=company-0/entity-25 outcome=applied"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("assign-vehicle action_index=1 vehicle=0 native=401 line=0 native_line=301 first=1 carrier=bus models=vehicle/bus/city.mdl,vehicle/bus/ferry.mdl mode=3,7 owner=company-1/entity-901 line_owner=company-1/entity-901 outcome=applied"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("assign-vehicle action_index=1 vehicle=1 native=402 line=0 native_line=301 first=1 carrier=unavailable models=unavailable mode=3,7 owner=company-1/entity-901 line_owner=company-1/entity-901 outcome=refused"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("action-event action_index=1 kind=AssignLine outcome=refused"),
+        "{logs}"
+    );
+    assert!(!logs.contains("SENTINEL_SEAL"), "{logs}");
+    assert!(!logs.contains("SENTINEL_SCOPE"), "{logs}");
+    assert!(!logs.contains("SENTINEL_COMPONENT_FAILURE"), "{logs}");
+    assert!(!logs.contains(&"a".repeat(64)), "{logs}");
+    let (sent, applied): (usize, bool) =
+        lua.load("return #SENT, HOOK.applied[1].ok").eval().unwrap();
+    assert_eq!(
+        (sent, applied),
+        (1, false),
+        "the first command remains applied"
+    );
+}
+
+/// A buy diagnostic reports ordered model resources and the entity ids after
+/// the registry binds the new vehicle. Bulldoze diagnostics reuse the
+/// construction already resolved by constructionAt, and distinguish a
+/// missing owner from a throwing owner read.
+#[test]
+fn event_boundary_diagnostics_report_buys_and_resolved_bulldozes() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    let setup = r#"
+        PLAYER = string.rep('b', 64)
+        HOOK.room = true
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Fixture Company' } } } }
+        HOOK.origins = { PLAYER }
+        UPDATE({}, STATE, 0.2)
+
+        local CT = api.type.ComponentType
+        CT.PLAYER_OWNED = 13
+        local base = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if kind == CT.PLAYER_OWNED then
+                if e == 202 then return { player = 901 } end
+                return nil
+            end
+            return base(e, kind)
+        end
+        api.res.modelRep.find = function(name)
+            if name == 'vehicle/bus/city.mdl' then return 41 end
+            if name == 'vehicle/ship/ferry.mdl' then return 42 end
+            return -1
+        end
+        api.cmd.makeEntitySetColorCmd = function(entity, color) return { paint = entity } end
+        api.engine.util.proposal = {
+            createProposalRemove = function(entity) return { removes = entity } end,
+        }
+        CONSTRUCTION_SCANS = 0
+        local list = api.engine.getEntitiesWithComponent
+        api.engine.getEntitiesWithComponent = function(kind)
+            if kind == CT.CONSTRUCTION then CONSTRUCTION_SCANS = CONSTRUCTION_SCANS + 1 end
+            return list(kind)
+        end
+
+        local buy = __BUY_BUS__
+        buy.BuyVehicle.consist[2] = {
+            model = 'vehicle/ship/ferry.mdl', reversed = false,
+            loads = { { config = 0, cargo = 3 } }, color = { r = 0, g = 0, b = 1 },
+        }
+        buy.BuyVehicle.groups = { 1, 1 }
+        buy.BuyVehicle.multiple_units = { '', '' }
+        HOOK.batch, HOOK.origins = { buy }, { PLAYER }
+        UPDATE({}, STATE, 0.2)
+
+        CONSTRUCTION_SCANS = 0
+        SENT = {}
+        HOOK.batch = { { Bulldoze = { Construction = {
+            file = 'depot/bus_depot.con', at = { x = 600, y = 10, z = 2 },
+        } } } }
+        HOOK.origins = { PLAYER }
+        UPDATE({}, STATE, 0.2)
+
+        local get = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if e == 201 and kind == CT.PLAYER_OWNED then error('SENTINEL_OWNER_FAILURE') end
+            return get(e, kind)
+        end
+        REFUSE = true
+        HOOK.batch = { { Bulldoze = { Construction = {
+            file = 'depot/bus_depot.con', at = { x = 600, y = 10, z = 2 },
+        } } } }
+        HOOK.origins = { PLAYER }
+        UPDATE({}, STATE, 0.2)
+        "#
+    .replace("__BUY_BUS__", BUY_BUS);
+    lua.load(setup)
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+
+    let logs: String = lua
+        .load("return table.concat(HOOK.logged, '\\n')")
+        .eval()
+        .unwrap();
+    assert!(
+        logs.contains("buy-vehicle action_index=1 outcome=applied models=vehicle/bus/city.mdl,vehicle/ship/ferry.mdl native=500 canonical=2"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("bulldoze-construction action_index=1 ref=depot/bus_depot.con@(600.0,10.0,2.0) native=201 actual=(600.0,10.0,2.0) owner=none"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("action-event action_index=1 kind=Bulldoze outcome=applied"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("bulldoze-construction action_index=1 ref=depot/bus_depot.con@(600.0,10.0,2.0) native=201 actual=(600.0,10.0,2.0) owner=unavailable"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("action-event action_index=1 kind=Bulldoze outcome=refused"),
+        "{logs}"
+    );
+    assert!(!logs.contains("SENTINEL_OWNER_FAILURE"), "{logs}");
+    assert!(!logs.contains(&"b".repeat(64)), "{logs}");
+    let scans: usize = lua.load("return CONSTRUCTION_SCANS").eval().unwrap();
+    assert_eq!(scans, 2, "one constructionAt traversal per bulldoze action");
 }

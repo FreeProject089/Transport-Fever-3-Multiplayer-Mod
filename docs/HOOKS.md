@@ -1103,6 +1103,26 @@ every game between the same two simulation steps, including while paused:
    the world (fail closed). A hold or closed world invalidates delayed
    wakes; duplicates and stale tokens take nothing.
 
+At that boundary, the mod emits compact records for company changes, line
+assignments, vehicle purchases and construction bulldozes. `company-event`
+shows the sender's company before and after the operation and the local
+game's selected company (`local_before`/`local_after`); it never logs the
+sender key, company name, password or seal. Each record's `action_index` is
+its 1-based position in that replay batch, not a room simulation step.
+`assign-vehicle` is one line per
+vehicle and carries its canonical ID, this game's native entity, the line's
+canonical/native IDs, ordered model resource names, carrier folder, line mode
+set, owner and that vehicle's applied/refused result. `buy-vehicle` carries
+only the consist's ordered model resource names and the new native and
+canonical vehicle IDs when the registry can name it. `bulldoze-construction`
+records the requested construction reference, the already-resolved native
+entity and actual origin, and its owner; `action-event` records the action's
+applied/refused result. Native entity IDs are local to a game; compare the
+canonical IDs and resource names across replicas. Optional diagnostic reads
+say `none` when a component or value is absent and `unavailable` when a read
+throws or cannot be made. They are protected reads at the action boundary,
+not per-tick scans, and never decide whether the action applies.
+
 The world still runs the game's paused path while waiting: neither room
 steps nor game time advance, and the paused-tick fix keeps `tickCount`
 unchanged. Construction costs are charged normally. Existing update and
@@ -3934,11 +3954,12 @@ and nothing more.
   bytes. These extra reads happen only during dumps,
   not ordinary rolling checks. They describe the sampled state, not every
   earlier routing decision; a root cause can still require reproduction.
-  Line assignments also log `vehicle-action before-assign` and
-  `after-assign`, with canonical vehicle/line IDs, game time and the local
-  vehicle's state, stop, path position and speed. These bounded action-time
-  reads help distinguish an existing displacement from a departure that
-  diverges after assignment; they do not scan vehicles every tick.
+  Line assignments also log one `assign-vehicle` line per named vehicle at
+  the action boundary, with canonical/native vehicle and line IDs, the
+  vehicle's ordered model names and carrier, the line's mode set, owners and
+  the command's per-vehicle result. A refused later command stays visible
+  beside an earlier vehicle command that applied; these reads do not scan
+  vehicles every tick.
 - **A box of the network.** `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (the
   world's x and y, metres, any two opposite corners) dumps the network lane
   at every checkpoint in `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to` (steps,
