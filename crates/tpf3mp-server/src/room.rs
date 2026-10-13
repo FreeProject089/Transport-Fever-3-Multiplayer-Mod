@@ -19,11 +19,11 @@ use tokio::{
 use tpf3mp_net::{bulk, close};
 use tpf3mp_proto::{
     BannerId, ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN,
-    FixedBytes, IntentRejection, Invite, LaneDigest, LoadingStage, MemberView, Payload, Platform,
-    PlayerId, RequestError, Resume, RoomDeclaration, RoomId, RoomListing, RoomMods, RoomPhase,
-    RoomSettings, RoomView, RulesName, SavedWorld, Seal, Secret, ServerMessage, SnapshotId, Speed,
-    StartSave, StartView, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart, WorldOffer,
-    decode_frame, encode_frame,
+    FixedBytes, IntentRejection, Invite, LaneDigest, LoadingStage, MemberView, NativeMod, Payload,
+    Platform, PlayerId, RequestError, Resume, RoomDeclaration, RoomId, RoomListing, RoomMods,
+    RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, Seal, Secret, ServerMessage,
+    SnapshotId, Speed, StartSave, StartView, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart,
+    WorldOffer, decode_frame, encode_frame,
 };
 use tpf3mp_snapshot::{Manifest, ManifestId};
 use tracing::{debug, error, info, warn};
@@ -150,17 +150,16 @@ impl Declared {
         }
     }
 
-    /// A running game's content as its log keeps it, the manifest alone,
-    /// after a restart: the room's mods are told again from it, each by its
-    /// id, so a newcomer still learns the whole list rather than what a
-    /// `ContentDiff` names. What players were told of each (name, source,
-    /// Mod Hub number) and the settings are not kept: the game's world
-    /// carries its own settings. A manifest that is no room's list (a
-    /// summarised tail, too many mods) tells none, as before. Its native
-    /// mods are told by id and version, without their settings, which a
-    /// log does not keep: a member whose launcher must install one then runs
-    /// it with its defaults, and matches only if those are the room's.
-    pub(crate) fn restored(manifest: ContentManifest) -> Self {
+    /// A format-8 native-free running game's content as its log keeps it:
+    /// the room's mods are
+    /// told again from the manifest, each by its id, so a newcomer still
+    /// learns the whole list rather than what a `ContentDiff` names. What
+    /// players were told of ordinary mods (name, source, Mod Hub number)
+    /// and their settings are not kept: the game's world carries its own
+    /// settings. This legacy path is only used after recovery has rejected
+    /// native-bearing format-8 manifests. A manifest that is no room's list
+    /// (a summarised tail, too many mods) tells none, as before.
+    pub(crate) fn restored_legacy_native_free(manifest: ContentManifest) -> Self {
         let info = manifest
             .mods
             .iter()
@@ -170,21 +169,34 @@ impl Declared {
                 modio: None,
             })
             .collect();
-        let native = manifest
-            .native
+        let declaration = RoomDeclaration {
+            manifest,
+            room: tpf3mp_proto::RoomConfig {
+                info,
+                params: Vec::new(),
+                native: Vec::new(),
+            },
+        };
+        match declaration.validate() {
+            Ok(()) => Self::with_room(declaration),
+            Err(_) => Self::new(declaration.manifest),
+        }
+    }
+
+    /// Restores a format-9 declaration with the exact native settings its
+    /// manifest names. Native mismatch is an inconsistent start record and
+    /// must stop recovery rather than becoming invented defaults.
+    pub(crate) fn restored_with_native(
+        manifest: ContentManifest,
+        native: Vec<NativeMod>,
+    ) -> Result<Self, tpf3mp_proto::RoomModsError> {
+        let info = manifest
+            .mods
             .iter()
-            .map(|term| {
-                let id = term
-                    .id
-                    .as_str()
-                    .strip_prefix(tpf3mp_proto::NATIVE_PREFIX)
-                    .unwrap_or_default();
-                tpf3mp_proto::NativeMod {
-                    id: Text::lossy(id),
-                    version: term.version.clone(),
-                    name: Text::lossy(id),
-                    settings: Vec::new(),
-                }
+            .map(|listed| tpf3mp_proto::ModInfo {
+                name: Text::lossy(listed.id.as_str()),
+                source: Text::lossy(""),
+                modio: None,
             })
             .collect();
         let declaration = RoomDeclaration {
@@ -196,8 +208,15 @@ impl Declared {
             },
         };
         match declaration.validate() {
-            Ok(()) => Self::with_room(declaration),
-            Err(_) => Self::new(declaration.manifest),
+            Ok(()) => Ok(Self::with_room(declaration)),
+            Err(_)
+                if declaration.manifest.native.is_empty() && declaration.room.native.is_empty() =>
+            {
+                // Preserve the old behavior for non-native manifests that
+                // did not describe a complete room mod list.
+                Ok(Self::new(declaration.manifest))
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -220,6 +239,10 @@ impl Declared {
     fn told(&self) -> Option<(RoomMods, [u8; 32])> {
         self.room.clone()
     }
+}
+
+fn native_settings_are_persistable(declared: &Declared) -> bool {
+    declared.manifest.native.is_empty() || declared.room.is_some()
 }
 
 /// A digest of what members are told of the room's mods.
@@ -885,6 +908,8 @@ pub(crate) enum RecoverError {
     Version(u16),
     #[error("the start record's room settings are out of range")]
     Settings,
+    #[error("the start record's native settings are missing or do not match its manifest")]
+    NativeSettings,
     #[error("the room is played by rules \"{0}\", which this server no longer offers")]
     UnknownRules(String),
     #[error("the log's file name does not match its room")]
@@ -1026,12 +1051,28 @@ impl Room {
         // another format has another layout, and is named as such rather
         // than reported unreadable.
         let (version, _) = postcard::take_from_bytes::<u16>(&first).map_err(RecoverError::Start)?;
-        if version != persist::FORMAT_VERSION {
+        if !matches!(
+            version,
+            persist::FORMAT_VERSION | persist::LEGACY_NATIVE_FREE_FORMAT_VERSION
+        ) {
             return Err(RecoverError::Version(version));
         }
-        let start: StartRecord = postcard::from_bytes(&first).map_err(RecoverError::Start)?;
+        let start = persist::deserialize_start(&first, version).map_err(RecoverError::Start)?;
         if !start.settings.is_valid() {
             return Err(RecoverError::Settings);
+        }
+        let has_native_terms = start
+            .manifest
+            .as_ref()
+            .is_some_and(persist::StoredManifest::has_native_terms);
+        if (version == persist::LEGACY_NATIVE_FREE_FORMAT_VERSION && has_native_terms)
+            || (version == persist::LEGACY_NATIVE_FREE_FORMAT_VERSION
+                && !start.native_mods.is_empty())
+            || (version == persist::FORMAT_VERSION
+                && start.manifest.is_none()
+                && !start.native_mods.is_empty())
+        {
+            return Err(RecoverError::NativeSettings);
         }
         // A room keeps its rules for good; the server must still have them.
         let mut ruleset = match menu.find(Some(start.rules.as_str())) {
@@ -1042,6 +1083,19 @@ impl Room {
         if path.file_stem() != Some(std::ffi::OsStr::new(&expected)) {
             return Err(RecoverError::Misnamed);
         }
+        let restored_content = start
+            .manifest
+            .clone()
+            .map(|stored| {
+                let manifest = stored.manifest();
+                if version == persist::FORMAT_VERSION {
+                    Declared::restored_with_native(manifest, start.native_mods.clone())
+                        .map_err(|_| RecoverError::NativeSettings)
+                } else {
+                    Ok(Declared::restored_legacy_native_free(manifest))
+                }
+            })
+            .transpose()?;
         let mut game = Game::new(start.settings, start.history);
         // Players the owner removed.
         let mut banned = BTreeSet::new();
@@ -1153,10 +1207,7 @@ impl Room {
             None => start.members.first().and_then(|member| member.content),
         };
         // The manifest only counts if it is the game's.
-        let game_content = start
-            .manifest
-            .clone()
-            .map(|stored| Declared::restored(stored.manifest()))
+        let game_content = restored_content
             .filter(|declared| Some(declared.fingerprint) == content)
             .map(Arc::new);
         let members: Vec<Member> = game
@@ -2084,6 +2135,15 @@ impl Room {
         {
             return Err(RequestError::ContentMismatch);
         }
+        if self.members[0]
+            .declared
+            .as_ref()
+            .is_some_and(|declared| !native_settings_are_persistable(declared))
+        {
+            // A native manifest without the owner's RoomDeclaration has no
+            // settings to persist or tell to a member after recovery.
+            return Err(RequestError::InvalidContent);
+        }
         if matches!(self.start_world, Some(StartWorld::Asked { .. })) {
             return Err(RequestError::StartWorldPending);
         }
@@ -2210,6 +2270,11 @@ impl Room {
                 })
                 .collect(),
             base,
+            native_mods: self
+                .game_content
+                .as_ref()
+                .and_then(|declared| declared.room.as_ref())
+                .map_or_else(Vec::new, |(room, _)| room.native.clone()),
         }
     }
 
@@ -4092,10 +4157,56 @@ impl Game {
 mod tests {
     use super::*;
     use crate::ruleset::{NATIVE, RulesChoice};
-    use tpf3mp_proto::FixedBytes;
+    use tpf3mp_proto::{FixedBytes, ModRef, NativeSetting, NativeValue};
 
     fn native() -> RulesName {
         RulesName::new(NATIVE).unwrap()
+    }
+
+    fn native_terms() -> (ContentManifest, Vec<NativeMod>) {
+        let term = ModRef {
+            id: Text::new("native:bigmap").unwrap(),
+            version: Text::new("1.2.3+0123456789").unwrap(),
+        };
+        let manifest = ContentManifest::new(
+            Text::new("40420").unwrap(),
+            vec![ModRef {
+                id: Text::new("tpf3mp_1").unwrap(),
+                version: Text::new("1.0.0").unwrap(),
+            }],
+        )
+        .with_native(vec![term]);
+        let settings = vec![NativeSetting {
+            key: Text::new("radius").unwrap(),
+            value: NativeValue::Int(37),
+        }];
+        let native = NativeMod {
+            id: Text::new("bigmap").unwrap(),
+            version: Text::new("1.2.3+0123456789").unwrap(),
+            name: Text::new("Big Maps").unwrap(),
+            settings,
+        };
+        (manifest, vec![native])
+    }
+
+    fn assert_native_terms(room: &Room, expected: &[NativeMod]) {
+        let declared = room
+            .game_content
+            .as_deref()
+            .expect("the original manifest matches the game content");
+        let (told, _) = declared.told().expect("native room terms are retained");
+        assert_eq!(told.native, expected);
+        assert_eq!(told.manifest(), declared.manifest);
+    }
+
+    fn write_record(path: &Path, payload: &[u8], records: &[Vec<u8>]) {
+        let mut bytes = Vec::new();
+        for payload in std::iter::once(payload).chain(records.iter().map(Vec::as_slice)) {
+            bytes.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
+            bytes.extend_from_slice(&crc32fast::hash(payload).to_le_bytes());
+            bytes.extend_from_slice(payload);
+        }
+        std::fs::write(path, bytes).unwrap();
     }
 
     /// After a restart, a running game's room tells its mods again from the
@@ -4111,7 +4222,7 @@ mod tests {
             Text::new("40408").unwrap(),
             vec![listed("signals"), listed("trees"), listed("tpf3mp_1")],
         );
-        let restored = Declared::restored(manifest.clone());
+        let restored = Declared::restored_legacy_native_free(manifest.clone());
         assert_eq!(restored.fingerprint, manifest.fingerprint());
         let (room, _) = restored.told().expect("the room's mods told again");
         let ids: Vec<&str> = room.mods.iter().map(|m| m.id.as_str()).collect();
@@ -4119,7 +4230,58 @@ mod tests {
         assert_eq!(room.manifest(), manifest);
         // Without TPF3-MP last it is no room's list: none told, as before.
         let other = ContentManifest::new(Text::new("40408").unwrap(), vec![listed("signals")]);
-        assert!(Declared::restored(other).told().is_none());
+        assert!(
+            Declared::restored_legacy_native_free(other)
+                .told()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn restored_native_room_terms_keep_exact_settings_and_reject_missing_settings() {
+        let (manifest, native) = native_terms();
+        let restored = Declared::restored_with_native(manifest.clone(), native.clone()).unwrap();
+        assert_eq!(restored.fingerprint, manifest.fingerprint());
+        let (told, _) = restored.told().expect("new members are told native terms");
+        assert_eq!(told.native, native);
+        assert_eq!(told.manifest(), manifest);
+
+        let (manifest, _) = native_terms();
+        assert!(Declared::restored_with_native(manifest, Vec::new()).is_err());
+    }
+
+    #[test]
+    fn a_native_game_needs_room_settings_before_it_can_start_and_be_recovered() {
+        let ordinary = ContentManifest::new(
+            Text::new("40420").unwrap(),
+            vec![ModRef {
+                id: Text::new("tpf3mp_1").unwrap(),
+                version: Text::new("1.0.0").unwrap(),
+            }],
+        );
+        assert!(native_settings_are_persistable(&Declared::new(ordinary)));
+
+        let (manifest, native) = native_terms();
+        assert!(!native_settings_are_persistable(&Declared::new(
+            manifest.clone()
+        )));
+
+        let declaration = RoomDeclaration {
+            manifest,
+            room: tpf3mp_proto::RoomConfig {
+                info: vec![tpf3mp_proto::ModInfo {
+                    name: Text::new("TPF3-MP").unwrap(),
+                    source: Text::new("").unwrap(),
+                    modio: None,
+                }],
+                params: Vec::new(),
+                native,
+            },
+        };
+        declaration.validate().unwrap();
+        assert!(native_settings_are_persistable(&Declared::with_room(
+            declaration
+        )));
     }
 
     /// The native rules, recording what they apply.
@@ -4313,6 +4475,125 @@ mod tests {
         Room::recover(path, key, menu, env)
     }
 
+    fn recovery_start(id: RoomId, version: u16) -> StartRecord {
+        StartRecord {
+            version,
+            history: 1,
+            id,
+            name: Text::new("recovery fixture").unwrap(),
+            rules: native(),
+            manifest: None,
+            owner: player(1),
+            max_players: 4,
+            settings: RoomSettings::DEFAULT,
+            invite_tag: vec![0; 32],
+            password_tag: None,
+            members: Vec::new(),
+            base: None,
+            native_mods: Vec::new(),
+        }
+    }
+
+    fn one_joined_frame() -> Vec<Vec<u8>> {
+        let mut game = Game::new(RoomSettings::DEFAULT, 1);
+        let mut rules = Recorder::default();
+        game.append(joined(1), &mut rules);
+        game.seal(10)
+            .unwrap()
+            .into_iter()
+            .map(|frame| frame.to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn a_format8_native_free_log_still_recovers() {
+        let dir =
+            std::env::temp_dir().join(format!("tpf3mp-v8-native-free-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = RoomId(FixedBytes([0x81; 16]));
+        let manifest = ContentManifest::new(
+            Text::new("40420").unwrap(),
+            vec![ModRef {
+                id: Text::new("tpf3mp_1").unwrap(),
+                version: Text::new("1.0.0").unwrap(),
+            }],
+        );
+        let mut start = recovery_start(id, persist::LEGACY_NATIVE_FREE_FORMAT_VERSION);
+        start.manifest = Some(persist::StoredManifest::from(&manifest));
+        start.members.push(StartMember {
+            player: player(1),
+            name: Text::new("p1").unwrap(),
+            platform: Platform::current(),
+            content: Some(manifest.fingerprint()),
+        });
+        let payload = persist::format8_payload(&start);
+        let path = RoomLog::path_for(&dir, &id);
+        write_record(&path, &payload, &one_joined_frame());
+
+        let room = recover_room(&path, &dir);
+        assert_eq!(room.members.len(), 1);
+        assert_native_terms(&room, &[]);
+        drop(room);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn format8_native_logs_fail_closed_and_remain_untouched() {
+        let dir = std::env::temp_dir().join(format!("tpf3mp-v8-native-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = RoomId(FixedBytes([0x82; 16]));
+        let (manifest, _) = native_terms();
+        let mut start = recovery_start(id, persist::LEGACY_NATIVE_FREE_FORMAT_VERSION);
+        start.manifest = Some(persist::StoredManifest::from(&manifest));
+        let payload = persist::format8_payload(&start);
+        let path = RoomLog::path_for(&dir, &id);
+        write_record(&path, &payload, &[]);
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(matches!(
+            recover_by(&path, &dir, &recorder_menu()),
+            Err(RecoverError::NativeSettings)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn format9_missing_or_inconsistent_native_settings_fail_closed() {
+        let dir = std::env::temp_dir().join(format!("tpf3mp-v9-native-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (manifest, valid_native) = native_terms();
+        for (ordinal, native_mods) in [
+            Vec::new(),
+            vec![NativeMod {
+                version: Text::new("1.2.4+0123456789").unwrap(),
+                ..valid_native[0].clone()
+            }],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = RoomId(FixedBytes([0x83 + ordinal as u8; 16]));
+            let mut start = recovery_start(id, persist::FORMAT_VERSION);
+            start.manifest = Some(persist::StoredManifest::from(&manifest));
+            start.native_mods = native_mods;
+            let payload = postcard::to_stdvec(&start).unwrap();
+            let path = RoomLog::path_for(&dir, &id);
+            write_record(&path, &payload, &[]);
+            let before = std::fs::read(&path).unwrap();
+
+            assert!(matches!(
+                recover_by(&path, &dir, &recorder_menu()),
+                Err(RecoverError::NativeSettings)
+            ));
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn a_log_of_an_older_format_is_named_as_such() {
         let dir = std::env::temp_dir().join(format!("tpf3mp-old-log-{}", std::process::id()));
@@ -4359,6 +4640,7 @@ mod tests {
             password_tag: None,
             members: Vec::new(),
             base: None,
+            native_mods: Vec::new(),
         };
         let mut log = RoomLog::create(&dir, &start).unwrap();
         for frame in &frames {
@@ -4398,6 +4680,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let id = RoomId(FixedBytes([5; 16]));
         let settings = RoomSettings::DEFAULT;
+        let (manifest, native_mods) = native_terms();
+        let content = manifest.fingerprint();
 
         // Twenty turns with a command each, then one where a third player
         // joins, then two empty ones.
@@ -4421,14 +4705,20 @@ mod tests {
             id,
             name: Text::new("compacted").unwrap(),
             rules: native(),
-            manifest: None,
+            manifest: Some(persist::StoredManifest::from(&manifest)),
             owner: player(1),
             max_players: 8,
             settings,
             invite_tag: vec![0; 32],
             password_tag: None,
-            members: Vec::new(),
+            members: vec![StartMember {
+                player: player(1),
+                name: Text::new("p1").unwrap(),
+                platform: Platform::current(),
+                content: Some(content),
+            }],
             base: None,
+            native_mods: native_mods.clone(),
         };
         let mut log = RoomLog::create(&dir, &start).unwrap();
         for frame in &frames {
@@ -4439,6 +4729,8 @@ mod tests {
 
         // A restored room compacts, keeping its last three turns.
         let mut first = recover_room(&path, &dir);
+        assert_native_terms(&first, &native_mods);
+        assert_eq!(first.start_record(2, None).native_mods, native_mods);
         let before = std::fs::metadata(&path).unwrap().len();
         let game = running(&mut first);
         game.resume_window = 3;
@@ -4494,6 +4786,7 @@ mod tests {
         // A second restart reads the compacted log: the base, the kept
         // turns for resuming only, and the turn after, replayed.
         let mut second = recover_room(&path, &dir);
+        assert_native_terms(&second, &native_mods);
         assert_eq!(
             second.ruleset.save().unwrap(),
             rules,
@@ -4627,6 +4920,7 @@ mod tests {
             password_tag: None,
             members: Vec::new(),
             base: Some(base),
+            native_mods: Vec::new(),
         };
         let mut log = RoomLog::create(&dir, &start).unwrap();
         let turn = TurnMessage::Turn(Turn {
@@ -4703,6 +4997,7 @@ mod tests {
             password_tag: None,
             members: Vec::new(),
             base: None,
+            native_mods: Vec::new(),
         };
         let mut log = RoomLog::create(&dir, &start).unwrap();
         for frame in &frames {
