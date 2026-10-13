@@ -277,7 +277,11 @@ fn native_settings_match_version(native: &NativeMod) -> bool {
 }
 
 fn native_settings_are_persistable(declared: &Declared) -> bool {
-    declared.manifest.native.is_empty() || declared.room.is_some()
+    let Some((room, _)) = &declared.room else {
+        return declared.manifest.native.is_empty();
+    };
+    room.native.len() == declared.manifest.native.len()
+        && room.native.iter().all(native_settings_match_version)
 }
 
 /// A digest of what members are told of the room's mods.
@@ -2175,8 +2179,9 @@ impl Room {
             .as_ref()
             .is_some_and(|declared| !native_settings_are_persistable(declared))
         {
-            // A native manifest without the owner's RoomDeclaration has no
-            // settings to persist or tell to a member after recovery.
+            // A native manifest without a matching RoomDeclaration, or with
+            // settings that disagree with its term, cannot be told faithfully
+            // to members after recovery.
             return Err(RequestError::InvalidContent);
         }
         if matches!(self.start_world, Some(StartWorld::Asked { .. })) {
@@ -4322,6 +4327,102 @@ mod tests {
         assert!(native_settings_are_persistable(&Declared::with_room(
             declaration
         )));
+    }
+
+    #[test]
+    fn a_native_game_with_a_stale_settings_digest_cannot_open_a_log() {
+        let dir =
+            std::env::temp_dir().join(format!("tpf3mp-start-native-digest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = RoomId(FixedBytes([0x86; 16]));
+        let owner = player(1);
+        let (manifest, mut native_mods) = native_terms();
+        native_mods[0].settings[0].value = NativeValue::Int(38);
+        let declaration = RoomDeclaration {
+            manifest,
+            room: tpf3mp_proto::RoomConfig {
+                info: vec![tpf3mp_proto::ModInfo {
+                    name: Text::new("Big Maps").unwrap(),
+                    source: Text::new("").unwrap(),
+                    modio: None,
+                }],
+                params: Vec::new(),
+                native: native_mods,
+            },
+        };
+        declaration.validate().unwrap();
+        let declared = Arc::new(Declared::with_room(declaration));
+        let mut member = test_member();
+        member.player = owner;
+        member.ready = true;
+        member.content = Some(declared.fingerprint);
+        member.declared = Some(declared);
+        let mut room = Room {
+            id,
+            name: Text::new("digest guard").unwrap(),
+            rules: native(),
+            owner,
+            max_players: 4,
+            settings: RoomSettings::DEFAULT,
+            secrets: RoomSecrets {
+                key: hmac::Key::new(hmac::HMAC_SHA256, &[0; 32]),
+                invite_tag: vec![0; 32],
+                password_tag: None,
+            },
+            members: vec![member],
+            phase: Phase::Lobby,
+            ruleset: Box::new(Recorder::default()),
+            tick: Duration::from_millis(100),
+            metrics: Arc::new(Metrics::default()),
+            data_dir: Some(dir.clone()),
+            timeouts: Timeouts {
+                stall: Duration::from_secs(20),
+                load: Duration::from_secs(300),
+                abandoned: Duration::from_secs(600),
+            },
+            log: None,
+            compaction: None,
+            compact_at: u64::MAX,
+            compact_log_at: u64::MAX,
+            unattended_since: None,
+            password_guard: PasswordGuard::new(),
+            secret_budget: SecretBudget::new(),
+            banned: BTreeSet::new(),
+            _share: None,
+            content: None,
+            game_content: None,
+            snapshots: None,
+            start_world: None,
+            closed: false,
+            summary: Arc::new(std::sync::Mutex::new(Summary {
+                name: Text::new("digest guard").unwrap(),
+                rules: native(),
+                owner,
+                players: 1,
+                connected: 0,
+                max_players: 4,
+                has_password: false,
+                phase: RoomPhase::Lobby,
+                competitive: false,
+                listing: None,
+                members: Vec::new(),
+            })),
+            competitive: false,
+        };
+        let path = RoomLog::path_for(&dir, &id);
+
+        let refused = matches!(room.start(owner), Err(RequestError::InvalidContent));
+        let no_log_file = !path.exists();
+        let no_open_log = room.log.is_none();
+        let still_in_lobby = matches!(room.phase, Phase::Lobby);
+        drop(room);
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(refused, "stale native settings must refuse game start");
+        assert!(no_log_file, "refused start must not create a room log");
+        assert!(no_open_log, "refused start must not open a room log");
+        assert!(still_in_lobby, "refused start leaves the room in its lobby");
     }
 
     /// The native rules, recording what they apply.
