@@ -547,6 +547,9 @@ impl StoredManifest {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use tpf3mp_nativemods::{index::Setting, terms::settings_digest};
     use tpf3mp_proto::{ContentManifest, FixedBytes, ModRef, NativeSetting, NativeValue};
 
     use super::*;
@@ -604,9 +607,16 @@ mod tests {
     }
 
     fn native_declaration() -> (ContentManifest, NativeMod) {
+        let settings = vec![NativeSetting {
+            key: Text::new("radius").unwrap(),
+            value: NativeValue::Int(37),
+        }];
+        let settings_map = BTreeMap::from([("radius".to_owned(), Setting::Int(37))]);
+        let version =
+            Text::new(format!("1.2.3+{}", &settings_digest(&settings_map)[..10])).unwrap();
         let term = ModRef {
             id: Text::new("native:bigmap").unwrap(),
-            version: Text::new("1.2.3+0123456789").unwrap(),
+            version: version.clone(),
         };
         let manifest = ContentManifest::new(
             Text::new("40420").unwrap(),
@@ -618,12 +628,9 @@ mod tests {
         .with_native(vec![term]);
         let native = NativeMod {
             id: Text::new("bigmap").unwrap(),
-            version: Text::new("1.2.3+0123456789").unwrap(),
+            version,
             name: Text::new("Big Maps").unwrap(),
-            settings: vec![NativeSetting {
-                key: Text::new("radius").unwrap(),
-                value: NativeValue::Int(37),
-            }],
+            settings,
         };
         (manifest, native)
     }

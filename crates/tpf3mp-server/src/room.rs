@@ -16,6 +16,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     time::MissedTickBehavior,
 };
+use tpf3mp_nativemods::{index::Setting, terms::settings_digest};
 use tpf3mp_net::{bulk, close};
 use tpf3mp_proto::{
     BannerId, ChatText, ContentFingerprint, ContentManifest, Event, EventBody, FRAME_HEADER_LEN,
@@ -208,7 +209,19 @@ impl Declared {
             },
         };
         match declaration.validate() {
-            Ok(()) => Ok(Self::with_room(declaration)),
+            Ok(()) => {
+                if let Some(native) = declaration
+                    .room
+                    .native
+                    .iter()
+                    .find(|native| !native_settings_match_version(native))
+                {
+                    return Err(tpf3mp_proto::RoomModsError::NativeSetting(
+                        native.id.as_str().to_owned(),
+                    ));
+                }
+                Ok(Self::with_room(declaration))
+            }
             Err(_)
                 if declaration.manifest.native.is_empty() && declaration.room.native.is_empty() =>
             {
@@ -239,6 +252,28 @@ impl Declared {
     fn told(&self) -> Option<(RoomMods, [u8; 32])> {
         self.room.clone()
     }
+}
+
+fn native_settings_match_version(native: &NativeMod) -> bool {
+    let settings: BTreeMap<String, Setting> = native
+        .settings
+        .iter()
+        .map(|setting| {
+            let value = match &setting.value {
+                tpf3mp_proto::NativeValue::Bool(value) => Setting::Bool(*value),
+                tpf3mp_proto::NativeValue::Int(value) => Setting::Int(*value),
+                tpf3mp_proto::NativeValue::Text(value) => Setting::Text(value.as_str().to_owned()),
+            };
+            (setting.key.as_str().to_owned(), value)
+        })
+        .collect();
+    let digest = settings_digest(&settings);
+    let expected = &digest[..10];
+    native
+        .version
+        .as_str()
+        .rsplit_once('+')
+        .is_some_and(|(_, suffix)| suffix == expected)
 }
 
 fn native_settings_are_persistable(declared: &Declared) -> bool {
@@ -4155,6 +4190,8 @@ impl Game {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::ruleset::{NATIVE, RulesChoice};
     use tpf3mp_proto::{FixedBytes, ModRef, NativeSetting, NativeValue};
@@ -4164,9 +4201,16 @@ mod tests {
     }
 
     fn native_terms() -> (ContentManifest, Vec<NativeMod>) {
+        let settings = vec![NativeSetting {
+            key: Text::new("radius").unwrap(),
+            value: NativeValue::Int(37),
+        }];
+        let settings_map = BTreeMap::from([("radius".to_owned(), Setting::Int(37))]);
+        let version =
+            Text::new(format!("1.2.3+{}", &settings_digest(&settings_map)[..10])).unwrap();
         let term = ModRef {
             id: Text::new("native:bigmap").unwrap(),
-            version: Text::new("1.2.3+0123456789").unwrap(),
+            version: version.clone(),
         };
         let manifest = ContentManifest::new(
             Text::new("40420").unwrap(),
@@ -4176,13 +4220,9 @@ mod tests {
             }],
         )
         .with_native(vec![term]);
-        let settings = vec![NativeSetting {
-            key: Text::new("radius").unwrap(),
-            value: NativeValue::Int(37),
-        }];
         let native = NativeMod {
             id: Text::new("bigmap").unwrap(),
-            version: Text::new("1.2.3+0123456789").unwrap(),
+            version,
             name: Text::new("Big Maps").unwrap(),
             settings,
         };
@@ -4561,7 +4601,7 @@ mod tests {
     }
 
     #[test]
-    fn format9_missing_or_inconsistent_native_settings_fail_closed() {
+    fn format9_missing_inconsistent_or_tampered_native_settings_fail_closed() {
         let dir = std::env::temp_dir().join(format!("tpf3mp-v9-native-bad-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -4570,6 +4610,13 @@ mod tests {
             Vec::new(),
             vec![NativeMod {
                 version: Text::new("1.2.4+0123456789").unwrap(),
+                ..valid_native[0].clone()
+            }],
+            vec![NativeMod {
+                settings: vec![NativeSetting {
+                    key: Text::new("radius").unwrap(),
+                    value: NativeValue::Int(38),
+                }],
                 ..valid_native[0].clone()
             }],
         ]
