@@ -495,7 +495,7 @@ impl Store {
             fs::remove_dir_all(&partial)?;
         }
         fs::create_dir_all(&partial)?;
-        let downloaded = package.files.iter().try_for_each(|file| {
+        let downloaded = package.local_files().iter().try_for_each(|file| {
             let path = partial.join(&file.path);
             ensure_no_symlink_path(&self.root, &path)?;
             if let Some(parent) = path.parent() {
@@ -723,7 +723,17 @@ impl Store {
                     .map(|package| (other.as_str(), package.features.as_slice()))
             })
             .collect();
-        enabled::first_clash(registry, &mine.features, &others)
+        enabled::first_clash(registry, &mine.features, &others).or_else(|| {
+            self.registry
+                .packages
+                .iter()
+                .filter(|(other, installed)| other.as_str() != id && installed.enabled)
+                .find_map(|(other, installed)| {
+                    let theirs = installed.package()?;
+                    enabled::hooks_clash(&mine.hooks, &theirs.hooks)
+                        .map(|why| format!("it clashes with {other}: {why}"))
+                })
+        })
     }
 
     /// The enabled packages, in the order the game switches them on
@@ -822,6 +832,17 @@ impl Store {
                 features: package.features.clone(),
                 settings,
                 root: self.folder(id, &package.version),
+                plugins: crate::index::current_platform()
+                    .map(|platform| package.plugins_for(platform))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|plugin| enabled::EnabledPlugin {
+                        path: plugin.path.clone(),
+                        sha256: plugin.sha256.clone(),
+                        abi: plugin.abi,
+                    })
+                    .collect(),
+                hooks: package.hooks.clone(),
             });
         }
         Ok((
@@ -851,7 +872,7 @@ impl Store {
     fn damaged(&self, folder: &Path, package: &Package) -> Result<Vec<String>, StoreError> {
         check_package_paths(&self.root, folder, package)?;
         let mut damaged = Vec::new();
-        for file in &package.files {
+        for file in &package.local_files() {
             if !fetch::file_matches(&folder.join(&file.path), file.size, &file.sha256)? {
                 damaged.push(file.path.clone());
             }
@@ -874,7 +895,7 @@ impl Store {
 fn remove_registered(root: &Path, folder: &Path, package: &Package) -> Result<(), StoreError> {
     check_package_paths(root, folder, package)?;
     let mut dirs = Vec::new();
-    for file in &package.files {
+    for file in &package.local_files() {
         let path = folder.join(&file.path);
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -1020,7 +1041,7 @@ fn ensure_no_symlink_path(root: &Path, path: &Path) -> Result<(), StoreError> {
 
 fn check_package_paths(root: &Path, folder: &Path, package: &Package) -> Result<(), StoreError> {
     ensure_no_symlink_path(root, folder)?;
-    for file in &package.files {
+    for file in &package.local_files() {
         if !index::is_safe_path(&file.path) {
             return Err(StoreError::UnsafePath(folder.join(&file.path)));
         }

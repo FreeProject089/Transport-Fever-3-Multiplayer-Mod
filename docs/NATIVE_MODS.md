@@ -66,7 +66,8 @@ assets of the `native-mods` release of the repository
 | `depends` | Packages it needs, with a semver requirement. |
 | `conflicts` | Packages that must not be installed beside it. |
 | `files` | Data, Lua and settings files: where each goes in the package's folder (plain names joined by `/`), where it comes from, its size and SHA-256. |
-| `plugins` | Reserved for signed native libraries (`path`, `url`, `size`, `sha256`, and `abi`, the hook's plugin interface they are built against). This launcher refuses a package that has any. |
+| `plugins` | Its own code: native libraries the hook loads into the game (`path`, `url`, `size`, `sha256`; `abi`, the hook's plugin interface they are built against; `platform`, `windows-x86_64` or `linux-x86_64`). A package with any must say `simulation: true`. See "Plugins" below (proposed D29 amendment). |
+| `hooks` | The game functions its plugins patch, each found by signature: `target` (`<id>::<name>`), `signature`, `offset`, `prologue`, and `use` (`chain` or `replace`). See "Plugins" below. |
 
 Unknown fields are refused, and one malformed entry refuses the whole index:
 the project signs it, so a mistake is fixed there, never guessed around.
@@ -185,8 +186,9 @@ The launcher keeps native mods in its own data folder, never the game's:
 1. **Resolve** (`resolve`): the wanted package's newest version pinned to the
    running build, then its dependencies (an installed version is kept when it
    satisfies the requirement). Refused: a package the index does not list,
-   none for this build, one with plugins, one naming a feature this hook does
-   not have, a dependency no version satisfies, a dependency cycle, a
+   none for this build, one whose plugin this TPF3-MP cannot load, one
+   naming a feature this hook does not have, a dependency no version
+   satisfies, a dependency cycle, a
    conflict with a package chosen or installed. There is no backtracking: an
    install that does not hold together is refused with the reason.
 2. **Download** each file into `.partial-<version>/`, checking its size and
@@ -319,11 +321,100 @@ clash is caught three times over:
 `conflicts` in the index remains for packages that must not be installed
 together for reasons the hook cannot see.
 
-**Later, not built:** signed plugin libraries. A package's `plugins` would be
-native libraries, signed in the index like every file and built against a
-versioned plugin interface of the hook (`abi`), loaded by the hook only for
-the build they are pinned to. That needs its own decision: until then a
-package with plugins is refused.
+## Plugins
+
+*Built on a proposed amendment to D29 ([DECISIONS.md](DECISIONS.md)), not
+decided: until the owner approves it, this belongs on the branch that
+proposes it.* A package may carry code of its own: **plugins**, native
+libraries the hook loads into the game, which patch the game functions the
+package declares. Built-in features stay for what the project maintains
+itself; a plugin is how a mod's authors ship their own.
+
+```json
+{"id": "faster_trains", "version": "0.4.1", "name": "Faster Trains",
+ "simulation": true, "builds": ["<SHA-256 of the game's executable>"],
+ "plugins": [{"path": "plugin/faster_trains.dll", "platform": "windows-x86_64",
+              "abi": 1, "url": "https://github.com/<author>/faster-trains/releases/download/v0.4.1/faster_trains.dll",
+              "size": 81920, "sha256": "<lowercase hex>"}],
+ "hooks": [{"target": "faster_trains::max_speed",
+            "signature": "48 89 5C 24 ? 57 48 83 EC 20 8B FA",
+            "offset": 0, "prologue": "48895C2408", "use": "chain"}]}
+```
+
+**How it runs.** At bootstrap, while the game is still suspended and
+before the hook's own multiplayer patches (`tpf3mp-hook`'s `plugins` and
+`native_mods::load_plugins`), for the enabled packages in the load order:
+
+1. every declared hook is found in the running build by its signature, as
+   the hook finds its own (one match, else refused), and the function's
+   first bytes are checked against `prologue`. A mod never names an
+   address: addresses change with every game update and cannot be checked;
+2. the hooks are checked against each other and against every function
+   the hook patches itself: a hook on one of those refuses, and so do two
+   on one function of which one is `replace`;
+3. each plugin file is checked again against its pinned SHA-256, loaded,
+   and started: its one export, `tpf3mp_plugin_init`, gets a `Host`
+   (`tpf3mp-plugin-abi`) and **attaches** a detour to each declared hook by
+   name, with a slot the hook fills with what the detour calls on to;
+4. each function is patched once: the first detour in the load order
+   runs, each calls on to the next, the last to the game's own code. A
+   `replace` hook is alone on its function.
+
+Any step that fails stops before anything is patched and keeps the game
+out of rooms (`hook.log` says why). Plugins load only into the game on
+Windows x86-64 yet; elsewhere a package with one keeps the game out of
+rooms.
+
+**In a room.** A plugin's code may change anything, so a package with one
+changes the simulation, whatever it says: it must say `simulation: true`,
+and its term's digest covers its plugins' SHA-256s as well as its settings
+(`terms::package_digest`). A room's members run the same bytes, or are
+told they differ.
+
+**In the launcher.** A mod with a plugin is marked **Runs code** in the mod
+browser and manager, with "Runs its own code in the game, with your
+account's rights on this PC. Install it only from a server you trust." One
+whose plugin is for another platform or another plugin interface, or that
+needs a hook feature this TPF3-MP lacks, says why and is not offered for
+install. Two packages whose declared hooks name the same function, one
+taking it over, cannot both be switched on.
+
+**Trust.** Plugins come from the same places as every native mod: the
+project's index or the server's own (proposed D29 amendment, "A server's
+own index"), and the launcher trusts a server's registry for code as it
+does for rooms (D4). Installing is still the player's choice (a room's
+mods are got by themselves only from a server the release lists), and a
+proposed mod's plugin is never installed but by choosing it. A plugin runs
+inside the game with the player's rights: there is no sandbox, and a bad
+one can crash the game or worse. That is the trade-off the amendment asks
+the owner to accept.
+
+**Writing one.** Build a library for the platform (`cdylib` in Rust) that
+exports `tpf3mp_plugin_init`, an `Init` from `tpf3mp-plugin-abi`:
+
+```rust
+use std::ffi::c_void;
+use tpf3mp_plugin_abi::{Host, OK};
+
+static mut NEXT: *const c_void = std::ptr::null();
+
+// The game function's own signature and calling convention.
+unsafe extern "C" fn max_speed(this: *mut c_void, kind: i32) -> f32 {
+    let next: unsafe extern "C" fn(*mut c_void, i32) -> f32 = unsafe { std::mem::transmute(NEXT) };
+    unsafe { next(this, kind) * 2.0 }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn tpf3mp_plugin_init(host: *const Host) -> i32 {
+    let host = unsafe { &*host };
+    let name = "faster_trains::max_speed";
+    let status = unsafe {
+        (host.attach)(host.ctx, name.as_ptr(), name.len(), max_speed as *const c_void, &raw mut NEXT)
+    };
+    if status != OK { return status; }
+    OK
+}
+```
 
 ## In a room
 

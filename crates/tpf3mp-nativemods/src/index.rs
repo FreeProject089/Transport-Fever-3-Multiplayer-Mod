@@ -58,6 +58,27 @@ pub const MAX_AUTHORS: usize = 8;
 pub const MAX_AUTHOR: usize = 48;
 /// The longest address of a package's preview image.
 pub const MAX_PREVIEW: usize = 300;
+/// The plugin interface this TPF3-MP's hook offers (`tpf3mp-plugin-abi`).
+pub const PLUGIN_ABI: u32 = tpf3mp_plugin_abi::ABI;
+/// The platforms a plugin may be built for.
+pub const PLATFORMS: &[&str] = &["windows-x86_64", "linux-x86_64"];
+/// Most hooks a package declares.
+pub const MAX_HOOKS: usize = 64;
+/// Most bytes a hook's signature names, and most its prologue holds.
+pub const MAX_SIGNATURE: usize = 128;
+pub const MAX_PROLOGUE: usize = 32;
+
+/// The platform this TPF3-MP runs on, as plugins name it; none where no
+/// plugin can be built for it.
+pub const fn current_platform() -> Option<&'static str> {
+    if cfg!(all(windows, target_arch = "x86_64")) {
+        Some("windows-x86_64")
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Some("linux-x86_64")
+    } else {
+        None
+    }
+}
 
 /// The signed list of native mods.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,12 +158,48 @@ pub struct Package {
     /// Its data, Lua and settings files.
     #[serde(default)]
     pub files: Vec<FileEntry>,
-    /// Native libraries the hook would load. Not built: this launcher
-    /// refuses a package that has any ([`ResolveError::NeedsPlugins`]).
-    ///
-    /// [`ResolveError::NeedsPlugins`]: crate::resolve::ResolveError::NeedsPlugins
+    /// Native libraries the hook loads: the package's own code
+    /// (proposed D29 amendment, docs/NATIVE_MODS.md, "Plugins"). A package
+    /// with any changes the simulation as far as anyone can tell, and must
+    /// say so.
     #[serde(default)]
     pub plugins: Vec<Plugin>,
+    /// The game functions its plugins patch, each found by its signature,
+    /// as the hook finds its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<HookDecl>,
+}
+
+/// A game function a package's plugin patches: where it is, found by
+/// signature in the running build, and how the plugin uses it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookDecl {
+    /// `<package id>::<name>`: the name the plugin attaches to.
+    pub target: String,
+    /// An IDA-style signature: bytes in hex, `?` for any, one match in the
+    /// game's code.
+    pub signature: String,
+    /// From the match to the function, in bytes.
+    #[serde(default)]
+    pub offset: i64,
+    /// The bytes the function must start with, in hex, checked before it
+    /// is patched.
+    pub prologue: String,
+    /// How the plugin uses it.
+    #[serde(rename = "use")]
+    pub access: HookUse,
+}
+
+/// How a plugin uses a function it patches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HookUse {
+    /// It runs and then calls on to what was there: several plugins all
+    /// run, in the load order.
+    Chain,
+    /// It takes the function over: no other may patch it.
+    Replace,
 }
 
 /// A setting's value: what a package's defaults and a player's choices
@@ -184,9 +241,9 @@ pub struct FileEntry {
     pub sha256: String,
 }
 
-/// A native library a later launcher may load into the hook: signed in the
-/// index like every file, and built against the hook's plugin interface
-/// `abi`. Reserved; nothing loads one yet.
+/// A native library the hook loads into the game: pinned in the index by
+/// size and SHA-256 like every file, built for one platform against the
+/// hook's plugin interface `abi` ([`PLUGIN_ABI`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plugin {
@@ -195,6 +252,8 @@ pub struct Plugin {
     pub size: u64,
     pub sha256: String,
     pub abi: u32,
+    /// One of [`PLATFORMS`].
+    pub platform: String,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -283,6 +342,32 @@ impl Package {
         self.builds.iter().any(|pinned| pinned == build)
     }
 
+    /// Its plugins built for `platform`.
+    pub fn plugins_for(&self, platform: &str) -> Vec<&Plugin> {
+        self.plugins
+            .iter()
+            .filter(|plugin| plugin.platform == platform)
+            .collect()
+    }
+
+    /// The files installed for it here: its files, and its plugins for
+    /// this platform.
+    pub fn local_files(&self) -> Vec<FileEntry> {
+        let plugins = current_platform()
+            .map(|platform| self.plugins_for(platform))
+            .unwrap_or_default();
+        self.files
+            .iter()
+            .cloned()
+            .chain(plugins.into_iter().map(|plugin| FileEntry {
+                path: plugin.path.clone(),
+                url: plugin.url.clone(),
+                size: plugin.size,
+                sha256: plugin.sha256.clone(),
+            }))
+            .collect()
+    }
+
     pub(crate) fn validate(&self) -> Result<(), String> {
         if !is_id(&self.id) {
             return Err("the id is not lowercase letters, digits and _".into());
@@ -342,6 +427,7 @@ impl Package {
         if let Some(bad) = self.conflicts.iter().find(|c| !is_id(c)) {
             return Err(format!("the conflict {bad:?} is malformed"));
         }
+        self.validate_plugins()?;
         if self.files.len() > MAX_FILES {
             return Err("too many files".into());
         }
@@ -373,6 +459,87 @@ impl Package {
         }
         Ok(())
     }
+}
+
+impl Package {
+    fn validate_plugins(&self) -> Result<(), String> {
+        if let Some(bad) = self
+            .plugins
+            .iter()
+            .find(|p| !PLATFORMS.contains(&p.platform.as_str()) || p.abi == 0)
+        {
+            return Err(format!(
+                "the plugin {:?} names no known platform or interface",
+                bad.path
+            ));
+        }
+        if !self.plugins.is_empty() && !self.simulation {
+            return Err(
+                "it has plugins, whose code may change anything: it must say it changes the \
+                 simulation"
+                    .into(),
+            );
+        }
+        if !self.hooks.is_empty() && self.plugins.is_empty() {
+            return Err("it declares hooks but has no plugin to run them".into());
+        }
+        if self.hooks.len() > MAX_HOOKS {
+            return Err(format!("more than {MAX_HOOKS} hooks"));
+        }
+        let mut names = BTreeSet::new();
+        for hook in &self.hooks {
+            let name = hook
+                .target
+                .strip_prefix(&format!("{}::", self.id))
+                .filter(|name| is_id(name))
+                .ok_or_else(|| {
+                    format!(
+                        "the hook {:?} is not named {}::<lowercase name>",
+                        hook.target, self.id
+                    )
+                })?;
+            if !names.insert(name) {
+                return Err(format!("the hook {:?} is declared twice", hook.target));
+            }
+            if !is_signature(&hook.signature) {
+                return Err(format!(
+                    "the hook {:?} has no usable signature: hex bytes and ?, at least 8 and at \
+                     most {MAX_SIGNATURE}, 4 of them fixed",
+                    hook.target
+                ));
+            }
+            let prologue = hook.prologue.trim();
+            if prologue.is_empty()
+                || !prologue.len().is_multiple_of(2)
+                || prologue.len() / 2 > MAX_PROLOGUE
+                || !prologue.bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                return Err(format!(
+                    "the hook {:?} has no prologue of 1 to {MAX_PROLOGUE} bytes in hex",
+                    hook.target
+                ));
+            }
+            if hook.offset.unsigned_abs() > 4096 {
+                return Err(format!(
+                    "the hook {:?} is too far from its signature",
+                    hook.target
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An IDA-style signature: hex bytes and `?` or `??`, 8 to
+/// [`MAX_SIGNATURE`] of them, at least 4 fixed.
+pub fn is_signature(text: &str) -> bool {
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let fixed = tokens
+        .iter()
+        .filter(|t| t.len() == 2 && t.bytes().all(|b| b.is_ascii_hexdigit()))
+        .count();
+    let wild = tokens.iter().filter(|t| matches!(**t, "?" | "??")).count();
+    (8..=MAX_SIGNATURE).contains(&tokens.len()) && fixed + wild == tokens.len() && fixed >= 4
 }
 
 /// `YYYY-MM-DD`.
@@ -466,6 +633,7 @@ pub(crate) mod tests {
             plugins: Vec::new(),
             authors: Vec::new(),
             preview: None,
+            hooks: Vec::new(),
         }
     }
 
@@ -512,6 +680,66 @@ pub(crate) mod tests {
             ("street_raster".into(), Setting::Bool(true)),
         ]);
         package
+    }
+
+    #[test]
+    fn plugins_and_the_hooks_they_declare_are_checked() {
+        let plugin = Plugin {
+            path: "plugin/pages.dll".into(),
+            url: "https://example.com/pages.dll".into(),
+            size: 4096,
+            sha256: "a".repeat(64),
+            abi: PLUGIN_ABI,
+            platform: "windows-x86_64".into(),
+        };
+        let hook = HookDecl {
+            target: "pages::draw".into(),
+            signature: "48 89 5C 24 ? 57 48 83 EC 20".into(),
+            offset: 0,
+            prologue: "48895C2408".into(),
+            access: HookUse::Chain,
+        };
+        let mut good = package("pages", "1.0.0", &[]);
+        good.simulation = true;
+        good.plugins = vec![plugin.clone()];
+        good.hooks = vec![hook.clone()];
+        assert_eq!(good.validate(), Ok(()));
+        assert_eq!(
+            good.local_files().len(),
+            usize::from(current_platform() == Some("windows-x86_64"))
+        );
+
+        let broken = |change: &dyn Fn(&mut Package)| {
+            let mut package = good.clone();
+            change(&mut package);
+            package.validate().is_err()
+        };
+        assert!(
+            broken(&|p| p.simulation = false),
+            "code may change anything"
+        );
+        assert!(broken(&|p| p.plugins[0].platform = "amiga".into()));
+        assert!(broken(&|p| p.plugins.clear()), "hooks need a plugin");
+        assert!(
+            broken(&|p| p.hooks[0].target = "other::draw".into()),
+            "its own names"
+        );
+        assert!(broken(&|p| p.hooks.push(hook.clone())), "declared twice");
+        assert!(
+            broken(&|p| p.hooks[0].signature = "48 89 ? ?".into()),
+            "too short"
+        );
+        assert!(
+            broken(&|p| p.hooks[0].signature = "? ? ? ? ? ? ? ? 48 89".into()),
+            "too vague"
+        );
+        assert!(broken(
+            &|p| p.hooks[0].signature = "zz 89 5C 24 ? 57 48 83".into()
+        ));
+        assert!(broken(&|p| p.hooks[0].prologue = "489".into()));
+        assert!(broken(&|p| p.hooks[0].offset = 1 << 20));
+        // A raw address is no signature.
+        assert!(broken(&|p| p.hooks[0].signature = "0x140123456".into()));
     }
 
     #[test]

@@ -67,6 +67,23 @@ pub fn settings_digest(settings: &BTreeMap<String, Setting>) -> String {
     signed::hex(digest.finish().as_ref())
 }
 
+/// The digest a package's term carries: of its settings, and of its
+/// plugins' code when it has any, so that a room's members run the same
+/// bytes. A package without plugins keeps the settings' digest alone.
+pub fn package_digest(package: &crate::enabled::EnabledPackage) -> String {
+    if package.plugins.is_empty() {
+        return settings_digest(&package.settings);
+    }
+    let mut digest = Context::new(&SHA256);
+    digest.update(SETTINGS_DOMAIN);
+    digest.update(&serde_json::to_vec(&package.settings).unwrap_or_default());
+    for plugin in &package.plugins {
+        digest.update(b"\nplugin ");
+        digest.update(plugin.sha256.as_bytes());
+    }
+    signed::hex(digest.finish().as_ref())
+}
+
 /// The room's terms for the packages in `enabled`: the simulation-changing
 /// ones, ordered by id.
 pub fn terms(enabled: &Enabled, registry: &[FeatureSpec]) -> Vec<NativeTerm> {
@@ -77,7 +94,7 @@ pub fn terms(enabled: &Enabled, registry: &[FeatureSpec]) -> Vec<NativeTerm> {
         .map(|package| NativeTerm {
             id: package.id.clone(),
             version: package.version.clone(),
-            settings: settings_digest(&package.settings),
+            settings: package_digest(package),
         })
         .collect();
     terms.sort();
@@ -166,6 +183,8 @@ mod tests {
                 .map(|(k, v)| ((*k).to_owned(), v.clone()))
                 .collect(),
             root: PathBuf::new(),
+            plugins: Vec::new(),
+            hooks: Vec::new(),
         }];
         if with_page_only {
             packages.push(EnabledPackage {
@@ -175,6 +194,8 @@ mod tests {
                 features: vec!["bigmap.page".into()],
                 settings: BTreeMap::new(),
                 root: PathBuf::new(),
+                plugins: Vec::new(),
+                hooks: Vec::new(),
             });
         }
         Enabled {
@@ -182,6 +203,35 @@ mod tests {
             build: BUILD.into(),
             packages,
         }
+    }
+
+    #[test]
+    fn a_plugins_code_is_part_of_its_term() {
+        let mut package = crate::enabled::EnabledPackage {
+            id: "pages".into(),
+            version: "1.0.0".into(),
+            simulation: true,
+            features: Vec::new(),
+            settings: BTreeMap::new(),
+            root: std::path::PathBuf::from("native-mods/pages/1.0.0"),
+            plugins: Vec::new(),
+            hooks: Vec::new(),
+        };
+        let plain = package_digest(&package);
+        assert_eq!(
+            plain,
+            settings_digest(&package.settings),
+            "no plugin: as before"
+        );
+        package.plugins.push(crate::enabled::EnabledPlugin {
+            path: "plugin/pages.dll".into(),
+            sha256: "a".repeat(64),
+            abi: 1,
+        });
+        let one = package_digest(&package);
+        assert_ne!(one, plain);
+        package.plugins[0].sha256 = "b".repeat(64);
+        assert_ne!(package_digest(&package), one, "other bytes, another term");
     }
 
     #[test]

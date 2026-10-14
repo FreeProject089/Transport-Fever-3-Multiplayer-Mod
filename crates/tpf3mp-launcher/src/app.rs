@@ -2225,6 +2225,14 @@ impl<B: Backend> LauncherApp<B> {
         );
         let (under, under_color) = if row.proposed.is_some() {
             ("Proposed · not reviewed".to_owned(), theme::DIFFERS_TEXT)
+        } else if page == ModsPage::Browser && row.installed.is_none() && row.unsupported.is_some()
+        {
+            ("Can't be installed here".to_owned(), theme::DIFFERS_TEXT)
+        } else if row.code {
+            (
+                format!("{} · runs code", by(&row.authors).unwrap_or_default()),
+                theme::DIFFERS_TEXT,
+            )
         } else {
             let mut under = by(&row.authors).unwrap_or_default();
             if page == ModsPage::Browser && row.installed.is_some() {
@@ -2297,6 +2305,9 @@ impl<B: Backend> LauncherApp<B> {
         if row.proposed.is_some() {
             pills.push(("Proposed".into(), Pill::Update));
         }
+        if row.code {
+            pills.push(("Runs code".into(), Pill::Update));
+        }
         if !row.listed {
             pills.push(("No longer offered".into(), Pill::Unknown));
         }
@@ -2315,6 +2326,23 @@ impl<B: Backend> LauncherApp<B> {
                 &row.description,
                 theme::body(12.5),
                 theme::TEXT,
+            ));
+        }
+        if row.code {
+            ui.add_space(8.0);
+            ui.label(theme::text(
+                "Runs its own code in the game, with your account's rights on this PC. Install \
+                 it only from a server you trust.",
+                theme::body(12.0),
+                theme::DIFFERS_TEXT,
+            ));
+        }
+        if let Some(why) = row.unsupported.as_ref().filter(|_| row.installed.is_none()) {
+            ui.add_space(8.0);
+            ui.label(theme::text(
+                format!("Can't be installed: {why}."),
+                theme::body(12.0),
+                theme::DIFFERS_TEXT,
             ));
         }
         if let Some(clash) = &row.clash {
@@ -2372,9 +2400,16 @@ impl<B: Backend> LauncherApp<B> {
                         (Some(_), Some(_)) if has_update(row) => Some("Update"),
                         _ => None,
                     };
+                    let installable = idle && row.unsupported.is_none();
                     if let Some(words) = words
-                        && theme::quiet_button(ui, idle, Some("download"), words, Quiet::new())
-                            .clicked()
+                        && theme::quiet_button(
+                            ui,
+                            installable,
+                            Some("download"),
+                            words,
+                            Quiet::new(),
+                        )
+                        .clicked()
                     {
                         self.backend.act(if row.proposed.is_some() {
                             Action::NativeInstallProposed { id }

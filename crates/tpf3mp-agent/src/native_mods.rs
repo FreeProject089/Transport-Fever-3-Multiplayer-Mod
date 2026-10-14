@@ -234,6 +234,12 @@ pub struct NativeRow {
     /// Why it cannot be switched on beside those that are, if it is off
     /// and cannot: its features clash with theirs.
     pub clash: Option<String>,
+    /// Whether it carries code of its own, plugins the hook loads into the
+    /// game (proposed D29 amendment).
+    pub code: bool,
+    /// Why this TPF3-MP cannot install it, if it cannot: a hook feature it
+    /// lacks, or no plugin it can load.
+    pub unsupported: Option<String>,
     /// How often its releases were downloaded, as its host says.
     pub downloads: Option<u64>,
     /// When it last changed, `YYYY-MM-DD`, as its host says.
@@ -248,10 +254,40 @@ pub struct NativeRow {
     pub proposed: Option<Proposal>,
 }
 
+/// Why this TPF3-MP cannot install `package`, if it cannot.
+fn unsupported(package: &Package) -> Option<String> {
+    if let Some(feature) = package
+        .features
+        .iter()
+        .find(|id| features::find(BUILT_IN, id).is_none())
+    {
+        return Some(format!(
+            "it needs the hook feature {feature}, which this TPF3-MP does not have"
+        ));
+    }
+    if package.plugins.is_empty() {
+        return None;
+    }
+    let here = tpf3mp_nativemods::index::current_platform()
+        .map(|platform| package.plugins_for(platform))
+        .unwrap_or_default();
+    if here.is_empty() {
+        Some("it has no plugin for this platform".into())
+    } else if here
+        .iter()
+        .any(|p| p.abi != tpf3mp_nativemods::index::PLUGIN_ABI)
+    {
+        Some("its plugin is built for another version of TPF3-MP".into())
+    } else {
+        None
+    }
+}
+
 /// Whether `package` changes the simulation: it says so, or a feature it
 /// names does (an unknown one counts, fail closed).
 fn changes_simulation(package: &Package) -> bool {
     package.simulation
+        || !package.plugins.is_empty()
         || package
             .features
             .iter()
@@ -455,6 +491,8 @@ fn row(
         installed_size: installed.and_then(|i| i.package()).map(size),
         load_order,
         clash,
+        code: !newest.plugins.is_empty(),
+        unsupported: available.and_then(unsupported),
         downloads: listing.and_then(|l| l.downloads),
         updated: listing.and_then(|l| l.updated.clone()),
         previous: installed.and_then(|i| i.previous.clone()),
@@ -698,6 +736,7 @@ mod tests {
             plugins: Vec::new(),
             authors: Vec::new(),
             preview: None,
+            hooks: Vec::new(),
         };
         let registry = tpf3mp_nativemods::store::Registry {
             format: 1,
@@ -754,6 +793,7 @@ mod tests {
             plugins: Vec::new(),
             authors: Vec::new(),
             preview: None,
+            hooks: Vec::new(),
         };
         let registry = tpf3mp_nativemods::store::Registry {
             format: 1,
@@ -833,6 +873,7 @@ mod tests {
             plugins: Vec::new(),
             authors: Vec::new(),
             preview: None,
+            hooks: Vec::new(),
         };
         (package, (url, bytes))
     }

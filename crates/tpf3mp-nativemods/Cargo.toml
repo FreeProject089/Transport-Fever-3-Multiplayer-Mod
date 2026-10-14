@@ -21,6 +21,7 @@ semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tpf3mp-plugin-abi.workspace = true
 ureq = { workspace = true, optional = true }
 
 [dev-dependencies]

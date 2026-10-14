@@ -520,6 +520,80 @@ fn diagnostics_can_be_switched_off_in_settings() {
 }
 
 #[test]
+fn a_mod_with_code_says_so_and_one_this_launcher_cannot_run_is_not_offered() {
+    use tpf3mp_agent::native_mods::{NativeRow, NativeView};
+    let row = |id: &str, name: &str, code: bool, unsupported: Option<&str>| NativeRow {
+        id: id.into(),
+        name: name.into(),
+        description: String::new(),
+        homepage: None,
+        authors: vec!["Ann".into()],
+        preview: None,
+        simulation: true,
+        available: Some("1.0.0".into()),
+        available_size: None,
+        installed: None,
+        installed_size: None,
+        load_order: None,
+        clash: None,
+        code,
+        unsupported: unsupported.map(str::to_owned),
+        downloads: None,
+        updated: None,
+        previous: None,
+        enabled: false,
+        listed: true,
+        proposed: None,
+    };
+    let state = |rows: Vec<NativeRow>| State {
+        native: NativeView {
+            available: true,
+            serial: Some(3),
+            server: Some("play.example:29470".into()),
+            proposed_shown: false,
+            packages: rows,
+            problem: None,
+        },
+        ..State::default()
+    };
+    // Code of its own: said plainly, and still installed by choice.
+    let mut window = window(state(vec![row("trains", "Faster Trains", true, None)]));
+    window.get_by_label("Mod browser").click();
+    window.run_steps(4);
+    window.get_by_label("Runs code");
+    window.get_by_label(
+        "Runs its own code in the game, with your account's rights on this PC. Install it only \
+         from a server you trust.",
+    );
+    window.get_by_label("Install").hover();
+    window.run_steps(2);
+    window.get_by_label("Install").click();
+    window.run_steps(2);
+    assert_eq!(
+        actions(&window),
+        [Action::NativeInstall {
+            id: "trains".into()
+        }]
+    );
+
+    // A plugin for another platform: why, and no install.
+    let mut window = self::window(state(vec![row(
+        "trains",
+        "Faster Trains",
+        true,
+        Some("it has no plugin for this platform"),
+    )]));
+    window.get_by_label("Mod browser").click();
+    window.run_steps(4);
+    window.get_by_label("Can't be installed: it has no plugin for this platform.");
+    window.get_by_label("Install").hover();
+    window.run_steps(2);
+    window.get_by_label("Install").click();
+    window.run_steps(2);
+    assert!(actions(&window).is_empty(), "the button is off");
+}
+
+#[test]
 fn a_native_mod_that_clashes_cannot_be_switched_on() {
     use tpf3mp_agent::native_mods::{NativeRow, NativeView};
     let pages = NativeRow {
@@ -542,6 +616,8 @@ fn a_native_mod_that_clashes_cannot_be_switched_on() {
         enabled: false,
         listed: true,
         proposed: None,
+        code: false,
+        unsupported: None,
     };
     let mut window = window(State {
         native: NativeView {
@@ -590,6 +666,8 @@ fn native_mods_are_managed_in_the_mod_manager_and_found_in_the_mod_browser() {
         downloads: Some(1234),
         updated: Some("2026-09-30".into()),
         clash: None,
+        code: false,
+        unsupported: None,
     };
     let signs = NativeRow {
         id: "signs".into(),
@@ -615,6 +693,8 @@ fn native_mods_are_managed_in_the_mod_manager_and_found_in_the_mod_browser() {
         downloads: None,
         updated: None,
         clash: None,
+        code: false,
+        unsupported: None,
     };
     let state = State {
         native: NativeView {
