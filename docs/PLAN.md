@@ -402,6 +402,10 @@ Dev B:
   *Proposed (D29 amendment, not decided, 2026-10-12):* each server serves
   its own index to its players, trusted as the server is (D4), so a native
   mod needs no project key or signing workflow before it can be offered.
+  *Proposed (D29 amendment, not decided, 2026-10-14):* a native mod may
+  carry plugins, its own code, which patch the game functions it declares
+  by signature, chained by the hook; trusted from the server's registry as
+  the server is.
 
 Dev C:
 

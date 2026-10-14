@@ -1470,3 +1470,84 @@ format, built-in features only, per-file checks and room terms stay), D4
 operated servers; a server set in Settings). PLAN.md, Part 3, the D29
 item: the key and signing workflow would no longer be needed before
 players can use a native mod.
+
+### D29 amendment (PROPOSED amendment, not decided, 2026-10-14): native mods may carry plugins, their own code
+
+**Proposed, for the owner (Juliansgith) to approve or refuse in the pull
+request. D29 above, and the server-index amendment before this one, stay
+in force until then. This one builds on the server-index amendment.**
+
+The user asked on 2026-10-14 to let a native mod bring its own patch code
+and say where in the game it patches. As D29 stands, a package may only
+switch on features compiled into TPF3-MP's hook, and one with plugin
+libraries is refused: every native mod needs the project to write its code
+first. Mods such as Big Maps are their authors' code, maintained in their
+own repositories, and cannot ship that way.
+
+- **A package may carry plugins.** `plugins` (reserved in D29) becomes
+  live: native libraries, one per platform (`windows-x86_64`,
+  `linux-x86_64`), each pinned in the index by size and SHA-256 like every
+  file, and built against a versioned plugin interface of the hook
+  (`abi`, the `tpf3mp-plugin-abi` crate). A launcher installs only the
+  plugin for its own platform and interface; a package without one is
+  refused with the reason.
+- **Hooks are declared, found by signature, never by address.** A package
+  lists the game functions its plugins patch (`hooks`): a name, an
+  IDA-style signature that must match exactly once in the running build,
+  an offset, the function's expected first bytes, and how the plugin uses
+  it (`chain` or `replace`). The hook finds each as it finds its own, and
+  refuses a hook that does not match, matches twice or starts with other
+  bytes. A raw address is refused: it changes with every game update and
+  cannot be checked.
+- **The hook owns every patch.** A plugin never writes to the game's code.
+  Its one export receives a host interface and attaches a detour to each
+  declared hook by name; the hook patches each function once, after every
+  plugin has attached, chaining the detours in the load order (each calls
+  on to the next, the last to the game's own code). A `replace` hook is
+  alone on its function. A hook on a function the hook patches for
+  multiplayer is refused. Any failure (a file that changed since it was
+  installed, an interface mismatch, a hook not found, a plugin that refuses
+  to start) patches nothing and keeps the game out of rooms.
+- **Code counts as changing the simulation.** A package with a plugin must
+  say `simulation: true`, and its room term's digest covers its plugins'
+  SHA-256s: a room's members run the same bytes, or are told they differ
+  (D29's room terms, unchanged otherwise).
+- **Trusted from the server's registry, as rooms are.** Plugins come from
+  where every native mod comes from: the project's signed index, or the
+  index of the server the player plays on (the server-index amendment),
+  trusted as that server is (D4). The launcher marks a mod with a plugin
+  "Runs code", warns that it runs with the player's rights on their PC,
+  and installs it only by the player's choice (a room's mods are got by
+  themselves only from a server the release lists; a proposed mod's never).
+- **Windows first.** The hook loads plugins only on Windows x86-64 yet;
+  elsewhere a package with a plugin keeps the game out of rooms.
+
+Rejected:
+
+- **Keep D29 as it is** (built-in features only): safest, but every native
+  mod waits for the project to write its code, and mods like Big Maps stay
+  out.
+- **Data-only patches** (a catalogue of values the hook exposes, which mods
+  set): safe and useful, and still worth building, but it cannot express
+  new behaviour; it complements plugins rather than replacing them.
+- **Plugins that patch the game themselves**: two plugins on one function
+  would overwrite each other's jumps, a plugin could patch the hook's own
+  multiplayer functions, and nothing could chain or refuse them.
+- **Only the project's signed index may carry plugins**: safer, but the
+  user chose to trust a server's registry for code as for rooms; the
+  project's index can still be the only source a launcher accepts later,
+  by a release setting.
+
+Trade-off for the owner: **this lets a server's operator, and whoever
+merges pull requests into its registry, run native code on the PCs of
+players who install their mods.** A plugin runs inside the game with the
+player's rights: it can read their files, reach the network, or crash the
+game, and no sandbox stops it. The launcher says so before installing, and
+installing stays the player's choice; the SHA-256 pins make every player
+of a room run the same bytes, not safe ones. Players on the project's
+servers trust the project's registry, as now.
+
+Touches: D29 (plugins become live; built-in features stay), its proposed
+server-index amendment (where plugins come from), D4 (servers trusted by
+clients, now for code), D11 (the hook loads the plugins the launcher
+enabled, and nothing else). PLAN.md, Part 3, the D29 item.
