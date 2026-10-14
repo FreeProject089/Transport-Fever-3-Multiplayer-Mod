@@ -78,7 +78,10 @@ fn render_clicking(name: &str, state: State, scroll_left: f32, click: Option<&st
             },
         },
     )
-    .with_place(place);
+    .with_place(place)
+    .with_preview(&preview_url("big-maps"), sample_preview(0))
+    .with_preview(&preview_url("terrain-tweaks"), sample_preview(1))
+    .with_preview(&preview_url("faster-trains"), sample_preview(2));
     let mut harness = Harness::builder()
         .with_size(egui::vec2(1100.0, 690.0))
         .wgpu()
@@ -104,6 +107,48 @@ fn render_clicking(name: &str, state: State, scroll_left: f32, click: Option<&st
     image.save(dir.join(format!("{name}.png"))).unwrap();
 }
 
+/// Where a sample mod's preview would be fetched from.
+fn preview_url(id: &str) -> String {
+    format!("https://raw.githubusercontent.com/example/{id}/HEAD/preview.png")
+}
+
+/// A sample preview: a landscape drawn from `seed`, 640 by 360.
+fn sample_preview(seed: u32) -> egui::ColorImage {
+    let (w, h) = (640usize, 360usize);
+    let skies = [[96, 146, 196], [222, 150, 104], [58, 74, 120]];
+    let lands = [[78, 120, 70], [120, 104, 66], [70, 92, 84]];
+    let sky = skies[seed as usize % 3];
+    let land = lands[seed as usize % 3];
+    let mut pixels = Vec::with_capacity(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            let (fx, fy) = (x as f32 / w as f32, y as f32 / h as f32);
+            let hill = 0.55
+                + 0.08 * (fx * 7.0 + seed as f32).sin()
+                + 0.05 * (fx * 17.0 + 2.0 * seed as f32).cos();
+            let near = 0.78 + 0.04 * (fx * 11.0 + 3.0 * seed as f32).sin();
+            let rail =
+                (fy - (0.86 - 0.1 * fx)).abs() < 0.006 || (fy - (0.9 - 0.1 * fx)).abs() < 0.006;
+            let c = if rail {
+                [52, 48, 46]
+            } else if fy > near {
+                land.map(|v| (v as f32 * 0.8) as u8)
+            } else if fy > hill {
+                land
+            } else {
+                let t = fy / hill;
+                [0, 1, 2].map(|i| (sky[i] as f32 * (0.75 + 0.35 * t)).min(255.0) as u8)
+            };
+            pixels.push(egui::Color32::from_rgb(c[0], c[1], c[2]));
+        }
+    }
+    egui::ColorImage {
+        size: [w, h],
+        source_size: egui::vec2(w as f32, h as f32),
+        pixels,
+    }
+}
+
 /// A server's native mods in Settings: one installed with an update, one proposed in a pull request, shown.
 fn native() -> NativeView {
     NativeView {
@@ -124,6 +169,13 @@ fn native() -> NativeView {
                 enabled: true,
                 listed: true,
                 proposed: None,
+                authors: vec!["Juliansgith".into(), "silver2127".into()],
+                preview: Some(preview_url("big-maps")),
+                available_size: Some(18_400_000),
+                installed_size: Some(17_900_000),
+                load_order: Some(1),
+                downloads: Some(12_480),
+                updated: Some("2026-10-09".into()),
             },
             NativeRow {
                 id: "terrain-tweaks".into(),
@@ -137,6 +189,13 @@ fn native() -> NativeView {
                 enabled: false,
                 listed: true,
                 proposed: None,
+                authors: vec!["GrayM8".into()],
+                preview: Some(preview_url("terrain-tweaks")),
+                available_size: Some(2_300_000),
+                installed_size: Some(2_300_000),
+                load_order: None,
+                downloads: Some(3_210),
+                updated: Some("2026-08-21".into()),
             },
             NativeRow {
                 id: "faster-trains".into(),
@@ -152,6 +211,13 @@ fn native() -> NativeView {
                 enabled: false,
                 listed: true,
                 proposed: None,
+                authors: vec!["Max".into()],
+                preview: Some(preview_url("faster-trains")),
+                available_size: Some(41_800_000),
+                installed_size: None,
+                load_order: None,
+                downloads: Some(980),
+                updated: Some("2026-10-01".into()),
             },
             NativeRow {
                 id: "station-signs".into(),
@@ -169,6 +235,13 @@ fn native() -> NativeView {
                     title: "Add Station Signs".into(),
                     url: "https://github.com/example/tpf3mp-registry/pull/12".into(),
                 }),
+                authors: vec!["someone".into()],
+                preview: None,
+                available_size: Some(640_000),
+                installed_size: None,
+                load_order: None,
+                downloads: None,
+                updated: None,
             },
         ],
         problem: None,

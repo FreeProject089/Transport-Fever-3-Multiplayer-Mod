@@ -215,11 +215,26 @@ pub struct NativeRow {
     pub description: String,
     /// The mod's own project page, to open in the browser.
     pub homepage: Option<String>,
+    /// Who made it.
+    pub authors: Vec<String>,
+    /// The address of an image of it, to show.
+    pub preview: Option<String>,
     /// Whether every game of a room must run it alike.
     pub simulation: bool,
     /// The newest version the index has for this game's build.
     pub available: Option<String>,
+    /// Its download, all its files together, in bytes.
+    pub available_size: Option<u64>,
     pub installed: Option<String>,
+    /// The installed version's files together, in bytes.
+    pub installed_size: Option<u64>,
+    /// Where it comes in the order the game loads the native mods enabled,
+    /// from 1: by id, as the launcher hands them to the game.
+    pub load_order: Option<usize>,
+    /// How often its releases were downloaded, as its host says.
+    pub downloads: Option<u64>,
+    /// When it last changed, `YYYY-MM-DD`, as its host says.
+    pub updated: Option<String>,
     /// The version a rollback goes back to.
     pub previous: Option<String>,
     pub enabled: bool,
@@ -411,14 +426,35 @@ fn row(
         .find(|p| build.is_none_or(|build| p.runs_on(build)))
         .copied();
     let shown = installed.and_then(|i| i.package()).or(available)?;
+    // The newest description of it: what the index offers, else what is
+    // installed.
+    let newest = available.unwrap_or(shown);
+    let size = |package: &Package| package.files.iter().map(|f| f.size).sum::<u64>();
+    let listing = indexes.iter().find_map(|index| index.listings.get(id));
+    let load_order = installed.filter(|i| i.enabled).and_then(|_| {
+        store
+            .registry()
+            .packages
+            .iter()
+            .filter(|(_, i)| i.enabled)
+            .position(|(other, _)| other == id)
+            .map(|at| at + 1)
+    });
     Some(NativeRow {
         id: id.to_owned(),
         name: shown.name.clone(),
         description: shown.description.clone(),
         homepage: shown.homepage.clone(),
+        authors: newest.authors.clone(),
+        preview: newest.preview.clone(),
         simulation: changes_simulation(shown),
         available: available.map(|p| p.version.clone()),
+        available_size: available.map(size),
         installed: installed.map(|i| i.current.clone()),
+        installed_size: installed.and_then(|i| i.package()).map(size),
+        load_order,
+        downloads: listing.and_then(|l| l.downloads),
+        updated: listing.and_then(|l| l.updated.clone()),
         previous: installed.and_then(|i| i.previous.clone()),
         enabled: installed.is_some_and(|i| i.enabled),
         listed: !versions.is_empty(),
@@ -658,6 +694,8 @@ mod tests {
             conflicts: Vec::new(),
             files: Vec::new(),
             plugins: Vec::new(),
+            authors: Vec::new(),
+            preview: None,
         };
         let registry = tpf3mp_nativemods::store::Registry {
             format: 1,
@@ -712,6 +750,8 @@ mod tests {
             conflicts: Vec::new(),
             files: Vec::new(),
             plugins: Vec::new(),
+            authors: Vec::new(),
+            preview: None,
         };
         let registry = tpf3mp_nativemods::store::Registry {
             format: 1,
@@ -789,6 +829,8 @@ mod tests {
                 sha256: tpf3mp_nativemods::signed::sha256_hex(&bytes),
             }],
             plugins: Vec::new(),
+            authors: Vec::new(),
+            preview: None,
         };
         (package, (url, bytes))
     }
@@ -801,6 +843,7 @@ mod tests {
             format: 1,
             serial: 1,
             packages: packages.iter().map(|(p, _)| p.clone()).collect(),
+            listings: Default::default(),
         };
         let json = serde_json::to_vec(&index).unwrap();
         let signature = pair.sign(&json).as_ref().to_vec();
@@ -942,10 +985,21 @@ mod tests {
         let mut keyless = setup(vec![big.clone(), trees.clone()]);
         keyless.keys.clear();
         let server = "eu.example:29470";
+        let mut shown_big = big.0.clone();
+        shown_big.authors = vec!["Ann".into()];
+        shown_big.preview = Some("https://example.invalid/bigmap.png".into());
         let index = Index {
             format: 1,
             serial: 5,
-            packages: vec![big.0.clone()],
+            packages: vec![shown_big],
+            listings: [(
+                "bigmap".to_owned(),
+                tpf3mp_nativemods::index::Listing {
+                    downloads: Some(1234),
+                    updated: Some("2026-10-01".into()),
+                },
+            )]
+            .into(),
         };
         let json = serde_json::to_vec(&index).unwrap();
         let player = dir.path().join("player");
@@ -972,6 +1026,20 @@ mod tests {
         assert!(shown.available);
         assert_eq!(shown.server.as_deref(), Some(server));
         assert_eq!(shown.packages.len(), 1);
+        // What the browser shows of it: who made it, an image, its size,
+        // and what its host says.
+        let row = &shown.packages[0];
+        assert_eq!(row.authors, ["Ann"]);
+        assert_eq!(
+            row.preview.as_deref(),
+            Some("https://example.invalid/bigmap.png")
+        );
+        assert_eq!(row.available_size, Some(b"bigmap 0.3.0".len() as u64));
+        assert_eq!(
+            (row.downloads, row.updated.as_deref()),
+            (Some(1234), Some("2026-10-01"))
+        );
+        assert_eq!((row.installed_size, row.load_order), (None, None));
         // Another server's index is not this one's.
         assert!(
             !view(
@@ -1006,6 +1074,15 @@ mod tests {
         .unwrap();
         let owners = next_terms(&owner, &exe).unwrap();
         assert_eq!(owners[0].package_version(), "0.3.0");
+        let installed = view(&owner, Some(&keyless), Some(&build), Some(server), false);
+        assert_eq!(
+            (
+                installed.packages[0].installed_size,
+                installed.packages[0].load_order
+            ),
+            (Some(b"bigmap 0.3.0".len() as u64), Some(1)),
+            "the first, and only, native mod the game loads"
+        );
         assert!(match_room(&player, &keyless, &build, Some(server), &owners).unwrap());
         assert_eq!(next_terms(&player, &exe).unwrap(), owners);
 

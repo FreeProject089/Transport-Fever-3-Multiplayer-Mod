@@ -53,6 +53,11 @@ pub const MAX_FILES: usize = 4096;
 pub const MAX_VERSION: usize = 20;
 /// Longest text setting, in bytes: a room tells its native mods' settings.
 pub const MAX_TEXT_SETTING: usize = 128;
+/// Most authors a package names, and the longest name of one, in bytes.
+pub const MAX_AUTHORS: usize = 8;
+pub const MAX_AUTHOR: usize = 48;
+/// The longest address of a package's preview image.
+pub const MAX_PREVIEW: usize = 300;
 
 /// The signed list of native mods.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +67,25 @@ pub struct Index {
     /// Grows with every index published; an older one is refused.
     pub serial: u64,
     pub packages: Vec<Package>,
+    /// What the mods' hosts say of each mod, by id: a server's index has
+    /// them, read from its registry's mods' repositories. Shown to players,
+    /// never used to choose what is installed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub listings: BTreeMap<String, Listing>,
+}
+
+/// What a mod's host says of it: how often its releases were downloaded
+/// and when it last changed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Listing {
+    /// Downloads of every release's files, all versions together.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloads: Option<u64>,
+    /// When it last changed, as `YYYY-MM-DD`: its newest release, or its
+    /// repository's last push.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated: Option<String>,
 }
 
 /// One version of one native mod.
@@ -82,6 +106,13 @@ pub struct Package {
     /// signed index pins them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub homepage: Option<String>,
+    /// Who made it, as players are shown them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authors: Vec<String>,
+    /// An image players are shown of it, PNG or JPEG: an `https` address.
+    /// Only ever shown, never installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview: Option<String>,
     /// Whether it changes how the world runs. If so, every game of a room
     /// must run it in the same version with the same settings
     /// ([`crate::terms`]). A feature the hook knows to change the
@@ -200,6 +231,16 @@ impl Index {
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
+        for (id, listing) in &self.listings {
+            if !is_id(id) {
+                return Err(format!("the listing {id:?} is malformed"));
+            }
+            if let Some(updated) = &listing.updated
+                && !is_date(updated)
+            {
+                return Err(format!("{id}: the date {updated:?} is not YYYY-MM-DD"));
+            }
+        }
         let mut seen = BTreeSet::new();
         for package in &self.packages {
             package
@@ -275,6 +316,24 @@ impl Package {
         {
             return Err("the homepage is not a short https address".into());
         }
+        if self.authors.len() > MAX_AUTHORS
+            || self.authors.iter().any(|author| {
+                author.trim().is_empty()
+                    || author.len() > MAX_AUTHOR
+                    || author.chars().any(char::is_control)
+            })
+        {
+            return Err(format!(
+                "more than {MAX_AUTHORS} authors, or one empty or longer than {MAX_AUTHOR} bytes"
+            ));
+        }
+        if let Some(preview) = &self.preview
+            && (!preview.starts_with("https://")
+                || preview.len() > MAX_PREVIEW
+                || preview.chars().any(|c| c.is_whitespace() || c.is_control()))
+        {
+            return Err("the preview is not a short https address".into());
+        }
         for dependency in &self.depends {
             if !is_id(&dependency.id) || semver::VersionReq::parse(&dependency.version).is_err() {
                 return Err(format!("the dependency {:?} is malformed", dependency.id));
@@ -314,6 +373,18 @@ impl Package {
         }
         Ok(())
     }
+}
+
+/// `YYYY-MM-DD`.
+pub fn is_date(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
 }
 
 /// A package or setting id: 1 to 40 lowercase letters, digits and `_`.
@@ -393,6 +464,8 @@ pub(crate) mod tests {
                 })
                 .collect(),
             plugins: Vec::new(),
+            authors: Vec::new(),
+            preview: None,
         }
     }
 
@@ -405,6 +478,7 @@ pub(crate) mod tests {
             format: FORMAT,
             serial: 1,
             packages,
+            listings: Default::default(),
         }
     }
 
@@ -438,6 +512,39 @@ pub(crate) mod tests {
             ("street_raster".into(), Setting::Bool(true)),
         ]);
         package
+    }
+
+    #[test]
+    fn authors_previews_and_listings_are_checked() {
+        let mut good = package("bigmap", "0.3.0", &[]);
+        good.authors = vec!["Ann".into()];
+        good.preview = Some("https://example.com/bigmap.png".into());
+        assert_eq!(good.validate(), Ok(()));
+        let mut bad = good.clone();
+        bad.preview = Some("http://example.com/bigmap.png".into());
+        assert!(bad.validate().is_err(), "https only");
+        let mut bad = good.clone();
+        bad.authors = vec![" ".into()];
+        assert!(bad.validate().is_err());
+        let mut bad = good.clone();
+        bad.authors = vec!["x".repeat(MAX_AUTHOR + 1)];
+        assert!(bad.validate().is_err());
+        let mut index = Index {
+            format: FORMAT,
+            serial: 1,
+            packages: vec![good],
+            listings: [(
+                "bigmap".to_owned(),
+                Listing {
+                    downloads: Some(3),
+                    updated: Some("2026-10-01".into()),
+                },
+            )]
+            .into(),
+        };
+        assert_eq!(index.validate(), Ok(()));
+        index.listings.get_mut("bigmap").unwrap().updated = Some("yesterday".into());
+        assert!(index.validate().is_err());
     }
 
     #[test]

@@ -1,7 +1,9 @@
 //! The native mods this server offers its players (proposed D29 amendment,
 //! docs/NATIVE_MODS.md, "A server's own index"): an index made from a
 //! registry, a git repository listing the mods' own repositories, read
-//! again every so often, and the mods its open pull requests propose.
+//! again every so often, and the mods its open pull requests propose. For
+//! mods on GitHub, the index also says how often each was downloaded and
+//! when it last changed, as GitHub tells it.
 //!
 //! The operator names the registry (`--native-mods-registry`); without one
 //! the server offers none (`Response::NativeIndex(None)`). The index is
@@ -26,8 +28,8 @@ pub struct NativeRegistry {
     pub url: String,
     /// How often it is read again.
     pub every: Duration,
-    /// A GitHub token for reading its open pull requests, past GitHub's
-    /// limit for unnamed callers. Optional.
+    /// A GitHub token for reading its open pull requests and its mods'
+    /// releases, past GitHub's limit for unnamed callers. Optional.
     pub github_token: Option<String>,
 }
 
@@ -104,12 +106,36 @@ struct Read {
 
 const USER_AGENT: &str = concat!("TPF3-MP-server/", env!("CARGO_PKG_VERSION"));
 
-/// Reads the registry: its list, every mod's file, its open pull requests.
-/// `None` when its list cannot be read.
+/// Largest answer read from GitHub's API.
+const MAX_API_ANSWER: u64 = 1 << 20;
+
+/// Reads the registry: its list, every mod's file, what GitHub says of the
+/// mods, its open pull requests. `None` when its list cannot be read.
 fn read(registry: &NativeRegistry, previous: u64) -> Option<Read> {
     let agent = fetch::agent(true, Duration::from_secs(60));
     let get = |url: &str, limit: u64| {
         fetch::get(&agent, url, limit, USER_AGENT).map_err(|error| error.to_string())
+    };
+    // GitHub's API: its own media type, and the operator's token if any.
+    let api = |url: &str| {
+        let mut request = agent
+            .get(url)
+            .header("User-Agent", USER_AGENT)
+            .header("Accept", "application/vnd.github+json");
+        if let Some(token) = &registry.github_token {
+            request = request.header("Authorization", &format!("Bearer {token}"));
+        }
+        request
+            .call()
+            .map_err(|e| e.to_string())
+            .and_then(|mut response| {
+                response
+                    .body_mut()
+                    .with_config()
+                    .limit(MAX_API_ANSWER)
+                    .read_to_vec()
+                    .map_err(|e| e.to_string())
+            })
     };
     let list_url = registry::raw_url(&registry.url, registry::LIST_FILE)?;
     let list = match get(&list_url, registry::MAX_LIST)
@@ -125,30 +151,18 @@ fn read(registry: &NativeRegistry, previous: u64) -> Option<Read> {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
     let serial = registry::next_serial(previous, now);
-    let built = registry::build(&list, serial, get);
+    let mut built = registry::build(&list, serial, get);
     for problem in &built.problems {
         warn!(%problem, "a native mod is left out of the index");
     }
+    let (listings, problems) = registry::listings(&built.sources, api);
+    for problem in &problems {
+        warn!(%problem, "cannot read a native mod's downloads and date");
+    }
+    built.add_listings(listings);
     let pulls = registry::pulls_url(&registry.url)
         .map(|url| {
-            let mut request = agent
-                .get(&url)
-                .header("User-Agent", USER_AGENT)
-                .header("Accept", "application/vnd.github+json");
-            if let Some(token) = &registry.github_token {
-                request = request.header("Authorization", &format!("Bearer {token}"));
-            }
-            request
-                .call()
-                .map_err(|e| e.to_string())
-                .and_then(|mut response| {
-                    response
-                        .body_mut()
-                        .with_config()
-                        .limit(registry::MAX_MOD_FILE)
-                        .read_to_vec()
-                        .map_err(|e| e.to_string())
-                })
+            api(&url)
                 .and_then(|json| registry::parse_pulls(&json))
                 .unwrap_or_else(|error| {
                     warn!(%error, "cannot read the registry's open pull requests");

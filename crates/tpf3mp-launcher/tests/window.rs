@@ -534,6 +534,13 @@ fn native_mods_are_managed_in_the_mod_manager_and_found_in_the_mod_browser() {
         enabled: true,
         listed: true,
         proposed: None,
+        authors: vec!["Ann".into(), "Bob".into()],
+        preview: None,
+        available_size: Some(5 << 20),
+        installed_size: Some(4 << 20),
+        load_order: Some(1),
+        downloads: Some(1234),
+        updated: Some("2026-09-30".into()),
     };
     let signs = NativeRow {
         id: "signs".into(),
@@ -551,6 +558,13 @@ fn native_mods_are_managed_in_the_mod_manager_and_found_in_the_mod_browser() {
             title: "Add Station Signs".into(),
             url: "https://example.invalid/pull/12".into(),
         }),
+        authors: Vec::new(),
+        preview: None,
+        available_size: None,
+        installed_size: None,
+        load_order: None,
+        downloads: None,
+        updated: None,
     };
     let state = State {
         native: NativeView {
@@ -564,12 +578,18 @@ fn native_mods_are_managed_in_the_mod_manager_and_found_in_the_mod_browser() {
         ..State::default()
     };
 
-    // The mod manager lists what is installed, and only that.
+    // The mod manager lists what is installed, and only that, with the
+    // first picked: its details beside the table.
     let mut window = window(state.clone());
     window.get_by_label("Mod manager").click();
     window.run_steps(4);
-    window.get_by_label("Big Maps");
+    assert_eq!(
+        window.query_all_by_label("Big Maps").count(),
+        2,
+        "its row, and its details"
+    );
     window.get_by_label("0.4.0 available");
+    window.get_by_label("by Ann and Bob");
     assert!(window.query_by_label("Station Signs").is_none());
     // The pointer comes to the button before it is pressed, as a player's
     // does.
@@ -592,18 +612,27 @@ fn native_mods_are_managed_in_the_mod_manager_and_found_in_the_mod_browser() {
         ]
     );
 
-    // The mod browser lists what the server offers and the proposed ones,
-    // finds them by name, and installs a proposed one as proposed.
+    // The mod browser lists what the server offers and the proposed ones;
+    // a mod picked in its table shows its details, and a proposed one is
+    // installed as proposed.
     let mut window = self::window(state);
     window.get_by_label("Mod browser").click();
     window.run_steps(4);
-    window.get_by_label("Big Maps");
-    window.get_by_label("Proposed in pull request #12: not reviewed");
-    let search = window.get_by_role_and_label(Role::TextInput, "SEARCH");
-    search.focus();
-    search.type_text("signs");
+    assert!(
+        window
+            .query_by_label("Proposed in pull request #12: not reviewed")
+            .is_none()
+    );
+    window.get_by_label("Station Signs").hover();
+    window.run_steps(2);
+    window.get_by_label("Station Signs").click();
     window.run_steps(4);
-    assert!(window.query_by_label("Big Maps").is_none());
+    assert_eq!(
+        window.query_all_by_label("Station Signs").count(),
+        2,
+        "picked"
+    );
+    window.get_by_label("Proposed in pull request #12: not reviewed");
     window.get_by_label("Install").hover();
     window.run_steps(2);
     window.get_by_label("Install").click();
@@ -612,6 +641,13 @@ fn native_mods_are_managed_in_the_mod_manager_and_found_in_the_mod_browser() {
         actions(&window),
         [Action::NativeInstallProposed { id: "signs".into() }]
     );
+    // The search finds mods by name, author or description.
+    let search = window.get_by_role_and_label(Role::TextInput, "SEARCH");
+    search.focus();
+    search.type_text("ann");
+    window.run_steps(4);
+    assert!(window.query_by_label("Station Signs").is_none());
+    assert_eq!(window.query_all_by_label("Big Maps").count(), 2);
 
     // Without an index from the server or the project, the browser says
     // the server offers none, and the manager that none is installed.

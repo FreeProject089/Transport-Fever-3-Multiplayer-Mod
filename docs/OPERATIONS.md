@@ -490,10 +490,14 @@ read, or is malformed, or claims another mod's id is left out with a
 warning in the log; a registry that cannot be read keeps the last index.
 For a GitHub registry it also reads the open pull requests and serves the
 mods they would add as *proposed*, which players see only when they ask
-and install only by choosing them. GitHub lets an unnamed caller read 60
-times an hour; give a token (`TPF3MP_GITHUB_TOKEN`, read-only, public
-repositories) for more. Without `--native-mods-registry` the server offers
-none.
+and install only by choosing them. For each mod on GitHub it reads the
+mod's releases too (and, with none, the repository), for the downloads and
+dates the mod browser shows. Each reading takes one or two of GitHub's API
+calls per mod and one for the pull requests; GitHub lets an unnamed caller
+make 60 an hour, so with more than a couple of dozen mods give a token
+(`TPF3MP_GITHUB_TOKEN`, read-only, public repositories). Without it the
+mods are still served, and those GitHub refused show no downloads. Without
+`--native-mods-registry` the server offers none.
 
 Players trust a server's index as they trust its rooms: the launcher gets
 a room's native mods by itself only from a server the release lists; from a

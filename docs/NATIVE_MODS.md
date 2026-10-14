@@ -111,9 +111,12 @@ https://gitlab.com/<author>/trees
 Each mod's repository holds `tpf3mp-native.json` at its top, read from its
 default branch (GitHub's and GitLab's raw files; any other host by naming
 the file's own address in the list). It holds the mod's packages in this
-page's format; their names and descriptions (at most 500 bytes) are the
-preview players see, and the repository is each package's `homepage`
-unless the file names another:
+page's format. What players see of a mod in the mod browser comes from it:
+its name, its description (at most 500 bytes), its `authors` (at most 8,
+each at most 48 bytes; the repository's owner if it names none), and its
+`preview`, a PNG or JPEG image, either a path in the repository or an
+`https` address. The repository is each package's `homepage` unless the
+file names another:
 
 ```json
 {
@@ -121,6 +124,7 @@ unless the file names another:
   "packages": [
     {"id": "bigmap", "version": "0.3.0", "name": "Big Maps",
      "description": "Maps up to 128 km a side.",
+     "authors": ["<author>"], "preview": "images/preview.png",
      "simulation": true, "builds": ["<SHA-256 of the game's executable>"],
      "features": ["bigmap.octree"], "settings": {"octree_depth": 10},
      "files": [{"path": "mod/tpf3mp_bigmap_1/mod.lua",
@@ -137,11 +141,19 @@ out, with the reason in the server's log; the others are served. Its index
 is numbered by the time it was made, always past the one before, and the
 launcher refuses one older than it kept from that server.
 
+**Downloads and dates.** For a mod on GitHub the server also asks GitHub
+for its releases: how often their files were downloaded, all versions
+together, and when the newest was published (with no release, when the
+repository was last pushed to). The index carries them as `listings`, by
+mod id, and the mod browser shows them; they are never used to choose what
+is installed. A mod GitHub does not answer for has none, with the reason in
+the log.
+
 **Proposed mods.** A mod joins the registry through a pull request that
 adds its repository to `mods.txt`. For a registry on GitHub the server also
 reads the open pull requests and serves the mods they would add apart, as
 *proposals*, each with its pull request (`registry::Proposals`). In the
-launcher's Native mods group **Show proposed mods** lists them, marked
+launcher's mod browser **Show proposed** lists them, marked
 "Proposed in pull request #N: not reviewed" with a link to it; a player
 installs one only by choosing it. A room never gets a proposed mod by
 itself: its members install it the same way, by choosing it.
@@ -328,17 +340,28 @@ game and Mod Hub account (D28).
 ## In the launcher
 
 Two buttons beside Settings, at the top of the window, open the mods
-dialog, with tabs between its two pages:
+dialog, with tabs between its two pages. Each is a table of mods, a row
+each with its preview image, name and authors, beside the details of the
+one picked: its preview, large, its description, its project page
+(`homepage`), what it is (version, size, and for the browser downloads and
+date) and what can be done with it.
 
-- **Mod manager** (the **Installed** tab): each native mod installed, a
-  card each, with its version, whether it is on, an update the index has
-  for it, whether it changes the simulation, its description and its own
-  project page (`homepage`), and **Update**, **Switch on**/**Switch off**,
-  **Roll back to** the version before, and **Uninstall**.
+- **Mod manager** (the **Installed** tab): the native mods installed, with
+  their version, size, **load order** (where each enabled one comes in the
+  order the game loads them: by id, as the launcher hands them to the hook;
+  it is not set by the player) and whether each is on or has an update;
+  **Update**, **Switch on**/**Switch off**, **Roll back to** the version
+  before, and **Uninstall**.
 - **Mod browser** (the **Browse** tab): each package the last accepted
-  index has for this game's build, to search by name or description, with
-  **Install** or **Update**, and with **Show proposed mods** the server's
-  proposed ones, marked as not reviewed and linking to their pull request.
+  index has for this game's build, with its version, download size,
+  downloads and when it was last updated, to search by name, author or
+  description; **Install** or **Update**. With **Show proposed** it lists
+  the server's proposed mods too, marked as not reviewed and linking to
+  their pull request.
+
+Preview images are fetched as they are shown, over HTTPS only, at most
+4 MB, PNG or JPEG, and kept for the session (`tpf3mp-launcher`'s
+`previews`); a mod without one shows its initials.
 
 Neither has controls for a mod's settings: a mod runs with its defaults,
 or with the settings of the room it was matched to. **Check the index**
