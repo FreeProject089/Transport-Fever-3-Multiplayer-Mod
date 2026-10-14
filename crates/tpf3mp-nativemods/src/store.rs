@@ -165,6 +165,8 @@ pub enum StoreError {
     Setting(String),
     #[error("native-mod path is unsafe or crosses a symbolic link: {0}")]
     UnsafePath(PathBuf),
+    #[error("{id} cannot be switched on: {why}")]
+    Clash { id: String, why: String },
     #[error("simulation-changing native mod {id} is not pinned to this game build ({build})")]
     SimulationPackageNotForBuild { id: String, build: String },
 }
@@ -680,12 +682,71 @@ impl Store {
 
     /// Switches `id` on or off for the next game.
     pub fn set_enabled(&mut self, id: &str, on: bool) -> Result<(), StoreError> {
+        self.set_enabled_in(features::BUILT_IN, id, on)
+    }
+
+    /// [`Store::set_enabled`] with the features in `registry`: switching a
+    /// package on whose features clash with those of one already on is
+    /// refused ([`enabled::first_clash`]).
+    pub fn set_enabled_in(
+        &mut self,
+        registry: &[features::FeatureSpec],
+        id: &str,
+        on: bool,
+    ) -> Result<(), StoreError> {
+        if on && let Some(why) = self.clash(registry, id) {
+            return Err(StoreError::Clash {
+                id: id.to_owned(),
+                why,
+            });
+        }
         self.registry
             .packages
             .get_mut(id)
             .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?
             .enabled = on;
         self.save()
+    }
+
+    /// Why the installed package `id` cannot be on beside those that are,
+    /// with the features in `registry`, if it cannot.
+    pub fn clash(&self, registry: &[features::FeatureSpec], id: &str) -> Option<String> {
+        let mine = self.registry.packages.get(id)?.package()?;
+        let others: Vec<(&str, &[String])> = self
+            .registry
+            .packages
+            .iter()
+            .filter(|(other, installed)| other.as_str() != id && installed.enabled)
+            .filter_map(|(other, installed)| {
+                installed
+                    .package()
+                    .map(|package| (other.as_str(), package.features.as_slice()))
+            })
+            .collect();
+        enabled::first_clash(registry, &mine.features, &others)
+    }
+
+    /// The enabled packages, in the order the game switches them on
+    /// ([`enabled::load_order`]).
+    pub fn load_order(&self) -> Vec<String> {
+        let packages: Vec<(&str, Vec<&str>)> = self
+            .registry
+            .packages
+            .iter()
+            .filter(|(_, installed)| installed.enabled)
+            .filter_map(|(id, installed)| {
+                installed.package().map(|package| {
+                    (
+                        id.as_str(),
+                        package.depends.iter().map(|d| d.id.as_str()).collect(),
+                    )
+                })
+            })
+            .collect();
+        enabled::load_order(&packages)
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
     }
 
     /// Puts `id`'s settings back to its package's defaults.
@@ -728,7 +789,11 @@ impl Store {
     pub fn enabled_for(&self, build: &str) -> Result<(Enabled, Vec<String>), StoreError> {
         let mut packages = Vec::new();
         let mut left_out = Vec::new();
-        for (id, installed) in &self.registry.packages {
+        for id in self.load_order() {
+            let Some(installed) = self.registry.packages.get(&id) else {
+                continue;
+            };
+            let id = &id;
             let Some(package) = installed.package().filter(|_| installed.enabled) else {
                 continue;
             };
@@ -1473,6 +1538,72 @@ mod tests {
             store.write_enabled(OTHER_BUILD),
             Err(StoreError::SimulationPackageNotForBuild { .. })
         ));
+    }
+
+    #[test]
+    fn packages_load_after_their_dependencies_and_never_clash() {
+        use crate::features::{FeatureSpec, replace};
+        const REGISTRY: &[FeatureSpec] = &[
+            FeatureSpec {
+                id: "base.own",
+                effect: Effect::Ui,
+                targets: &[replace("ui::page")],
+            },
+            FeatureSpec {
+                id: "other.own",
+                effect: Effect::Ui,
+                targets: &[replace("ui::page")],
+            },
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let mut add = |id: &str, depends: &[&str], features: &[&str]| {
+            let mut package = package(id, "1.0.0", &[]);
+            package.simulation = false;
+            package.features = features.iter().map(|f| (*f).to_owned()).collect();
+            package.depends = depends
+                .iter()
+                .map(|d| Dependency {
+                    id: (*d).to_owned(),
+                    version: "*".into(),
+                })
+                .collect();
+            store.registry.packages.insert(
+                id.to_owned(),
+                Installed {
+                    current: "1.0.0".into(),
+                    previous: None,
+                    enabled: false,
+                    settings: BTreeMap::new(),
+                    versions: BTreeMap::from([("1.0.0".to_owned(), package)]),
+                },
+            );
+        };
+        add("aaa_needs", &["zzz_base"], &[]);
+        add("zzz_base", &[], &["base.own"]);
+        add("mmm_other", &[], &["other.own"]);
+        store.set_enabled_in(REGISTRY, "aaa_needs", true).unwrap();
+        store.set_enabled_in(REGISTRY, "zzz_base", true).unwrap();
+        assert_eq!(store.load_order(), ["zzz_base", "aaa_needs"]);
+        let (list, _) = store.enabled_for(BUILD).unwrap();
+        let ids: Vec<&str> = list.packages.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["zzz_base", "aaa_needs"],
+            "the game gets them in that order"
+        );
+
+        // Both take the page over: the second is refused, and says why.
+        assert!(store.clash(REGISTRY, "mmm_other").is_some());
+        let refused = store.set_enabled_in(REGISTRY, "mmm_other", true);
+        assert!(
+            matches!(&refused, Err(StoreError::Clash { id, why }) if id == "mmm_other" && why.contains("zzz_base")),
+            "{refused:?}"
+        );
+        assert!(!store.registry.packages["mmm_other"].enabled);
+        // Switching off is never refused; then the other may go on.
+        store.set_enabled_in(REGISTRY, "zzz_base", false).unwrap();
+        store.set_enabled_in(REGISTRY, "mmm_other", true).unwrap();
     }
 
     #[test]

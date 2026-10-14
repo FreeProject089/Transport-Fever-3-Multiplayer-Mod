@@ -229,8 +229,11 @@ pub struct NativeRow {
     /// The installed version's files together, in bytes.
     pub installed_size: Option<u64>,
     /// Where it comes in the order the game loads the native mods enabled,
-    /// from 1: by id, as the launcher hands them to the game.
+    /// from 1: after those it depends on, the rest by id.
     pub load_order: Option<usize>,
+    /// Why it cannot be switched on beside those that are, if it is off
+    /// and cannot: its features clash with theirs.
+    pub clash: Option<String>,
     /// How often its releases were downloaded, as its host says.
     pub downloads: Option<u64>,
     /// When it last changed, `YYYY-MM-DD`, as its host says.
@@ -431,15 +434,13 @@ fn row(
     let newest = available.unwrap_or(shown);
     let size = |package: &Package| package.files.iter().map(|f| f.size).sum::<u64>();
     let listing = indexes.iter().find_map(|index| index.listings.get(id));
-    let load_order = installed.filter(|i| i.enabled).and_then(|_| {
-        store
-            .registry()
-            .packages
-            .iter()
-            .filter(|(_, i)| i.enabled)
-            .position(|(other, _)| other == id)
-            .map(|at| at + 1)
-    });
+    let load_order = installed
+        .filter(|i| i.enabled)
+        .and_then(|_| store.load_order().iter().position(|other| other == id))
+        .map(|at| at + 1);
+    let clash = installed
+        .filter(|i| !i.enabled)
+        .and_then(|_| store.clash(BUILT_IN, id));
     Some(NativeRow {
         id: id.to_owned(),
         name: shown.name.clone(),
@@ -453,6 +454,7 @@ fn row(
         installed: installed.map(|i| i.current.clone()),
         installed_size: installed.and_then(|i| i.package()).map(size),
         load_order,
+        clash,
         downloads: listing.and_then(|l| l.downloads),
         updated: listing.and_then(|l| l.updated.clone()),
         previous: installed.and_then(|i| i.previous.clone()),

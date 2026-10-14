@@ -176,6 +176,7 @@ fn native() -> NativeView {
                 load_order: Some(1),
                 downloads: Some(12_480),
                 updated: Some("2026-10-09".into()),
+                clash: None,
             },
             NativeRow {
                 id: "terrain-tweaks".into(),
@@ -196,6 +197,7 @@ fn native() -> NativeView {
                 load_order: None,
                 downloads: Some(3_210),
                 updated: Some("2026-08-21".into()),
+                clash: None,
             },
             NativeRow {
                 id: "faster-trains".into(),
@@ -218,6 +220,7 @@ fn native() -> NativeView {
                 load_order: None,
                 downloads: Some(980),
                 updated: Some("2026-10-01".into()),
+                clash: None,
             },
             NativeRow {
                 id: "station-signs".into(),
@@ -242,6 +245,7 @@ fn native() -> NativeView {
                 load_order: None,
                 downloads: None,
                 updated: None,
+                clash: None,
             },
         ],
         problem: None,

@@ -2317,6 +2317,14 @@ impl<B: Backend> LauncherApp<B> {
                 theme::TEXT,
             ));
         }
+        if let Some(clash) = &row.clash {
+            ui.add_space(8.0);
+            ui.label(theme::text(
+                format!("Can't be switched on: {clash}. Switch that mod off first."),
+                theme::body(12.0),
+                theme::DIFFERS_TEXT,
+            ));
+        }
         ui.add_space(12.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
@@ -2334,7 +2342,8 @@ impl<B: Backend> LauncherApp<B> {
                     } else {
                         "Switch on"
                     };
-                    if theme::quiet_button(ui, idle, None, words, Quiet::new()).clicked() {
+                    let allowed = idle && (row.enabled || row.clash.is_none());
+                    if theme::quiet_button(ui, allowed, None, words, Quiet::new()).clicked() {
                         self.backend.act(Action::NativeEnable {
                             id: id.clone(),
                             on: !row.enabled,
@@ -2544,6 +2553,8 @@ fn cells(row: &NativeRow, page: ModsPage) -> [(String, Color32); 4] {
                 )
             } else if row.enabled {
                 ("On".to_owned(), theme::OK)
+            } else if row.clash.is_some() {
+                ("Off · clashes".to_owned(), theme::DIFFERS_TEXT)
             } else {
                 ("Off".to_owned(), theme::MUTED)
             },

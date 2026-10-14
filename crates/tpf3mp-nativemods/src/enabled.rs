@@ -17,6 +17,13 @@
 //! - for a package that changes the simulation, the room compares native
 //!   mods ([`ROOM_TERMS_CARRIED`]).
 //!
+//! Packages are switched on in the order the file lists them, the **load
+//! order** ([`load_order`]): a package after those it depends on, the rest
+//! by id, the same on every player's game. A package whose features clash
+//! with those of one before it ([`features::clash`]: both patch a target
+//! one takes over, or would combine it differently) does not run, as if it
+//! lacked a target.
+//!
 //! When one does not, a package that changes only what its player sees is
 //! left off with the reason; one that changes the simulation **refuses
 //! multiplayer** for that game: the hook installs nothing, as for a build
@@ -115,6 +122,75 @@ impl Plan {
     pub fn feature(&self, id: &str) -> Option<&Active> {
         self.active.iter().find(|active| active.feature == id)
     }
+
+    /// The active features that patch the target `name`, in the load
+    /// order, with how: the hook merges their values by the rule, or runs
+    /// their chains one after the other. They never clash.
+    pub fn users<'a>(
+        &'a self,
+        registry: &'a [FeatureSpec],
+        name: &'a str,
+    ) -> impl Iterator<Item = (&'a Active, features::Access)> + 'a {
+        self.active.iter().filter_map(move |active| {
+            features::find(registry, &active.feature)
+                .and_then(|spec| spec.access(name))
+                .map(|access| (active, access))
+        })
+    }
+}
+
+/// The order packages are switched on in: each after those of `packages`
+/// it depends on, the rest by id. `packages` are ids with the ids they
+/// depend on; a dependency not among them is not waited for, and packages
+/// that depend on each other in a circle come last, by id.
+pub fn load_order<'a>(packages: &[(&'a str, Vec<&'a str>)]) -> Vec<&'a str> {
+    use std::collections::BTreeSet;
+    let present: BTreeSet<&str> = packages.iter().map(|(id, _)| *id).collect();
+    let mut waiting: BTreeMap<&str, BTreeSet<&str>> = packages
+        .iter()
+        .map(|(id, depends)| {
+            (
+                *id,
+                depends
+                    .iter()
+                    .copied()
+                    .filter(|dependency| present.contains(dependency) && dependency != id)
+                    .collect(),
+            )
+        })
+        .collect();
+    let mut order = Vec::new();
+    while let Some(next) = waiting
+        .iter()
+        .find(|(_, on)| on.is_empty())
+        .map(|(id, _)| *id)
+    {
+        waiting.remove(next);
+        for on in waiting.values_mut() {
+            on.remove(next);
+        }
+        order.push(next);
+    }
+    order.extend(waiting.into_keys());
+    order
+}
+
+/// Why a package with `features` cannot be on beside `others` (each a
+/// package's id and its features), if it cannot: its first clash.
+pub fn first_clash(
+    registry: &[FeatureSpec],
+    features: &[String],
+    others: &[(&str, &[String])],
+) -> Option<String> {
+    features.iter().find_map(|mine| {
+        let mine = features::find(registry, mine)?;
+        others.iter().find_map(|(package, theirs)| {
+            theirs.iter().find_map(|theirs| {
+                let theirs = features::find(registry, theirs)?;
+                features::clash(mine, theirs).map(|why| format!("it clashes with {package}: {why}"))
+            })
+        })
+    })
 }
 
 /// What the hook does with `enabled`, running in the build hashing to
@@ -144,9 +220,12 @@ pub fn plan(
                     Some(feature) => feature
                         .targets
                         .iter()
-                        .find(|target| !has_target(target))
+                        .find(|target| !has_target(target.name))
                         .map(|target| {
-                            format!("{id} needs {target}, which this build's profile lacks")
+                            format!(
+                                "{id} needs {}, which this build's profile lacks",
+                                target.name
+                            )
                         }),
                 })
         };
@@ -154,6 +233,30 @@ pub fn plan(
         let problem = problem.or_else(|| {
             (simulation && !terms_carried).then(|| {
                 "it changes the simulation, and rooms do not compare native mods yet".to_owned()
+            })
+        });
+        // Its features against those already on, and against each other.
+        let problem = problem.or_else(|| {
+            let mut on: Vec<(&str, Vec<String>)> = Vec::new();
+            for active in &plan.active {
+                match on.iter_mut().find(|(id, _)| *id == active.package) {
+                    Some((_, features)) => features.push(active.feature.clone()),
+                    None => on.push((&active.package, vec![active.feature.clone()])),
+                }
+            }
+            let others: Vec<(&str, &[String])> = on
+                .iter()
+                .map(|(id, features)| (*id, features.as_slice()))
+                .collect();
+            first_clash(registry, &package.features, &others).or_else(|| {
+                package.features.iter().enumerate().find_map(|(at, mine)| {
+                    let later = &package.features[at + 1..];
+                    first_clash(
+                        registry,
+                        std::slice::from_ref(mine),
+                        &[(&package.id, later)],
+                    )
+                })
             })
         });
         match (problem, simulation) {
@@ -318,6 +421,115 @@ mod tests {
         let quiet = enabled(vec![package("pages", false, &["bigmap.page"])]);
         let plan_c = plan(&quiet, BUILD, crate::features::BUILT_IN, every_target, true);
         assert!(plan_c.refusal.is_some());
+    }
+
+    #[test]
+    fn the_load_order_puts_dependencies_first() {
+        let order = load_order(&[
+            ("zebra", vec![]),
+            ("bigmap", vec!["terrain", "absent"]),
+            ("terrain", vec!["zebra"]),
+            ("alpha", vec![]),
+            ("loop_a", vec!["loop_b"]),
+            ("loop_b", vec!["loop_a"]),
+        ]);
+        assert_eq!(
+            order,
+            ["alpha", "zebra", "terrain", "bigmap", "loop_a", "loop_b"]
+        );
+    }
+
+    #[test]
+    fn features_that_clash_with_one_on_before_do_not_run() {
+        use crate::features::{FeatureSpec, Merge, chain, replace, value};
+        const REGISTRY: &[FeatureSpec] = &[
+            FeatureSpec {
+                id: "wide.size",
+                effect: Effect::Simulation,
+                targets: &[value("map::size", Merge::Max)],
+            },
+            FeatureSpec {
+                id: "wider.size",
+                effect: Effect::Simulation,
+                targets: &[value("map::size", Merge::Max), chain("sim::step")],
+            },
+            FeatureSpec {
+                id: "steps.own",
+                effect: Effect::Simulation,
+                targets: &[replace("sim::step")],
+            },
+            FeatureSpec {
+                id: "look.step",
+                effect: Effect::Ui,
+                targets: &[chain("sim::step")],
+            },
+            FeatureSpec {
+                id: "look.own",
+                effect: Effect::Ui,
+                targets: &[replace("ui::page")],
+            },
+            FeatureSpec {
+                id: "page.own",
+                effect: Effect::Ui,
+                targets: &[replace("ui::page")],
+            },
+        ];
+        // Two that merge, and a chain beside them: all on, in order.
+        let list = enabled(vec![
+            package("wide", true, &["wide.size"]),
+            package("wider", true, &["wider.size"]),
+            package("look", false, &["look.step"]),
+        ]);
+        let merged = plan(&list, BUILD, REGISTRY, every_target, true);
+        assert_eq!(merged.refusal, None);
+        let users: Vec<&str> = merged
+            .users(REGISTRY, "map::size")
+            .map(|(active, _)| active.package.as_str())
+            .collect();
+        assert_eq!(users, ["wide", "wider"]);
+        assert_eq!(merged.users(REGISTRY, "sim::step").count(), 2);
+
+        // One that takes over what another chains: a simulation package
+        // refuses the room; a display-only one is left off.
+        let list = enabled(vec![
+            package("wider", true, &["wider.size"]),
+            package("steps", true, &["steps.own"]),
+        ]);
+        let refused = plan(&list, BUILD, REGISTRY, every_target, true);
+        assert!(refused.active.is_empty());
+        let why = refused.refusal.unwrap();
+        assert!(why.contains("steps 1.0.0: it clashes with wider"), "{why}");
+        let list = enabled(vec![
+            package("look", false, &["look.own"]),
+            package("page", false, &["page.own"]),
+        ]);
+        let left = plan(&list, BUILD, REGISTRY, every_target, true);
+        assert_eq!(left.refusal, None);
+        assert!(left.feature("look.own").is_some(), "the first stays on");
+        assert!(left.feature("page.own").is_none());
+        assert_eq!(left.left_off.len(), 1);
+
+        // A package whose own features clash does not run either.
+        let list = enabled(vec![package("both", false, &["look.own", "page.own"])]);
+        assert!(
+            plan(&list, BUILD, REGISTRY, every_target, true)
+                .active
+                .is_empty()
+        );
+
+        // What the launcher asks before switching one on.
+        let wider = ["wider.size".to_owned()];
+        assert!(first_clash(REGISTRY, &["steps.own".into()], &[("wider", &wider)]).is_some());
+        assert!(first_clash(REGISTRY, &["wide.size".into()], &[("wider", &wider)]).is_none());
+        assert!(
+            first_clash(
+                crate::features::BUILT_IN,
+                &["steps.own".into()],
+                &[("wider", &wider)]
+            )
+            .is_none(),
+            "unknown features clash with nothing"
+        );
     }
 
     #[test]

@@ -520,6 +520,54 @@ fn diagnostics_can_be_switched_off_in_settings() {
 }
 
 #[test]
+fn a_native_mod_that_clashes_cannot_be_switched_on() {
+    use tpf3mp_agent::native_mods::{NativeRow, NativeView};
+    let pages = NativeRow {
+        id: "pages".into(),
+        name: "Bigger Pages".into(),
+        description: String::new(),
+        homepage: None,
+        authors: Vec::new(),
+        preview: None,
+        simulation: false,
+        available: Some("1.0.0".into()),
+        available_size: None,
+        installed: Some("1.0.0".into()),
+        installed_size: None,
+        load_order: None,
+        clash: Some("it clashes with big_maps: pages.own and bigmap.page both patch ui::page, and one takes it over".into()),
+        downloads: None,
+        updated: None,
+        previous: None,
+        enabled: false,
+        listed: true,
+        proposed: None,
+    };
+    let mut window = window(State {
+        native: NativeView {
+            available: true,
+            serial: Some(3),
+            server: None,
+            proposed_shown: false,
+            packages: vec![pages],
+            problem: None,
+        },
+        ..State::default()
+    });
+    window.get_by_label("Mod manager").click();
+    window.run_steps(4);
+    window.get_by_label(
+        "Can't be switched on: it clashes with big_maps: pages.own and bigmap.page both patch \
+         ui::page, and one takes it over. Switch that mod off first.",
+    );
+    window.get_by_label("Switch on").hover();
+    window.run_steps(2);
+    window.get_by_label("Switch on").click();
+    window.run_steps(2);
+    assert!(actions(&window).is_empty(), "the button is off");
+}
+
+#[test]
 fn native_mods_are_managed_in_the_mod_manager_and_found_in_the_mod_browser() {
     use tpf3mp_agent::native_mods::{NativeRow, NativeView};
     let big_maps = NativeRow {
@@ -541,6 +589,7 @@ fn native_mods_are_managed_in_the_mod_manager_and_found_in_the_mod_browser() {
         load_order: Some(1),
         downloads: Some(1234),
         updated: Some("2026-09-30".into()),
+        clash: None,
     };
     let signs = NativeRow {
         id: "signs".into(),
@@ -565,6 +614,7 @@ fn native_mods_are_managed_in_the_mod_manager_and_found_in_the_mod_browser() {
         load_order: None,
         downloads: None,
         updated: None,
+        clash: None,
     };
     let state = State {
         native: NativeView {

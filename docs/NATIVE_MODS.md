@@ -240,7 +240,9 @@ profile and before installing anything (`tpf3mp-hook`'s `native_mods`,
   (`tpf3mp_nativemods::features::BUILT_IN`), and the matching profiles have
   every target those features patch;
 - for a package that changes the simulation, the room compares native mods
-  (below).
+  (below);
+- its features do not clash with those of a package before it (below,
+  "Several mods on one target").
 
 Otherwise a package that changes only what its player sees is left off, with
 the reason in `hook.log`; one that changes the simulation **keeps the game
@@ -262,17 +264,60 @@ targets it patches. `features::BUILT_IN` is empty on `dev`: no native feature
 is built in yet. Big Maps would add its own; `features::example::BIG_MAPS`
 shows the shape, and the tests use it:
 
-| feature | effect | profile targets |
+| feature | effect | profile targets, and how it uses each |
 |---|---|---|
-| `bigmap.octree` | simulation | `bigmap::octree_root` |
-| `bigmap.street_raster` | simulation | `bigmap::street_raster` |
-| `bigmap.placement` | simulation | `bigmap::placement_attempts` |
-| `bigmap.page` | what one player sees | `bigmap::tile_count`, `bigmap::size_list` |
-| `bigmap.density` | simulation | `bigmap::density_levels` |
+| `bigmap.octree` | simulation | `bigmap::octree_root`: value, largest |
+| `bigmap.street_raster` | simulation | `bigmap::street_raster`: takes it over |
+| `bigmap.placement` | simulation | `bigmap::placement_attempts`: value, largest |
+| `bigmap.page` | what one player sees | `bigmap::tile_count`: value, largest; `bigmap::size_list`: value, every list's entries |
+| `bigmap.density` | simulation | `bigmap::density_levels`: value, every list's entries |
 | `bigmap.memory_gate` | what one player sees | none |
 
 The launcher reads the same registry to refuse a package this TPF3-MP cannot
 run before downloading it.
+
+### Load order
+
+The launcher writes the enabled packages to `enabled.json` in the **load
+order**, and the hook switches them on in that order: each package after
+those it depends on (`depends`), the rest by id (`enabled::load_order`;
+packages that depend on each other in a circle, which installing already
+refuses, come last). It is worked out the same way on every player's game
+and is not set by the player: in a room, an order each player chose would be
+one more way for their games to differ. The mod manager shows it.
+
+### Several mods on one target
+
+Every patch is the hook's own code, so two packages never patch a game
+function apart: each feature says how it uses each target it patches
+(`features::Access`), and the hook combines them, much as Harmony combines
+patches in modded Unity games:
+
+| how a feature uses a target | example | two features on it |
+|---|---|---|
+| **value**, with a merge rule | a size limit, a list of map sizes | merged by the rule (`features::Merge`): the largest, the smallest, the sum, or every list's entries |
+| **chain** | runs before or after the game's function, which stays | both run, in the load order |
+| **replace** | takes the function over | they **clash**: never on together |
+
+Features that share a target must agree on how they combine: both values
+with the same rule, or both chains. The tests hold `BUILT_IN` to that
+(`features::registry_problems`), so a feature added to the hook that would
+combine a target differently from another fails CI rather than a game. A
+clash is caught three times over:
+
+- **switching on**: the launcher refuses to switch on a package whose
+  features clash with one already on, and the mod manager says which
+  (`Store::set_enabled`, "Can't be switched on: it clashes with …");
+- **in the game**: the hook's plan leaves a clashing package off, or keeps
+  the game out of rooms if it changes the simulation, as for a missing
+  target (`enabled::plan`), in case a launcher and hook of different
+  builds disagree;
+- **in the hook's code**: a feature asks the plan which active features
+  share its target, in the load order (`Plan::users`), and merges their
+  values (`Merge::numbers`, `Merge::lists`) or runs their chains in turn.
+
+`conflicts` in the index remains for packages that must not be installed
+together for reasons the hook cannot see.
 
 **Later, not built:** signed plugin libraries. A package's `plugins` would be
 native libraries, signed in the index like every file and built against a
@@ -348,8 +393,8 @@ date) and what can be done with it.
 
 - **Mod manager** (the **Installed** tab): the native mods installed, with
   their version, size, **load order** (where each enabled one comes in the
-  order the game loads them: by id, as the launcher hands them to the hook;
-  it is not set by the player) and whether each is on or has an update;
+  order the game loads them, "Load order" above; it is not set by the
+  player) and whether each is on, has an update or clashes with one on;
   **Update**, **Switch on**/**Switch off**, **Roll back to** the version
   before, and **Uninstall**.
 - **Mod browser** (the **Browse** tab): each package the last accepted
