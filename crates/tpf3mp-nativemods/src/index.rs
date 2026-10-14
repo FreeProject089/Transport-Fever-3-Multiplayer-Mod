@@ -233,6 +233,9 @@ pub enum HookKind {
     /// One entry of a table of function pointers, such as a vtable, made
     /// to point at the plugin's function, which calls on to the old one.
     Slot,
+    /// Nothing written: a function or bytes the plugin only needs to find
+    /// and check (one it calls, one whose code it relies on).
+    Find,
 }
 
 /// Where a slot's table is: the expected instruction addresses it relative
@@ -274,6 +277,7 @@ impl HookDecl {
             HookKind::Rewrite => self.expected.trim().len() / 2,
             HookKind::Call => 5,
             HookKind::Slot => 8,
+            HookKind::Find => 0,
         }
     }
 }
@@ -645,7 +649,7 @@ impl HookDecl {
             }
         };
         match self.kind {
-            HookKind::Detour => {
+            HookKind::Detour | HookKind::Find => {
                 none_but("steal", self.steal.is_some())?;
                 none_but("replacement", self.replacement.is_some())?;
                 none_but("slot", self.slot.is_some())?;

@@ -355,6 +355,7 @@ every game update and cannot be checked.
 | `rewrite` | bytes replaced one for one: an operand, a constant | the bytes through `rewrite`, or none when the package gives them (`replacement`) | only the very same bytes from the package |
 | `call` | one `call rel32` (`expected` is `E8` and its 4 bytes) | a function through `attach`, which calls on to the old callee | chained |
 | `slot` | one entry of a table of function pointers (a vtable): the `expected` instruction addresses the table (`slot`: its 4-byte displacement `disp_at` bytes in, the instruction `length` long), entry `index` | a function through `attach`, which calls on to the old one | chained |
+| `find` | nothing: a function the plugin calls or whose code it checks, found and checked like the others | nothing; `address` gives where it is | any number; it writes nothing, so it overlaps nothing |
 
 `use: replace` makes a hook the only one on its site. Two hooks on
 overlapping bytes at different sites refuse, and so does any hook within
@@ -394,19 +395,37 @@ takes back those made) and keeps the game out of rooms (`hook.log` says
 why). Plugins load only into the game on Windows x86-64 yet; elsewhere a
 package with one keeps the game out of rooms.
 
-**Big Maps as a plugin.** Every patch Big Maps makes on its own branch
-(`feat/bigmaps-40420`) has a kind here: the descent, `Obstacle::Obstacle`
-and the placement spacing are `detour`s (the spacing a `replace`); the
-octree root's two sites and the level decoder are `splice`s; the emission
-cells' shifts are `rewrite`s; the emission throttle's two vtable entries
-are `slot`s; its New Game page and density levels are Lua for the game's
-Lua states, served from its `game_mods` folder; and its emission gate reads
-the update count. It would need its hooks moved from the hook's profile to
-its package, its install code built as a library against
-`tpf3mp-plugin-abi` instead of the hook's modules, and its settings read
-from the package instead of `TPF3MP_BIGMAP_*` variables. Its throttle's
-two vtable entries are the ones `simperf`'s timers wrap: with Big Maps on,
-those two timers stay out (they check the entry and decline).
+**Big Maps as a plugin.** `crates/tpf3mp-bigmap-plugin` is Big Maps
+(`feat/bigmaps-40420`, the hook's `bigmap` module there) moved out of the
+hook into a package for build 40420: its code asks the hook for the hooks
+its package declares (`manifest::hooks`) instead of patching the game, and
+reads its switches from the package's settings (`street_raster`,
+`placement`, `emission_every`, `emission_cell`, `memory_gate`) instead of
+`TPF3MP_BIGMAP_*` variables, so a room's terms carry them.
+
+| Big Maps' patch | hook | kind |
+|---|---|---|
+| octree root, new game and load | `bigmap::root_init`, `bigmap::root_load` (after `call Resize`) | `splice` |
+| `OctreeSystem::Resize`, which it calls again | `bigmap::resize` | `find` |
+| depth 12: the descent's ids, the level decoder | `bigmap::descent`, `bigmap::decoder` | `detour`, `splice` |
+| the descent's starter, checked | `bigmap::descent_start` | `find` |
+| street raster | `bigmap::obstacle` | `detour` |
+| placement spacing | `bigmap::spacing` | `detour`, `replace` |
+| emission throttle | `bigmap::grid_slot`, `bigmap::emitter_slot`, each checked to hold `bigmap::grid_update` / `bigmap::emitter_update` | `slot`, `find` |
+| emission cells | `bigmap::grid_shift_*`, `bigmap::grid_factor`, in `bigmap::create_grid` | `rewrite`, `find` |
+| New Game page, density levels | Lua for the game's Lua states, from its game mod `tpf3mp_bigmap_1` | |
+
+`cargo test -p tpf3mp-bigmap-plugin --test game_40420`, with
+`TPF3MP_TF3_BUILD40420_EXE` naming the game's executable, finds every hook
+in it with the hook's own `plugins::locate`, arranges them against every
+target the hook's 40420 profile patches, and runs the plugin's entry with
+a host that answers from the executable's bytes, every switch on: every
+check the plugin makes in the game passes there. `cargo build --release -p
+tpf3mp-bigmap-plugin` builds the DLL; `cargo run -p tpf3mp-bigmap-plugin
+--bin tpf3mp-bigmap-package -- <version> <dll> <base address> <folder>`
+writes the package's folder and its `tpf3mp-native.json`. Not yet run in
+the game itself. With Big Maps' throttle on, the two vtable entries
+`simperf`'s timers wrap are its gates, and those two timers stay out.
 
 **In a room.** A plugin's code, and any patch of the game's code, may
 change anything, so a package with either changes the simulation, whatever

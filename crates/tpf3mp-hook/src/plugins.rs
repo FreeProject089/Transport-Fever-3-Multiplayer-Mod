@@ -20,7 +20,8 @@
 //! 4. each site is patched once ([`patch`]): detours, calls and slots
 //!    chain the plugins' functions in the load order, the last calling on
 //!    to what was there; a splice runs every callback in turn; a rewrite
-//!    writes its bytes.
+//!    writes its bytes. A hook its plugin did not ask for this time (a
+//!    switch it left off) stays as the game has it.
 //!
 //! Any step that fails stops them all before anything is patched (a patch
 //! that fails takes back those made), and keeps the game out of rooms: a
@@ -127,7 +128,7 @@ pub fn locate(
                     .and_then(tpf3mp_nativemods::index::hex_bytes),
             };
             match hook.kind {
-                HookKind::Detour | HookKind::Splice | HookKind::Rewrite => {}
+                HookKind::Detour | HookKind::Splice | HookKind::Rewrite | HookKind::Find => {}
                 HookKind::Call => {
                     found.old = (address + 5).wrapping_add_signed(disp(site + 1) as isize);
                 }
@@ -164,7 +165,8 @@ fn may_share(a: &Found, b: &Found) -> bool {
 pub fn arrange(found: Vec<Found>, core: &[usize]) -> Result<BTreeMap<usize, Vec<Found>>, String> {
     let overlaps = |a: usize, a_len: usize, b: usize, b_len: usize| a < b + b_len && b < a + a_len;
     let mut sites: BTreeMap<usize, Vec<Found>> = BTreeMap::new();
-    for hook in found {
+    // A `find` writes nothing: it overlaps nothing and shares with anything.
+    for hook in found.into_iter().filter(|hook| hook.kind != HookKind::Find) {
         if core
             .iter()
             .any(|&target| overlaps(hook.address, hook.len, target, CORE_SPAN))
@@ -573,6 +575,8 @@ pub unsafe fn patch(
             format!("{} cannot be patched: {error}", first.target)
         };
         match first.kind {
+            // Found and checked; nothing to write (`arrange` leaves them out).
+            HookKind::Find => {}
             HookKind::Detour | HookKind::Call | HookKind::Slot => {
                 // The functions in the load order: `users`' order.
                 let chain: Vec<&Attachment> = users
@@ -664,8 +668,9 @@ pub unsafe fn patch(
                         .find(|(target, _)| users.iter().any(|u| &u.target == target))
                         .map(|(_, bytes)| bytes.clone())
                 });
+                // Declared, but its plugin left it as it is this time.
                 let Some(bytes) = bytes else {
-                    return Err(format!("nobody gave {}'s bytes", first.target));
+                    continue;
                 };
                 // SAFETY: the caller's promise; the bytes are as many as
                 // those replaced.

@@ -233,6 +233,7 @@ pub fn hooks_clash(mine: &[HookDecl], theirs: &[HookDecl]) -> Option<String> {
                 a.offset == b.offset && a.slot.map(|s| s.index) == b.slot.map(|s| s.index)
             }
             (HookKind::Slot, _) | (_, HookKind::Slot) => false,
+            (HookKind::Find, _) | (_, HookKind::Find) => false,
             _ => {
                 let end = |h: &HookDecl| h.offset + h.written_len() as i64;
                 a.offset < end(b) && b.offset < end(a)
