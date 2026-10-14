@@ -64,9 +64,9 @@ pub const PLUGIN_ABI: u32 = tpf3mp_plugin_abi::ABI;
 pub const PLATFORMS: &[&str] = &["windows-x86_64", "linux-x86_64"];
 /// Most hooks a package declares.
 pub const MAX_HOOKS: usize = 64;
-/// Most bytes a hook's signature names, and most its prologue holds.
+/// Most bytes a hook's signature names, and most bytes a hook expects at its site.
 pub const MAX_SIGNATURE: usize = 128;
-pub const MAX_PROLOGUE: usize = 32;
+pub const MAX_EXPECTED: usize = 64;
 
 /// The platform this TPF3-MP runs on, as plugins name it; none where no
 /// plugin can be built for it.
@@ -168,38 +168,126 @@ pub struct Package {
     /// as the hook finds its own.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hooks: Vec<HookDecl>,
+    /// Folders of its files that are game mods (`mod/<name>`, the name a
+    /// game mod's folder has, such as `tpf3mp_bigmap_1`): the launcher puts
+    /// each into the game's `mods` folder while the package is on, so the
+    /// game can load its Lua and pages as `<name>::/...`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub game_mods: Vec<String>,
 }
 
-/// A game function a package's plugin patches: where it is, found by
-/// signature in the running build, and how the plugin uses it.
+/// A place in the game's code a package patches: found by signature in the
+/// running build, checked against the bytes it expects there, and patched
+/// the way its `kind` says.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookDecl {
     /// `<package id>::<name>`: the name the plugin attaches to.
     pub target: String,
+    /// How it is patched.
+    #[serde(default)]
+    pub kind: HookKind,
     /// An IDA-style signature: bytes in hex, `?` for any, one match in the
     /// game's code.
     pub signature: String,
-    /// From the match to the function, in bytes.
+    /// From the match to the site, in bytes.
     #[serde(default)]
     pub offset: i64,
-    /// The bytes the function must start with, in hex, checked before it
-    /// is patched.
-    pub prologue: String,
-    /// How the plugin uses it.
-    #[serde(rename = "use")]
+    /// The bytes the site must hold, in hex, checked before it is patched:
+    /// a function's first bytes, a splice's bytes, those a rewrite replaces,
+    /// a `call`, or the instruction that addresses a slot's table.
+    pub expected: String,
+    /// How the plugin shares it with others.
+    #[serde(rename = "use", default)]
     pub access: HookUse,
+    /// A splice's: how many of the expected bytes the jump takes (whole
+    /// instructions, 5 to 32), which then run after the plugins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steal: Option<u8>,
+    /// A rewrite's bytes, in hex, as long as `expected`, when the package
+    /// gives them itself; otherwise its plugin does when it starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement: Option<String>,
+    /// A slot's: where the table is, and which entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<SlotDecl>,
 }
 
-/// How a plugin uses a function it patches.
+/// How a hook patches the game.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HookKind {
+    /// At a function's start: the plugin's function runs in its place and
+    /// calls on to what was there.
+    #[default]
+    Detour,
+    /// In the middle of a function: the plugin's callback gets every
+    /// register and may change them; then the stolen instructions run and
+    /// the function goes on.
+    Splice,
+    /// Bytes replaced one for one: an operand, a constant, a size.
+    Rewrite,
+    /// One `call` instruction made to call the plugin's function, which
+    /// calls on to the old callee.
+    Call,
+    /// One entry of a table of function pointers, such as a vtable, made
+    /// to point at the plugin's function, which calls on to the old one.
+    Slot,
+}
+
+/// Where a slot's table is: the expected instruction addresses it relative
+/// to the next instruction (`lea reg, [rip + disp32]`), its 4-byte
+/// displacement `disp_at` bytes in, the instruction `length` bytes long;
+/// the slot is entry `index` of the table, 8 bytes each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SlotDecl {
+    pub disp_at: u8,
+    pub length: u8,
+    pub index: u16,
+}
+
+/// How a plugin shares what it patches.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HookUse {
-    /// It runs and then calls on to what was there: several plugins all
-    /// run, in the load order.
+    /// It runs and then lets what was there run: several plugins all run,
+    /// in the load order.
+    #[default]
     Chain,
-    /// It takes the function over: no other may patch it.
+    /// It takes it over: no other may patch it.
     Replace,
+}
+
+impl HookDecl {
+    /// The expected bytes, decoded; none if they are not hex.
+    pub fn expected_bytes(&self) -> Option<Vec<u8>> {
+        hex_bytes(&self.expected)
+    }
+
+    /// How many bytes from the site the patch writes: what may not overlap
+    /// another's. A slot's are in its table, not at the site.
+    pub fn written_len(&self) -> usize {
+        match self.kind {
+            HookKind::Detour => 14,
+            HookKind::Splice => usize::from(self.steal.unwrap_or(5)),
+            HookKind::Rewrite => self.expected.trim().len() / 2,
+            HookKind::Call => 5,
+            HookKind::Slot => 8,
+        }
+    }
+}
+
+/// `text` as bytes, two hex digits each.
+pub fn hex_bytes(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim();
+    if !text.len().is_multiple_of(2) || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
+        .collect()
 }
 
 /// A setting's value: what a package's defaults and a player's choices
@@ -428,6 +516,19 @@ impl Package {
             return Err(format!("the conflict {bad:?} is malformed"));
         }
         self.validate_plugins()?;
+        for folder in &self.game_mods {
+            let name = folder.strip_prefix("mod/").unwrap_or_default();
+            let ok = is_game_mod_name(name)
+                && self
+                    .files
+                    .iter()
+                    .any(|file| file.path.starts_with(&format!("{folder}/")));
+            if !ok {
+                return Err(format!(
+                    "the game mod {folder:?} is not mod/<name>_<number> holding its files"
+                ));
+            }
+        }
         if self.files.len() > MAX_FILES {
             return Err("too many files".into());
         }
@@ -480,8 +581,21 @@ impl Package {
                     .into(),
             );
         }
-        if !self.hooks.is_empty() && self.plugins.is_empty() {
-            return Err("it declares hooks but has no plugin to run them".into());
+        // A package of rewrites it gives itself needs no plugin; any other
+        // hook is a plugin's.
+        let needs_plugin = self
+            .hooks
+            .iter()
+            .any(|hook| hook.kind != HookKind::Rewrite || hook.replacement.is_none());
+        if needs_plugin && self.plugins.is_empty() {
+            return Err("it declares hooks a plugin must run, but has no plugin".into());
+        }
+        if !self.hooks.is_empty() && !self.simulation {
+            return Err(
+                "it patches the game's code, which may change anything: it must say it changes \
+                 the simulation"
+                    .into(),
+            );
         }
         if self.hooks.len() > MAX_HOOKS {
             return Err(format!("more than {MAX_HOOKS} hooks"));
@@ -501,29 +615,85 @@ impl Package {
             if !names.insert(name) {
                 return Err(format!("the hook {:?} is declared twice", hook.target));
             }
-            if !is_signature(&hook.signature) {
-                return Err(format!(
-                    "the hook {:?} has no usable signature: hex bytes and ?, at least 8 and at \
-                     most {MAX_SIGNATURE}, 4 of them fixed",
-                    hook.target
-                ));
+            hook.validate()
+                .map_err(|why| format!("the hook {:?}: {why}", hook.target))?;
+        }
+        Ok(())
+    }
+}
+
+impl HookDecl {
+    fn validate(&self) -> Result<(), String> {
+        if !is_signature(&self.signature) {
+            return Err(format!(
+                "no usable signature: hex bytes and ?, at least 8 and at most {MAX_SIGNATURE}, \
+                 4 of them fixed"
+            ));
+        }
+        if self.offset.unsigned_abs() > 4096 {
+            return Err("too far from its signature".into());
+        }
+        let expected = self
+            .expected_bytes()
+            .filter(|bytes| (1..=MAX_EXPECTED).contains(&bytes.len()))
+            .ok_or(format!("no expected bytes, 1 to {MAX_EXPECTED} in hex"))?;
+        let none_but = |field: &str, set: bool| {
+            if set {
+                Err(format!("a {:?} hook has no {field}", self.kind))
+            } else {
+                Ok(())
             }
-            let prologue = hook.prologue.trim();
-            if prologue.is_empty()
-                || !prologue.len().is_multiple_of(2)
-                || prologue.len() / 2 > MAX_PROLOGUE
-                || !prologue.bytes().all(|b| b.is_ascii_hexdigit())
-            {
-                return Err(format!(
-                    "the hook {:?} has no prologue of 1 to {MAX_PROLOGUE} bytes in hex",
-                    hook.target
-                ));
+        };
+        match self.kind {
+            HookKind::Detour => {
+                none_but("steal", self.steal.is_some())?;
+                none_but("replacement", self.replacement.is_some())?;
+                none_but("slot", self.slot.is_some())?;
             }
-            if hook.offset.unsigned_abs() > 4096 {
-                return Err(format!(
-                    "the hook {:?} is too far from its signature",
-                    hook.target
-                ));
+            HookKind::Splice => {
+                let steal = usize::from(
+                    self.steal
+                        .ok_or("a splice names how many bytes it steals")?,
+                );
+                if !(5..=32).contains(&steal) || steal > expected.len() {
+                    return Err("a splice steals 5 to 32 of the bytes it expects".into());
+                }
+                none_but("replacement", self.replacement.is_some())?;
+                none_but("slot", self.slot.is_some())?;
+            }
+            HookKind::Rewrite => {
+                if let Some(replacement) = &self.replacement
+                    && hex_bytes(replacement).map(|bytes| bytes.len()) != Some(expected.len())
+                {
+                    return Err("its replacement is not hex as long as what it expects".into());
+                }
+                none_but("steal", self.steal.is_some())?;
+                none_but("slot", self.slot.is_some())?;
+            }
+            HookKind::Call => {
+                if expected.len() != 5 || expected[0] != 0xE8 {
+                    return Err("a call hook expects one `call rel32`: E8 and 4 bytes".into());
+                }
+                none_but("steal", self.steal.is_some())?;
+                none_but("replacement", self.replacement.is_some())?;
+                none_but("slot", self.slot.is_some())?;
+            }
+            HookKind::Slot => {
+                let slot = self.slot.ok_or("a slot hook says where its table is")?;
+                let length = usize::from(slot.length);
+                if usize::from(slot.disp_at) + 4 > length
+                    || length > 15
+                    || expected.len() < length
+                    || slot.index > 4096
+                {
+                    return Err(
+                        "its slot's instruction is not one with a 4-byte displacement in what \
+                         it expects"
+                            .into(),
+                    );
+                }
+                none_but("steal", self.steal.is_some())?;
+                none_but("replacement", self.replacement.is_some())?;
             }
         }
         Ok(())
@@ -540,6 +710,19 @@ pub fn is_signature(text: &str) -> bool {
         .count();
     let wild = tokens.iter().filter(|t| matches!(**t, "?" | "??")).count();
     (8..=MAX_SIGNATURE).contains(&tokens.len()) && fixed + wild == tokens.len() && fixed >= 4
+}
+
+/// A game mod's folder name: lowercase letters, digits and `_`, ending in
+/// `_<number>` (`tpf3mp_bigmap_1`).
+pub fn is_game_mod_name(name: &str) -> bool {
+    name.rsplit_once('_').is_some_and(|(stem, number)| {
+        !stem.is_empty()
+            && stem
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            && !number.is_empty()
+            && number.bytes().all(|b| b.is_ascii_digit())
+    }) && name.len() <= 64
 }
 
 /// `YYYY-MM-DD`.
@@ -634,6 +817,7 @@ pub(crate) mod tests {
             authors: Vec::new(),
             preview: None,
             hooks: Vec::new(),
+            game_mods: Vec::new(),
         }
     }
 
@@ -696,8 +880,12 @@ pub(crate) mod tests {
             target: "pages::draw".into(),
             signature: "48 89 5C 24 ? 57 48 83 EC 20".into(),
             offset: 0,
-            prologue: "48895C2408".into(),
+            expected: "48895C2408".into(),
             access: HookUse::Chain,
+            kind: HookKind::Detour,
+            steal: None,
+            replacement: None,
+            slot: None,
         };
         let mut good = package("pages", "1.0.0", &[]);
         good.simulation = true;
@@ -736,10 +924,114 @@ pub(crate) mod tests {
         assert!(broken(
             &|p| p.hooks[0].signature = "zz 89 5C 24 ? 57 48 83".into()
         ));
-        assert!(broken(&|p| p.hooks[0].prologue = "489".into()));
+        assert!(broken(&|p| p.hooks[0].expected = "489".into()));
         assert!(broken(&|p| p.hooks[0].offset = 1 << 20));
         // A raw address is no signature.
         assert!(broken(&|p| p.hooks[0].signature = "0x140123456".into()));
+    }
+
+    #[test]
+    fn each_kind_of_hook_says_what_it_needs() {
+        let base = HookDecl {
+            target: "big::site".into(),
+            kind: HookKind::Detour,
+            signature: "48 89 5C 24 ? 57 48 83 EC 20".into(),
+            offset: 0,
+            expected: "48895C2408".into(),
+            access: HookUse::Chain,
+            steal: None,
+            replacement: None,
+            slot: None,
+        };
+        let check = |change: &dyn Fn(&mut HookDecl)| {
+            let mut hook = base.clone();
+            change(&mut hook);
+            hook.validate()
+        };
+        assert_eq!(check(&|_| {}), Ok(()));
+        // A splice steals whole instructions it expects.
+        assert_eq!(
+            check(&|h| {
+                h.kind = HookKind::Splice;
+                h.steal = Some(5);
+            }),
+            Ok(())
+        );
+        assert!(check(&|h| h.kind = HookKind::Splice).is_err(), "how many?");
+        assert!(
+            check(&|h| {
+                h.kind = HookKind::Splice;
+                h.steal = Some(6);
+            })
+            .is_err(),
+            "more than it expects"
+        );
+        // A rewrite's bytes are as long as what it replaces.
+        assert_eq!(
+            check(&|h| {
+                h.kind = HookKind::Rewrite;
+                h.replacement = Some("48895C2410".into());
+            }),
+            Ok(())
+        );
+        assert!(
+            check(&|h| {
+                h.kind = HookKind::Rewrite;
+                h.replacement = Some("90".into());
+            })
+            .is_err()
+        );
+        // A call is a call.
+        assert_eq!(
+            check(&|h| {
+                h.kind = HookKind::Call;
+                h.expected = "E812345678".into();
+            }),
+            Ok(())
+        );
+        assert!(check(&|h| h.kind = HookKind::Call).is_err());
+        // A slot names its table's instruction.
+        let slot = SlotDecl {
+            disp_at: 3,
+            length: 7,
+            index: 11,
+        };
+        assert_eq!(
+            check(&|h| {
+                h.kind = HookKind::Slot;
+                h.expected = "488D0512345678".into();
+                h.slot = Some(slot);
+            }),
+            Ok(())
+        );
+        assert!(
+            check(&|h| {
+                h.kind = HookKind::Slot;
+                h.expected = "488D0512345678".into();
+                h.slot = Some(SlotDecl { disp_at: 5, ..slot });
+            })
+            .is_err(),
+            "the displacement runs past the instruction"
+        );
+        assert!(
+            check(&|h| h.steal = Some(5)).is_err(),
+            "a detour steals what it needs"
+        );
+
+        // Rewrites a package gives itself need no plugin.
+        let mut data = package("big", "1.0.0", &[]);
+        data.simulation = true;
+        data.hooks = vec![HookDecl {
+            kind: HookKind::Rewrite,
+            replacement: Some("48895C2410".into()),
+            ..base.clone()
+        }];
+        assert_eq!(data.validate(), Ok(()));
+        data.simulation = false;
+        assert!(
+            data.validate().is_err(),
+            "patching code changes the simulation"
+        );
     }
 
     #[test]

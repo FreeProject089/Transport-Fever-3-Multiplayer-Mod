@@ -99,6 +99,34 @@ pub fn build_of(exe: &Path) -> Result<String, String> {
 /// be told (fail closed).
 pub fn game_env(data_dir: &Path, exe: &Path) -> Result<GameNative, String> {
     let store = store(data_dir)?;
+    // Game mods of packages on go into the game's `mods`, and those of
+    // packages switched off come out, before anything else.
+    let ours_there = |mods: &Path| {
+        std::fs::read_dir(mods).is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                e.path()
+                    .join(tpf3mp_nativemods::store::GAME_MOD_MARK)
+                    .is_file()
+            })
+        })
+    };
+    let wanted = store
+        .registry()
+        .packages
+        .values()
+        .any(|i| i.package().is_some_and(|p| !p.game_mods.is_empty()));
+    if let Some(game) = exe
+        .parent()
+        .filter(|game| wanted || ours_there(&game.join("mods")))
+    {
+        let build = build_of(exe)?;
+        for line in store
+            .sync_game_mods(&build, &game.join("mods"))
+            .map_err(|error| format!("native mods' game mods: {error}"))?
+        {
+            info!("{line}");
+        }
+    }
     if !store.registry().packages.values().any(|i| i.enabled) {
         return Ok(GameNative::default());
     }
@@ -288,6 +316,7 @@ fn unsupported(package: &Package) -> Option<String> {
 fn changes_simulation(package: &Package) -> bool {
     package.simulation
         || !package.plugins.is_empty()
+        || !package.hooks.is_empty()
         || package
             .features
             .iter()
@@ -491,7 +520,7 @@ fn row(
         installed_size: installed.and_then(|i| i.package()).map(size),
         load_order,
         clash,
-        code: !newest.plugins.is_empty(),
+        code: !newest.plugins.is_empty() || !newest.hooks.is_empty(),
         unsupported: available.and_then(unsupported),
         downloads: listing.and_then(|l| l.downloads),
         updated: listing.and_then(|l| l.updated.clone()),
@@ -737,6 +766,7 @@ mod tests {
             authors: Vec::new(),
             preview: None,
             hooks: Vec::new(),
+            game_mods: Vec::new(),
         };
         let registry = tpf3mp_nativemods::store::Registry {
             format: 1,
@@ -794,6 +824,7 @@ mod tests {
             authors: Vec::new(),
             preview: None,
             hooks: Vec::new(),
+            game_mods: Vec::new(),
         };
         let registry = tpf3mp_nativemods::store::Registry {
             format: 1,
@@ -874,6 +905,7 @@ mod tests {
             authors: Vec::new(),
             preview: None,
             hooks: Vec::new(),
+            game_mods: Vec::new(),
         };
         (package, (url, bytes))
     }

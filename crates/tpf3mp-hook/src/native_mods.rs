@@ -100,12 +100,19 @@ pub(crate) fn load_plugins(profiles: &[Profile], log: &mut Logger) -> Result<(),
         .filter_map(|target| usize::try_from(target.address).ok())
         .map(|rva| base + rva)
         .collect();
+    // A slot's table lies in the game's data: read only where readable.
+    let pointer = |at: usize| {
+        crate::image::readable(at, 8).then(|| {
+            // SAFETY: eight readable bytes, checked just above.
+            unsafe { std::ptr::read_unaligned(at as *const usize) }
+        })
+    };
     let mut found = Vec::new();
     for package in &plan.plugins {
-        found.extend(plugins::locate(package, code, start)?);
+        found.extend(plugins::locate(package, code, start, &pointer)?);
     }
-    plugins::arrange(found.clone(), &core)?;
-    let mut attached = Vec::new();
+    let sites = plugins::arrange(found.clone(), &core)?;
+    let mut started = plugins::Started::default();
     for package in &plan.plugins {
         let own: Vec<plugins::Found> = found
             .iter()
@@ -120,24 +127,26 @@ pub(crate) fn load_plugins(profiles: &[Profile], log: &mut Logger) -> Result<(),
             // SAFETY: the plugin is the one its package pins, which the
             // launcher installed from the server's index (proposed D29
             // amendment): its code runs here by the player's choice.
-            attached.extend(unsafe { plugins::start(package, &own, init, &mut line) }?);
+            unsafe { plugins::start(package, &own, init, &mut started, &mut line) }?;
             log.line(&format!(
                 "native mod {} {}: plugin {} started",
                 package.id, package.version, plugin.path
             ));
         }
     }
-    let count = attached.len();
-    // SAFETY: the game is suspended; each address is a function found by
-    // its signature and checked, and each detour and slot its plugin's,
+    let lua = std::mem::take(&mut started.lua);
+    // SAFETY: the game is suspended; each site was found by its signature
+    // and checked, and each function, callback and slot is its plugin's,
     // loaded for good.
-    let detours = unsafe { plugins::patch(attached) }?;
+    let patches = unsafe { plugins::patch(&sites, started) }?;
     log.line(&format!(
-        "native mods' plugins: {count} detours on {} functions",
-        detours.len()
+        "native mods' plugins: {} sites patched, {} Lua chunks for the game's Lua states",
+        patches.len(),
+        lua.len()
     ));
+    plugins::keep_lua(lua);
     // The patches stay for the life of the game.
-    std::mem::forget(detours);
+    std::mem::forget(patches);
     Ok(())
 }
 

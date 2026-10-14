@@ -67,7 +67,8 @@ assets of the `native-mods` release of the repository
 | `conflicts` | Packages that must not be installed beside it. |
 | `files` | Data, Lua and settings files: where each goes in the package's folder (plain names joined by `/`), where it comes from, its size and SHA-256. |
 | `plugins` | Its own code: native libraries the hook loads into the game (`path`, `url`, `size`, `sha256`; `abi`, the hook's plugin interface they are built against; `platform`, `windows-x86_64` or `linux-x86_64`). A package with any must say `simulation: true`. See "Plugins" below (proposed D29 amendment). |
-| `hooks` | The game functions its plugins patch, each found by signature: `target` (`<id>::<name>`), `signature`, `offset`, `prologue`, and `use` (`chain` or `replace`). See "Plugins" below. |
+| `hooks` | The places in the game's code it patches, each found by signature: `target` (`<id>::<name>`), `kind` (`detour`, `splice`, `rewrite`, `call` or `slot`), `signature`, `offset`, `expected` (the bytes there), `use` (`chain` or `replace`), and per kind `steal`, `replacement` or `slot`. See "Plugins" below. |
+| `game_mods` | Folders of its files that are game mods (`mod/<name>_<n>`): the launcher puts each into the game's `mods` folder while the package is on. See "Plugins" below. |
 
 Unknown fields are refused, and one malformed entry refuses the whole index:
 the project signs it, so a mistake is fixed there, never guessed around.
@@ -338,36 +339,79 @@ itself; a plugin is how a mod's authors ship their own.
               "size": 81920, "sha256": "<lowercase hex>"}],
  "hooks": [{"target": "faster_trains::max_speed",
             "signature": "48 89 5C 24 ? 57 48 83 EC 20 8B FA",
-            "offset": 0, "prologue": "48895C2408", "use": "chain"}]}
+            "offset": 0, "expected": "48895C2408", "use": "chain"}]}
 ```
+
+**Kinds of hook.** Each hook says how it patches (`kind`), and each is
+found by `signature` (one match in the game's code, else refused) and
+`offset`, and checked against the bytes it `expected` there before
+anything is written. A mod never names an address: addresses change with
+every game update and cannot be checked.
+
+| `kind` | what it patches | what the plugin gives (`tpf3mp-plugin-abi`) | several on one site |
+|---|---|---|---|
+| `detour` (default) | a function's start | a function with the game's signature, through `attach`, which calls on through its slot | chained in the load order |
+| `splice` | the middle of a function: `steal` (5 to 32) whole instructions of those `expected` | a callback through `splice`: it gets every register (`Registers`) and may change them; then the stolen instructions run and the function goes on | every callback, in the load order |
+| `rewrite` | bytes replaced one for one: an operand, a constant | the bytes through `rewrite`, or none when the package gives them (`replacement`) | only the very same bytes from the package |
+| `call` | one `call rel32` (`expected` is `E8` and its 4 bytes) | a function through `attach`, which calls on to the old callee | chained |
+| `slot` | one entry of a table of function pointers (a vtable): the `expected` instruction addresses the table (`slot`: its 4-byte displacement `disp_at` bytes in, the instruction `length` long), entry `index` | a function through `attach`, which calls on to the old one | chained |
+
+`use: replace` makes a hook the only one on its site. Two hooks on
+overlapping bytes at different sites refuse, and so does any hook within
+32 bytes of a target the hook patches itself for multiplayer.
+
+**What else a plugin gets.** While it starts, a plugin may hand over Lua
+(`lua`), which the hook runs in each of the game's Lua states after its
+own, the way it serves the main menu: Lua that wraps `resolveutil.loadfile`
+can serve a page from the mod's game mod, or wrap a game script. For the
+game's whole run it keeps `Services`: guarded reads of the game's memory
+(`read`, which refuses memory that cannot be read rather than crash), the
+game's update count while its step runs (`update_count`), and the log.
+
+**Game mods.** A package's `game_mods` (`mod/tpf3mp_bigmap_1`, among its
+`files`) are put into the game's `mods` folder when the launcher starts the
+game with the package on, and taken away when it is off
+(`Store::sync_game_mods`). Each holds `.tpf3mp-native-mod`, which names the
+package; a folder without it is a player's own, never touched, and a
+package whose game mod would take its name is refused.
 
 **How it runs.** At bootstrap, while the game is still suspended and
 before the hook's own multiplayer patches (`tpf3mp-hook`'s `plugins` and
 `native_mods::load_plugins`), for the enabled packages in the load order:
 
-1. every declared hook is found in the running build by its signature, as
-   the hook finds its own (one match, else refused), and the function's
-   first bytes are checked against `prologue`. A mod never names an
-   address: addresses change with every game update and cannot be checked;
-2. the hooks are checked against each other and against every function
-   the hook patches itself: a hook on one of those refuses, and so do two
-   on one function of which one is `replace`;
+1. every declared hook is found and checked, a call's old callee and a
+   slot's old function read;
+2. the hooks are checked against each other and against the code the hook
+   patches itself, as above;
 3. each plugin file is checked again against its pinned SHA-256, loaded,
-   and started: its one export, `tpf3mp_plugin_init`, gets a `Host`
-   (`tpf3mp-plugin-abi`) and **attaches** a detour to each declared hook by
-   name, with a slot the hook fills with what the detour calls on to;
-4. each function is patched once: the first detour in the load order
-   runs, each calls on to the next, the last to the game's own code. A
-   `replace` hook is alone on its function.
+   and started: its one export, `tpf3mp_plugin_init`, gets a `Host` and
+   asks for its hooks by name;
+4. each site is patched once, as the table says. A package of `rewrite`s
+   whose bytes it gives itself needs no plugin.
 
-Any step that fails stops before anything is patched and keeps the game
-out of rooms (`hook.log` says why). Plugins load only into the game on
-Windows x86-64 yet; elsewhere a package with one keeps the game out of
-rooms.
+Any step that fails stops before anything is patched (a patch that fails
+takes back those made) and keeps the game out of rooms (`hook.log` says
+why). Plugins load only into the game on Windows x86-64 yet; elsewhere a
+package with one keeps the game out of rooms.
 
-**In a room.** A plugin's code may change anything, so a package with one
-changes the simulation, whatever it says: it must say `simulation: true`,
-and its term's digest covers its plugins' SHA-256s as well as its settings
+**Big Maps as a plugin.** Every patch Big Maps makes on its own branch
+(`feat/bigmaps-40420`) has a kind here: the descent, `Obstacle::Obstacle`
+and the placement spacing are `detour`s (the spacing a `replace`); the
+octree root's two sites and the level decoder are `splice`s; the emission
+cells' shifts are `rewrite`s; the emission throttle's two vtable entries
+are `slot`s; its New Game page and density levels are Lua for the game's
+Lua states, served from its `game_mods` folder; and its emission gate reads
+the update count. It would need its hooks moved from the hook's profile to
+its package, its install code built as a library against
+`tpf3mp-plugin-abi` instead of the hook's modules, and its settings read
+from the package instead of `TPF3MP_BIGMAP_*` variables. Its throttle's
+two vtable entries are the ones `simperf`'s timers wrap: with Big Maps on,
+those two timers stay out (they check the entry and decline).
+
+**In a room.** A plugin's code, and any patch of the game's code, may
+change anything, so a package with either changes the simulation, whatever
+it says: it must say `simulation: true`, and its term's digest covers its
+plugins' SHA-256s and its hooks as well as its settings
 (`terms::package_digest`). A room's members run the same bytes, or are
 told they differ.
 
@@ -411,6 +455,8 @@ pub unsafe extern "C" fn tpf3mp_plugin_init(host: *const Host) -> i32 {
     let status = unsafe {
         (host.attach)(host.ctx, name.as_ptr(), name.len(), max_speed as *const c_void, &raw mut NEXT)
     };
+    // A splice: `(host.splice)(host.ctx, name, len, callback, user)`, the
+    // callback `unsafe extern "C" fn(*mut Registers, *mut c_void)`.
     if status != OK { return status; }
     OK
 }

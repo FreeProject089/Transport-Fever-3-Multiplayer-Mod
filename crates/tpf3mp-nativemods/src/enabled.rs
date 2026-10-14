@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     features::{self, Effect, FeatureSpec},
-    index::{HookDecl, HookUse, Setting},
+    index::{HookDecl, HookKind, HookUse, Setting},
 };
 
 /// The variable naming the enabled packages' file in the game's
@@ -108,6 +108,7 @@ impl EnabledPackage {
     pub fn changes_simulation(&self, registry: &[FeatureSpec]) -> bool {
         self.simulation
             || !self.plugins.is_empty()
+            || !self.hooks.is_empty()
             || self.features.iter().any(|id| {
                 features::find(registry, id).is_none_or(|f| f.effect == Effect::Simulation)
             })
@@ -129,7 +130,8 @@ pub struct Active {
 pub struct Plan {
     /// The features to switch on.
     pub active: Vec<Active>,
-    /// The packages whose plugins the hook loads, in the load order.
+    /// The packages whose plugins the hook loads, or whose hooks it patches,
+    /// in the load order.
     pub plugins: Vec<EnabledPackage>,
     /// Packages left off, with why: they change only what a player sees.
     pub left_off: Vec<String>,
@@ -195,31 +197,57 @@ pub fn load_order<'a>(packages: &[(&'a str, Vec<&'a str>)]) -> Vec<&'a str> {
     order
 }
 
-/// Why hooks `mine` and `theirs`, declared by two packages, cannot both
-/// be on, if they cannot: they name the same place in the game's code (the
-/// same signature and offset) and one takes it over. The hook checks again
+/// Whether two hooks on the same site may both be on: the same kind, both
+/// sharing (`chain`), and for a rewrite, the very same bytes given by the
+/// package (a plugin's own cannot be known before it starts).
+pub fn may_share(a: &HookDecl, b: &HookDecl) -> bool {
+    a.kind == b.kind
+        && a.access == HookUse::Chain
+        && b.access == HookUse::Chain
+        && (a.kind != HookKind::Rewrite
+            || (a.expected.eq_ignore_ascii_case(&b.expected)
+                && a.replacement.is_some()
+                && a.replacement.as_deref().map(str::to_ascii_lowercase)
+                    == b.replacement.as_deref().map(str::to_ascii_lowercase)))
+}
+
+/// Why hooks `mine` and `theirs`, declared by two packages, cannot both be
+/// on, if they cannot: they patch overlapping bytes of the same place in
+/// the game's code (the same signature, overlapping offsets; a slot, the
+/// same entry) and may not share it ([`may_share`]). The hook checks again
 /// by address once it has found them.
 pub fn hooks_clash(mine: &[HookDecl], theirs: &[HookDecl]) -> Option<String> {
-    let site = |hook: &HookDecl| {
-        (
-            hook.signature
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ")
-                .to_ascii_lowercase(),
-            hook.offset,
-        )
+    let signature = |hook: &HookDecl| {
+        hook.signature
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase()
+    };
+    let overlap = |a: &HookDecl, b: &HookDecl| {
+        if signature(a) != signature(b) {
+            return false;
+        }
+        match (a.kind, b.kind) {
+            (HookKind::Slot, HookKind::Slot) => {
+                a.offset == b.offset && a.slot.map(|s| s.index) == b.slot.map(|s| s.index)
+            }
+            (HookKind::Slot, _) | (_, HookKind::Slot) => false,
+            _ => {
+                let end = |h: &HookDecl| h.offset + h.written_len() as i64;
+                a.offset < end(b) && b.offset < end(a)
+            }
+        }
     };
     mine.iter().find_map(|hook| {
         theirs
             .iter()
             .find(|other| {
-                site(hook) == site(other)
-                    && (hook.access == HookUse::Replace || other.access == HookUse::Replace)
+                overlap(hook, other) && !(hook.offset == other.offset && may_share(hook, other))
             })
             .map(|other| {
                 format!(
-                    "{} and {} patch the same function, and one takes it over",
+                    "{} and {} patch the same place in the game, and cannot share it",
                     hook.target, other.target
                 )
             })
@@ -328,7 +356,7 @@ pub fn plan(
         match (problem, simulation) {
             (Some(why), true) => refusals.push(format!("{name}: {why}")),
             (Some(why), false) => plan.left_off.push(format!("{name}: {why}")),
-            (None, _) if !package.plugins.is_empty() => {
+            (None, _) if !package.plugins.is_empty() || !package.hooks.is_empty() => {
                 plan.plugins.push(package.clone());
                 plan.active
                     .extend(package.features.iter().map(|feature| Active {
@@ -638,8 +666,12 @@ mod tests {
             target: target.into(),
             signature: signature.into(),
             offset: 0,
-            prologue: "48".into(),
+            expected: "48".into(),
             access,
+            kind: HookKind::Detour,
+            steal: None,
+            replacement: None,
+            slot: None,
         };
         let draw = "48 89 5C 24 ? 57 48 83";
         let chained = [hook("a::draw", draw, HookUse::Chain)];
@@ -647,6 +679,61 @@ mod tests {
         let taken = [hook("c::draw", draw, HookUse::Replace)];
         let elsewhere = [hook("d::tick", "40 53 48 83 EC 20 8B D9", HookUse::Replace)];
         assert_eq!(hooks_clash(&chained, &chained_too), None, "chains share");
+        // Splices on one site share; a splice and a detour overlapping do
+        // not; rewrites share only the very same bytes.
+        let kind =
+            |target: &str, kind: HookKind, offset: i64, replacement: Option<&str>| HookDecl {
+                kind,
+                offset,
+                steal: (kind == HookKind::Splice).then_some(5),
+                replacement: replacement.map(str::to_owned),
+                ..hook(target, draw, HookUse::Chain)
+            };
+        assert_eq!(
+            hooks_clash(
+                &[kind("a::s", HookKind::Splice, 8, None)],
+                &[kind("b::s", HookKind::Splice, 8, None)]
+            ),
+            None
+        );
+        assert!(
+            hooks_clash(
+                &[kind("a::s", HookKind::Splice, 8, None)],
+                &[kind("b::d", HookKind::Detour, 0, None)]
+            )
+            .is_some(),
+            "the detour's jump covers the splice's bytes"
+        );
+        assert_eq!(
+            hooks_clash(
+                &[kind("a::s", HookKind::Splice, 20, None)],
+                &[kind("b::d", HookKind::Detour, 0, None)]
+            ),
+            None,
+            "past the detour's jump"
+        );
+        assert_eq!(
+            hooks_clash(
+                &[kind("a::r", HookKind::Rewrite, 2, Some("90"))],
+                &[kind("b::r", HookKind::Rewrite, 2, Some("90"))]
+            ),
+            None
+        );
+        assert!(
+            hooks_clash(
+                &[kind("a::r", HookKind::Rewrite, 2, Some("90"))],
+                &[kind("b::r", HookKind::Rewrite, 2, Some("CC"))]
+            )
+            .is_some()
+        );
+        assert!(
+            hooks_clash(
+                &[kind("a::r", HookKind::Rewrite, 2, None)],
+                &[kind("b::r", HookKind::Rewrite, 2, None)]
+            )
+            .is_some(),
+            "a plugin's own bytes are not known ahead"
+        );
         assert!(
             hooks_clash(&chained_too, &taken).is_some(),
             "the same site, spelt apart"

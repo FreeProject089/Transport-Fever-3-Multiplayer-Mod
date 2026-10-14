@@ -68,10 +68,11 @@ pub fn settings_digest(settings: &BTreeMap<String, Setting>) -> String {
 }
 
 /// The digest a package's term carries: of its settings, and of its
-/// plugins' code when it has any, so that a room's members run the same
-/// bytes. A package without plugins keeps the settings' digest alone.
+/// plugins' code and its hooks when it has any, so that a room's members
+/// run the same bytes. A package with neither keeps the settings' digest
+/// alone.
 pub fn package_digest(package: &crate::enabled::EnabledPackage) -> String {
-    if package.plugins.is_empty() {
+    if package.plugins.is_empty() && package.hooks.is_empty() {
         return settings_digest(&package.settings);
     }
     let mut digest = Context::new(&SHA256);
@@ -80,6 +81,10 @@ pub fn package_digest(package: &crate::enabled::EnabledPackage) -> String {
     for plugin in &package.plugins {
         digest.update(b"\nplugin ");
         digest.update(plugin.sha256.as_bytes());
+    }
+    if !package.hooks.is_empty() {
+        digest.update(b"\nhooks ");
+        digest.update(&serde_json::to_vec(&package.hooks).unwrap_or_default());
     }
     signed::hex(digest.finish().as_ref())
 }
