@@ -1492,13 +1492,17 @@ own repositories, and cannot ship that way.
   plugin for its own platform and interface; a package without one is
   refused with the reason.
 - **Hooks are declared, found by signature, never by address.** A package
-  lists the game functions its plugins patch (`hooks`): a name, an
+  lists the places in the game's code it patches (`hooks`): a name, an
   IDA-style signature that must match exactly once in the running build,
-  an offset, the function's expected first bytes, and how the plugin uses
-  it (`chain` or `replace`). The hook finds each as it finds its own, and
-  refuses a hook that does not match, matches twice or starts with other
-  bytes. A raw address is refused: it changes with every game update and
-  cannot be checked.
+  an offset, the bytes expected there, how it shares them (`chain` or
+  `replace`), and its kind, the hook core's own patches: a `detour` at a
+  function's start, a `splice` in the middle of one (its callback gets
+  and may change every register), a `rewrite` of bytes one for one, a
+  redirected `call`, or a `slot` of a vtable. The hook finds each as it
+  finds its own, and refuses a hook that does not match, matches twice or
+  holds other bytes. A raw address is refused: it changes with every game
+  update and cannot be checked. These cover every patch Big Maps makes on
+  its own branch.
 - **The hook owns every patch.** A plugin never writes to the game's code.
   Its one export receives a host interface and attaches a detour to each
   declared hook by name; the hook patches each function once, after every
@@ -1508,10 +1512,18 @@ own repositories, and cannot ship that way.
   multiplayer is refused. Any failure (a file that changed since it was
   installed, an interface mismatch, a hook not found, a plugin that refuses
   to start) patches nothing and keeps the game out of rooms.
+- **Lua, services and game mods.** A plugin may hand the hook Lua to run
+  in each of the game's Lua states (as the hook serves the main menu), and
+  keeps services for the game's run: guarded reads of the game's memory,
+  the game's update count, the log. A package's `game_mods` folders are
+  put into the game's `mods` folder while it is on, marked as the
+  launcher's; a player's own folder of the same name is never touched.
 - **Code counts as changing the simulation.** A package with a plugin must
   say `simulation: true`, and its room term's digest covers its plugins'
-  SHA-256s: a room's members run the same bytes, or are told they differ
-  (D29's room terms, unchanged otherwise).
+  SHA-256s and its hooks: a room's members run the same bytes, or are told
+  they differ (D29's room terms, unchanged otherwise). A package of
+  `rewrite`s whose bytes it gives itself needs no plugin, and counts the
+  same.
 - **Trusted from the server's registry, as rooms are.** Plugins come from
   where every native mod comes from: the project's signed index, or the
   index of the server the player plays on (the server-index amendment),
