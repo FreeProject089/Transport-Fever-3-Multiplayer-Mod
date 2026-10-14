@@ -327,16 +327,24 @@ game and Mod Hub account (D28).
 
 ## In the launcher
 
-The **Mods** button, beside Settings at the top of the window, opens the
-**Mods** dialog. Its **Native mods** group lists each package of the last
-accepted index for this game's build and each installed one, with its
-description, a link to its own project page (`homepage`), whether it changes the simulation, and
-**Install** or **Update**, **Switch on**/**Switch off**, **Roll back** and
-**Uninstall**. It has no controls for a mod's settings: a mod runs with
-its defaults, or with the settings of the room it was matched to.
-**Check the index** fetches the signed index again. A change takes effect
-in the next game the launcher starts; with no game running, the player
-declares the new terms at once.
+Two buttons beside Settings, at the top of the window, open the mods
+dialog, with tabs between its two pages:
+
+- **Mod manager** (the **Installed** tab): each native mod installed, a
+  card each, with its version, whether it is on, an update the index has
+  for it, whether it changes the simulation, its description and its own
+  project page (`homepage`), and **Update**, **Switch on**/**Switch off**,
+  **Roll back to** the version before, and **Uninstall**.
+- **Mod browser** (the **Browse** tab): each package the last accepted
+  index has for this game's build, to search by name or description, with
+  **Install** or **Update**, and with **Show proposed mods** the server's
+  proposed ones, marked as not reviewed and linking to their pull request.
+
+Neither has controls for a mod's settings: a mod runs with its defaults,
+or with the settings of the room it was matched to. **Check the index**
+fetches the index again. A change takes effect in the next game the
+launcher starts; with no game running, the player declares the new terms
+at once.
 
 ## Framework built, player feature still open
 

@@ -520,8 +520,9 @@ fn diagnostics_can_be_switched_off_in_settings() {
 }
 
 #[test]
-fn native_mods_are_managed_in_the_mods_dialog() {
-    let row = tpf3mp_agent::native_mods::NativeRow {
+fn native_mods_are_managed_in_the_mod_manager_and_found_in_the_mod_browser() {
+    use tpf3mp_agent::native_mods::{NativeRow, NativeView};
+    let big_maps = NativeRow {
         id: "bigmap".into(),
         name: "Big Maps".into(),
         description: "Maps up to 128 km a side.".into(),
@@ -534,21 +535,42 @@ fn native_mods_are_managed_in_the_mods_dialog() {
         listed: true,
         proposed: None,
     };
-    let mut window = window(State {
-        native: tpf3mp_agent::native_mods::NativeView {
+    let signs = NativeRow {
+        id: "signs".into(),
+        name: "Station Signs".into(),
+        description: "Bigger signs at stations.".into(),
+        homepage: None,
+        simulation: false,
+        available: Some("0.3.0".into()),
+        installed: None,
+        previous: None,
+        enabled: false,
+        listed: true,
+        proposed: Some(tpf3mp_nativemods::registry::Proposal {
+            number: 12,
+            title: "Add Station Signs".into(),
+            url: "https://example.invalid/pull/12".into(),
+        }),
+    };
+    let state = State {
+        native: NativeView {
             available: true,
             serial: Some(3),
-            server: None,
-            proposed_shown: false,
-            packages: vec![row],
+            server: Some("play.example:29470".into()),
+            proposed_shown: true,
+            packages: vec![big_maps, signs],
             problem: None,
         },
         ..State::default()
-    });
-    window.get_by_label("Mods").click();
+    };
+
+    // The mod manager lists what is installed, and only that.
+    let mut window = window(state.clone());
+    window.get_by_label("Mod manager").click();
     window.run_steps(4);
-    window.get_by_label("Native mods");
-    window.get_by_label("Project page");
+    window.get_by_label("Big Maps");
+    window.get_by_label("0.4.0 available");
+    assert!(window.query_by_label("Station Signs").is_none());
     // The pointer comes to the button before it is pressed, as a player's
     // does.
     window.get_by_label("Update").hover();
@@ -570,13 +592,36 @@ fn native_mods_are_managed_in_the_mods_dialog() {
         ]
     );
 
-    // Without an index from the server or the project, the dialog says
-    // the server offers none.
+    // The mod browser lists what the server offers and the proposed ones,
+    // finds them by name, and installs a proposed one as proposed.
+    let mut window = self::window(state);
+    window.get_by_label("Mod browser").click();
+    window.run_steps(4);
+    window.get_by_label("Big Maps");
+    window.get_by_label("Proposed in pull request #12: not reviewed");
+    let search = window.get_by_role_and_label(Role::TextInput, "SEARCH");
+    search.focus();
+    search.type_text("signs");
+    window.run_steps(4);
+    assert!(window.query_by_label("Big Maps").is_none());
+    window.get_by_label("Install").hover();
+    window.run_steps(2);
+    window.get_by_label("Install").click();
+    window.run_steps(2);
+    assert_eq!(
+        actions(&window),
+        [Action::NativeInstallProposed { id: "signs".into() }]
+    );
+
+    // Without an index from the server or the project, the browser says
+    // the server offers none, and the manager that none is installed.
     let mut window = self::window(State::default());
-    window.get_by_label("Mods").click();
+    window.get_by_label("Mod browser").click();
     window.run_steps(4);
     window.get_by_label("Your server offers no native mods yet.");
-    assert!(window.query_by_label("Update").is_none());
+    window.get_by_label("Installed (0)").click();
+    window.run_steps(4);
+    window.get_by_label("No native mods installed yet");
 }
 
 #[test]

@@ -157,8 +157,10 @@ pub struct LauncherApp<B> {
     /// The look is set on the first frame.
     styled: bool,
     settings: bool,
-    /// The Mods dialog: the native mods the server offers.
-    mods: bool,
+    /// The open mods dialog, if any: the mod manager or the mod browser.
+    mods: Option<ModsPage>,
+    /// What the player typed in the mod browser's search.
+    mod_search: String,
     /// The server setting's field, as the player types it, and the server
     /// it was last filled from.
     server_setting: String,
@@ -198,7 +200,8 @@ impl<B: Backend> LauncherApp<B> {
             looked_for_update: false,
             styled: false,
             settings: false,
-            mods: false,
+            mods: None,
+            mod_search: String::new(),
             server_setting: String::new(),
             server_setting_for: None,
             toast: None,
@@ -296,7 +299,7 @@ impl<B: Backend> LauncherApp<B> {
         self.sidebar(ui, &geometry, &state, &view, &assets);
         self.files(ui, &geometry, &state, &assets);
         self.footer(ui, &geometry, &state);
-        if self.settings || self.mods || self.confirm.is_some() {
+        if self.settings || self.mods.is_some() || self.confirm.is_some() {
             // Behind a dialog the page is blurred, as the page's
             // `::backdrop` does: the city blurred, over it all.
             let painter =
@@ -347,8 +350,13 @@ impl<B: Backend> LauncherApp<B> {
                 if theme::quiet_button(ui, true, Some("settings"), "Settings", settings).clicked() {
                     self.settings = true;
                 }
-                if theme::quiet_button(ui, true, Some("download"), "Mods", settings).clicked() {
-                    self.mods = true;
+                if theme::quiet_button(ui, true, Some("archive"), "Mod manager", settings).clicked()
+                {
+                    self.mods = Some(ModsPage::Manager);
+                }
+                if theme::quiet_button(ui, true, Some("search"), "Mod browser", settings).clicked()
+                {
+                    self.mods = Some(ModsPage::Browser);
                 }
                 if let Some(badge) = &view.updates.badge
                     && update_badge(ui, badge).clicked()
@@ -1210,37 +1218,78 @@ impl<B: Backend> LauncherApp<B> {
         }
     }
 
-    /// The Mods dialog, from the button beside Settings: the native mods
-    /// the server offers, those installed, and the proposed ones.
+    /// The mods dialogs, from the buttons beside Settings: the mod manager
+    /// (the native mods installed) and the mod browser (those the server
+    /// offers, and the proposed ones), with tabs between them.
     fn mods_dialog(&mut self, ctx: &egui::Context, state: &State) {
-        if !self.mods {
+        let Some(page) = self.mods else {
             return;
-        }
+        };
         let height = ctx.content_rect().height() - 48.0;
         let modal = Modal::new(Id::new("mods"))
             .frame(dialog_frame())
             .backdrop_color(theme::rgba(4, 16, 20, 0.66))
             .show(ctx, |ui| {
-                ui.set_width(524.0);
+                ui.set_width(580.0);
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let mut close = false;
                 ui.horizontal(|ui| {
+                    let title = match page {
+                        ModsPage::Manager => "Mod manager",
+                        ModsPage::Browser => "Mod browser",
+                    };
                     ui.label(
-                        theme::text("Mods", theme::semibold(26.0), theme::TEXT)
+                        theme::text(title, theme::semibold(26.0), theme::TEXT)
                             .extra_letter_spacing(-0.6),
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         close |= theme::icon_button(ui, "close", "Close mods").clicked();
                     });
                 });
-                ui.add_space(24.0);
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let installed = state
+                        .native
+                        .packages
+                        .iter()
+                        .filter(|row| row.installed.is_some() && row.proposed.is_none())
+                        .count();
+                    let tabs = [
+                        (
+                            ModsPage::Manager,
+                            "archive",
+                            format!("Installed ({installed})"),
+                        ),
+                        (ModsPage::Browser, "search", "Browse".to_owned()),
+                    ];
+                    for (tab, icon, words) in tabs {
+                        let look = if tab == page {
+                            Quiet {
+                                color: theme::TEXT,
+                                fill: theme::white(0.08),
+                                border: theme::white(0.45),
+                                ..Quiet::new()
+                            }
+                        } else {
+                            Quiet::new().color(theme::MUTED)
+                        };
+                        if theme::quiet_button(ui, true, Some(icon), &words, look).clicked() {
+                            self.mods = Some(tab);
+                        }
+                    }
+                });
+                ui.add_space(16.0);
                 ScrollArea::vertical()
-                    .id_salt("mods-body")
-                    .max_height(height - 170.0)
+                    .id_salt(("mods-body", page))
+                    .max_height(height - 210.0)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
-                        self.native_settings(ui, state);
+                        match page {
+                            ModsPage::Manager => self.mod_manager(ui, state),
+                            ModsPage::Browser => self.mod_browser(ui, state),
+                        }
                     });
                 ui.add_space(16.0);
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
@@ -1250,7 +1299,7 @@ impl<B: Backend> LauncherApp<B> {
                 close
             });
         if modal.inner || modal.should_close() {
-            self.mods = false;
+            self.mods = None;
         }
     }
 
@@ -1906,200 +1955,337 @@ impl<B: Backend> LauncherApp<B> {
         }
     }
 
-    /// The Mods dialog's native mods: the index's mods for this game, each
-    /// with its own project page, and those installed.
-    fn native_settings(&mut self, ui: &mut Ui, state: &State) {
+    /// What the launcher is doing with native mods, or what went wrong.
+    fn mods_status(ui: &mut Ui, state: &State) {
+        if let Some(busy) = &state.native_busy {
+            ui.label(theme::text(busy, theme::body(12.0), theme::TEXT));
+            ui.add_space(10.0);
+        }
+        if let Some(problem) = &state.native.problem {
+            ui.label(theme::text(problem, theme::body(12.0), theme::DIFFERS_TEXT));
+            ui.add_space(10.0);
+        }
+    }
+
+    /// The mod manager: every native mod installed, a card each, with what
+    /// can be done to it.
+    fn mod_manager(&mut self, ui: &mut Ui, state: &State) {
         let native = &state.native;
         let idle = state.native_busy.is_none();
-        group(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 10.0;
-                icon(ui, "download", 19.0, theme::TEXT);
+        let installed: Vec<&NativeRow> = native
+            .packages
+            .iter()
+            .filter(|row| row.installed.is_some() && row.proposed.is_none())
+            .collect();
+        Self::mods_status(ui, state);
+        if installed.is_empty() {
+            mod_card(ui, |ui| {
                 ui.label(theme::text(
-                    "Native mods",
+                    "No native mods installed yet",
                     theme::semibold(14.0),
                     theme::TEXT,
                 ));
-            });
-            ui.add_space(8.0);
-            ui.label(theme::text(
-                "Mods that change the game itself, such as Big Maps, from the list of mods your \
-                 server offers; each links to its own project. Joining a room installs the \
-                 room's for you and starts the game again with them. Mods from Mod Hub stay in \
-                 the game's own Mods page.",
-                theme::body(12.0),
-                theme::MUTED,
-            ));
-            if let Some(server) = &native.server {
                 ui.add_space(6.0);
                 ui.label(theme::text(
-                    format!("Offered by {server}."),
+                    "Native mods change the game itself, such as Big Maps. Find one in the mod \
+                     browser, or join a room that uses some: the launcher gets them for you and \
+                     starts the game again with them.",
                     theme::body(12.0),
                     theme::MUTED,
                 ));
-            }
-            ui.add_space(12.0);
-            if let Some(busy) = &state.native_busy {
-                ui.label(theme::text(busy, theme::body(12.0), theme::TEXT));
-                ui.add_space(8.0);
-            }
-            if let Some(problem) = &native.problem {
-                ui.label(theme::text(problem, theme::body(12.0), theme::DIFFERS_TEXT));
-                ui.add_space(8.0);
-            }
-            if native.packages.is_empty() {
-                ui.label(theme::text(
-                    if !native.available {
-                        "Your server offers no native mods yet."
-                    } else if native.serial.is_some() {
-                        "The index lists no native mod for this game yet."
-                    } else {
-                        "Check the index to see the native mods for this game."
-                    },
-                    theme::body(12.0),
-                    theme::MUTED,
-                ));
-                ui.add_space(8.0);
-            }
-            for row in &native.packages {
-                self.native_row(ui, row, idle);
                 ui.add_space(12.0);
-            }
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                if theme::quiet_button(ui, idle, Some("refresh"), "Check the index", Quiet::new())
-                    .clicked()
+                if theme::quiet_button(
+                    ui,
+                    true,
+                    Some("search"),
+                    "Open the mod browser",
+                    Quiet::new(),
+                )
+                .clicked()
                 {
-                    self.backend.act(Action::NativeRefresh);
+                    self.mods = Some(ModsPage::Browser);
                 }
-                if native.server.is_some() {
-                    let words = if native.proposed_shown {
-                        "Hide proposed mods"
+            });
+            return;
+        }
+        let on = installed.iter().filter(|row| row.enabled).count();
+        let updates = installed.iter().filter(|row| has_update(row)).count();
+        let mut summary = format!("{} installed · {on} on", installed.len());
+        match updates {
+            0 => {}
+            1 => summary.push_str(" · 1 update"),
+            n => summary.push_str(&format!(" · {n} updates")),
+        }
+        ui.label(theme::text(summary, theme::body(12.0), theme::MUTED));
+        ui.add_space(10.0);
+        for row in installed {
+            mod_card(ui, |ui| {
+                mod_heading(ui, row, true);
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
+                    let id = row.id.clone();
+                    if has_update(row)
+                        && theme::quiet_button(ui, idle, Some("download"), "Update", Quiet::new())
+                            .clicked()
+                    {
+                        self.backend.act(Action::NativeInstall { id: id.clone() });
+                    }
+                    let words = if row.enabled {
+                        "Switch off"
                     } else {
-                        "Show proposed mods"
+                        "Switch on"
                     };
                     if theme::quiet_button(ui, idle, None, words, Quiet::new()).clicked() {
-                        self.backend.act(Action::NativeShowProposed {
-                            on: !native.proposed_shown,
+                        self.backend.act(Action::NativeEnable {
+                            id: id.clone(),
+                            on: !row.enabled,
                         });
                     }
-                }
+                    if let Some(previous) = &row.previous
+                        && theme::quiet_button(
+                            ui,
+                            idle,
+                            None,
+                            &format!("Roll back to {previous}"),
+                            Quiet::new(),
+                        )
+                        .clicked()
+                    {
+                        self.backend.act(Action::NativeRollback { id: id.clone() });
+                    }
+                    let uninstall = Quiet::new().color(theme::rgba(242, 168, 160, 1.0));
+                    if theme::quiet_button(ui, idle, None, "Uninstall", uninstall).clicked() {
+                        self.backend.act(Action::NativeUninstall { id });
+                    }
+                });
             });
-            if native.proposed_shown {
-                ui.add_space(6.0);
-                ui.label(theme::text(
-                    "Proposed mods are open pull requests to the server's list of mods: nobody \
-                     has reviewed them yet. Install one only if you trust its authors.",
-                    theme::body(11.0),
-                    theme::DIFFERS_TEXT,
-                ));
-            }
-        });
+            ui.add_space(10.0);
+        }
+        ui.label(theme::text(
+            "Changes take effect the next time the launcher starts the game.",
+            theme::body(11.0),
+            theme::MUTED,
+        ));
     }
 
-    fn native_row(&mut self, ui: &mut Ui, row: &NativeRow, idle: bool) {
-        let version = match (&row.installed, &row.available) {
-            (Some(installed), Some(available)) if installed != available => {
-                format!("{installed} installed, {available} available")
+    /// The mod browser: the native mods the server offers for this game,
+    /// to search, and when the player asks, the proposed ones.
+    fn mod_browser(&mut self, ui: &mut Ui, state: &State) {
+        let native = &state.native;
+        let idle = state.native_busy.is_none();
+        labelled_field(
+            ui,
+            "Search",
+            None,
+            theme::text_field(&mut self.mod_search, "A mod's name or description", false),
+        );
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if theme::quiet_button(ui, idle, Some("refresh"), "Check the index", Quiet::new())
+                .clicked()
+            {
+                self.backend.act(Action::NativeRefresh);
             }
-            (Some(installed), _) => format!("{installed} installed"),
-            (None, Some(available)) => available.clone(),
-            (None, None) => "not for this game's build".to_owned(),
-        };
-        ui.label(theme::text(
-            format!("{} · {version}", row.name),
-            theme::semibold(13.0),
-            theme::TEXT,
-        ));
-        if !row.description.is_empty() {
-            ui.add_space(2.0);
+            if native.server.is_some() {
+                let words = if native.proposed_shown {
+                    "Hide proposed mods"
+                } else {
+                    "Show proposed mods"
+                };
+                if theme::quiet_button(ui, idle, None, words, Quiet::new()).clicked() {
+                    self.backend.act(Action::NativeShowProposed {
+                        on: !native.proposed_shown,
+                    });
+                }
+            }
+            if let Some(server) = &native.server {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(theme::text(
+                        format!("From {server}"),
+                        theme::body(11.0),
+                        theme::MUTED,
+                    ));
+                });
+            }
+        });
+        if native.proposed_shown {
+            ui.add_space(8.0);
             ui.label(theme::text(
-                &row.description,
-                theme::body(12.0),
-                theme::MUTED,
-            ));
-        }
-        if let Some(proposal) = &row.proposed {
-            ui.add_space(2.0);
-            ui.hyperlink_to(
-                theme::text(
-                    format!(
-                        "Proposed in pull request #{}: not reviewed",
-                        proposal.number
-                    ),
-                    theme::body(12.0),
-                    theme::DIFFERS_TEXT,
-                ),
-                &proposal.url,
-            );
-        }
-        if row.simulation {
-            ui.add_space(2.0);
-            ui.label(theme::text(
-                "Changes the simulation: every player of a room runs it alike.",
-                theme::body(11.0),
-                theme::MUTED,
-            ));
-        }
-        if !row.listed {
-            ui.add_space(2.0);
-            ui.label(theme::text(
-                "No longer in the index.",
+                "Proposed mods are open pull requests to the server's list of mods: nobody \
+                 has reviewed them yet. Install one only if you trust its authors.",
                 theme::body(11.0),
                 theme::DIFFERS_TEXT,
             ));
         }
-        if let Some(homepage) = &row.homepage {
-            ui.add_space(2.0);
-            ui.hyperlink_to(
-                theme::text("Project page", theme::body(12.0), theme::TEXT),
-                homepage,
-            );
+        ui.add_space(14.0);
+        Self::mods_status(ui, state);
+        if native.packages.is_empty() {
+            ui.label(theme::text(
+                if !native.available {
+                    "Your server offers no native mods yet."
+                } else if native.serial.is_some() {
+                    "The index lists no native mod for this game yet."
+                } else {
+                    "Check the index to see the native mods for this game."
+                },
+                theme::body(12.0),
+                theme::MUTED,
+            ));
+            return;
         }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            let id = row.id.clone();
-            let newer = row
-                .available
-                .as_ref()
-                .is_some_and(|available| row.installed.as_ref() != Some(available));
-            if newer {
-                let words = if row.installed.is_some() {
-                    "Update"
-                } else {
-                    "Install"
-                };
-                if theme::quiet_button(ui, idle, Some("download"), words, Quiet::new()).clicked() {
-                    self.backend.act(if row.proposed.is_some() {
-                        Action::NativeInstallProposed { id: id.clone() }
-                    } else {
-                        Action::NativeInstall { id: id.clone() }
-                    });
+        let search = self.mod_search.trim().to_lowercase();
+        let shown: Vec<&NativeRow> = native
+            .packages
+            .iter()
+            .filter(|row| row.listed)
+            .filter(|row| {
+                search.is_empty()
+                    || [&row.name, &row.description, &row.id]
+                        .iter()
+                        .any(|text| text.to_lowercase().contains(&search))
+            })
+            .collect();
+        if shown.is_empty() {
+            ui.label(theme::text(
+                format!("No mod matches \u{201c}{}\u{201d}.", self.mod_search.trim()),
+                theme::body(12.0),
+                theme::MUTED,
+            ));
+            return;
+        }
+        for row in shown {
+            mod_card(ui, |ui| {
+                mod_heading(ui, row, false);
+                if let Some(proposal) = &row.proposed {
+                    ui.add_space(4.0);
+                    ui.hyperlink_to(
+                        theme::text(
+                            format!(
+                                "Proposed in pull request #{}: not reviewed",
+                                proposal.number
+                            ),
+                            theme::body(12.0),
+                            theme::DIFFERS_TEXT,
+                        ),
+                        &proposal.url,
+                    );
                 }
+                let words = match (&row.installed, &row.available) {
+                    (None, Some(_)) => Some("Install"),
+                    (Some(_), Some(_)) if has_update(row) => Some("Update"),
+                    _ => None,
+                };
+                if let Some(words) = words {
+                    ui.add_space(10.0);
+                    if theme::quiet_button(ui, idle, Some("download"), words, Quiet::new())
+                        .clicked()
+                    {
+                        let id = row.id.clone();
+                        self.backend.act(if row.proposed.is_some() {
+                            Action::NativeInstallProposed { id }
+                        } else {
+                            Action::NativeInstall { id }
+                        });
+                    }
+                }
+            });
+            ui.add_space(10.0);
+        }
+    }
+}
+
+/// Which mods dialog is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ModsPage {
+    /// The native mods installed.
+    Manager,
+    /// The native mods the server offers.
+    Browser,
+}
+
+/// Whether the index has a newer version of an installed mod.
+fn has_update(row: &NativeRow) -> bool {
+    row.installed.is_some()
+        && row
+            .available
+            .as_ref()
+            .is_some_and(|available| row.installed.as_ref() != Some(available))
+}
+
+/// One mod in the mod manager or browser: a faint card.
+fn mod_card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    Frame::new()
+        .fill(theme::rgba(34, 43, 46, 0.35))
+        .stroke(Stroke::new(1.0, theme::white(0.094)))
+        .corner_radius(8)
+        .inner_margin(Margin::same(16))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            add(ui);
+        });
+}
+
+/// A mod card's top: its name and state, its version, what it changes,
+/// its description and its project page. `managing` in the mod manager.
+fn mod_heading(ui: &mut Ui, row: &NativeRow, managing: bool) {
+    ui.horizontal(|ui| {
+        ui.label(theme::text(&row.name, theme::semibold(15.0), theme::TEXT));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let mut pills: Vec<(String, Pill)> = Vec::new();
+            if managing {
+                pills.push(if row.enabled {
+                    ("On".into(), Pill::Ready)
+                } else {
+                    ("Off".into(), Pill::Unknown)
+                });
+            } else if row.installed.is_some() && !has_update(row) {
+                pills.push(("Installed".into(), Pill::Ready));
             }
-            if row.installed.is_some() {
-                let words = if row.enabled {
-                    "Switch off"
-                } else {
-                    "Switch on"
-                };
-                if theme::quiet_button(ui, idle, None, words, Quiet::new()).clicked() {
-                    self.backend.act(Action::NativeEnable {
-                        id: id.clone(),
-                        on: !row.enabled,
-                    });
-                }
-                if row.previous.is_some()
-                    && theme::quiet_button(ui, idle, None, "Roll back", Quiet::new()).clicked()
-                {
-                    self.backend.act(Action::NativeRollback { id: id.clone() });
-                }
-                if theme::quiet_button(ui, idle, None, "Uninstall", Quiet::new()).clicked() {
-                    self.backend.act(Action::NativeUninstall { id: id.clone() });
-                }
+            if has_update(row)
+                && let Some(available) = &row.available
+            {
+                pills.push((format!("{available} available"), Pill::Update));
+            }
+            if row.proposed.is_some() {
+                pills.push(("Proposed".into(), Pill::Update));
+            }
+            if !row.listed {
+                pills.push(("No longer offered".into(), Pill::Unknown));
+            }
+            for (words, pill) in &pills {
+                theme::pill(ui, words, *pill);
             }
         });
+    });
+    ui.add_space(3.0);
+    let mut facts = match (&row.installed, &row.available) {
+        (Some(installed), _) if managing => format!("Version {installed}"),
+        (_, Some(available)) => format!("Version {available}"),
+        (Some(installed), None) => format!("Version {installed}"),
+        (None, None) => "Not for this game's build".to_owned(),
+    };
+    if row.simulation {
+        facts.push_str(" · changes the simulation: every player of a room runs it alike");
+    }
+    ui.label(theme::text(facts, theme::body(11.0), theme::MUTED));
+    if !row.description.is_empty() {
+        ui.add_space(6.0);
+        ui.label(theme::text(
+            &row.description,
+            theme::body(12.5),
+            theme::TEXT,
+        ));
+    }
+    if let Some(homepage) = &row.homepage {
+        ui.add_space(6.0);
+        ui.hyperlink_to(
+            theme::text("Project page \u{2197}", theme::body(12.0), theme::ACCENT),
+            homepage,
+        );
     }
 }
 

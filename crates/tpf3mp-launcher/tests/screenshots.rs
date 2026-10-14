@@ -126,6 +126,34 @@ fn native() -> NativeView {
                 proposed: None,
             },
             NativeRow {
+                id: "terrain-tweaks".into(),
+                name: "Terrain Tweaks".into(),
+                description: "Steeper hills and deeper valleys on new maps.".into(),
+                homepage: Some("https://github.com/example/terrain-tweaks".into()),
+                simulation: true,
+                available: Some("2.0.0".into()),
+                installed: Some("2.0.0".into()),
+                previous: None,
+                enabled: false,
+                listed: true,
+                proposed: None,
+            },
+            NativeRow {
+                id: "faster-trains".into(),
+                name: "Faster Trains".into(),
+                description: "High-speed lines up to 400 km/h, with the tracks and \
+                              signals they need."
+                    .into(),
+                homepage: Some("https://github.com/example/faster-trains".into()),
+                simulation: true,
+                available: Some("0.4.1".into()),
+                installed: None,
+                previous: None,
+                enabled: false,
+                listed: true,
+                proposed: None,
+            },
+            NativeRow {
                 id: "station-signs".into(),
                 name: "Station Signs".into(),
                 description: "Bigger, clearer signs at stations.".into(),
@@ -453,16 +481,21 @@ fn screens() {
         },
         0.0,
     );
-    render_clicking(
-        "9c-mods",
-        State {
-            native: native(),
-            ..connected()
-        },
-        0.0,
-        Some("Mods"),
-        Place::Launcher,
-    );
+    for (name, button) in [
+        ("9c-mod-manager", "Mod manager"),
+        ("9d-mod-browser", "Mod browser"),
+    ] {
+        render_clicking(
+            name,
+            State {
+                native: native(),
+                ..connected()
+            },
+            0.0,
+            Some(button),
+            Place::Launcher,
+        );
+    }
     render(
         "4c-in-the-lobby-native-mods",
         State {
