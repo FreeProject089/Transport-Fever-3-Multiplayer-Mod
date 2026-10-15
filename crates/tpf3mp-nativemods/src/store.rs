@@ -1839,6 +1839,7 @@ mod tests {
         package
     }
 
+    #[cfg(all(windows, target_arch = "x86_64"))]
     fn approval_settings(package: &Package) -> EffectiveSettingsByPackage {
         BTreeMap::from([(package.id.clone(), package.settings.clone())])
     }
