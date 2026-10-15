@@ -585,6 +585,25 @@ pub fn begin_batch(
 pub fn end_batch() -> Result<Option<Vec<(u16, String)>>, String> {
     let mut shared = shared();
     if let Some(dump) = shared.batch.dump.take() {
+        // Lua offers base entries first so the hook's line cap cannot let
+        // optional route records crowd them out. On disk put routes first:
+        // the diagnostics tailer keeps the newest bytes of an over-budget
+        // burst, so each vehicle's compact core and lane summaries survive
+        // last even when verbose base rows are too large to fit.
+        let first = shared.dumped.len().saturating_sub(dump.written);
+        shared.dumped[first..].sort_by_key(|line| {
+            let mut words = line.split_whitespace();
+            let _lane = words.next();
+            let lane = words.next().and_then(|word| word.parse::<u16>().ok());
+            let key = words.nth(2);
+            let rank = match key {
+                Some(key) if key.contains("/path-") => 0,
+                Some(key) if key == "summary" || key == "err" => 3,
+                Some(key) if key.ends_with("/core") => 2,
+                _ => 1,
+            };
+            (rank, lane)
+        });
         let lanes = dump
             .lanes
             .iter()
@@ -3825,10 +3844,15 @@ my_timetables";
             lua.run(
                 "return tostring(tpf3mp_native.dumped(3, 'vehicle-0 speed=5')) \
                  .. ',' .. tostring(tpf3mp_native.dumped(3, 'vehicle-1 speed=0')) \
+                 .. ',' .. tostring(tpf3mp_native.dumped(3, 'vehicle-0/path-0000 edge=9')) \
+                 .. ',' .. tostring(tpf3mp_native.dumped(3, 'vehicle-0/core pos=5')) \
+                 .. ',' .. tostring(tpf3mp_native.dumped(3, 'summary same')) \
+                 .. ',' .. tostring(tpf3mp_native.dumped(1, 'line-0 stops=2')) \
+                 .. ',' .. tostring(tpf3mp_native.dumped(1, 'summary same')) \
                  .. ',' .. tostring(tpf3mp_native.dumped(0, 'edge')) \
                  .. ',' .. tostring(tpf3mp_native.dumped(3))"
             ),
-            Ok("true,true,false,false".into()),
+            Ok("true,true,true,true,true,true,true,false,false".into()),
             "lane 0 is not dumped, and an entry is text"
         );
         lua.run("tpf3mp_native.lanes({ [3] = 'v' })").unwrap();
@@ -3836,9 +3860,14 @@ my_timetables";
         assert_eq!(
             take_log(),
             [
+                "lane 3 step 300 vehicle-0/path-0000 edge=9",
+                "lane 1 step 300 line-0 stops=2",
                 "lane 3 step 300 vehicle-0 speed=5",
                 "lane 3 step 300 vehicle-1 speed=0",
-                "lane dump at step 300: lanes 1,3, 2 entries written",
+                "lane 3 step 300 vehicle-0/core pos=5",
+                "lane 1 step 300 summary same",
+                "lane 3 step 300 summary same",
+                "lane dump at step 300: lanes 1,3, 7 entries written",
             ]
         );
         // After the batch, nothing more is taken.

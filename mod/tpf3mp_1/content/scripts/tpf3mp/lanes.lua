@@ -377,20 +377,32 @@ readers[lanes.VEHICLES] = function(api, emit, ids)
 			local arrival = get(v, "arrivalStationTerminal")
 			local route = get(path, "path")
 			local detail = ""
+			local routeHash, routeCount = "nil", 0
 			if route then
 				local edges = get(route, "edges") or {}
+				routeCount = #edges
 				local entries, nearby, recorded = {}, {}, 0
 				local current = get(pos, "edgeIndex") or 0
-				for i = 1, math.min(#edges, 4096) do
+				local edgeLimit = math.min(#edges, 4096)
+				-- Route records are optional diagnostics. Sample the start,
+				-- the vehicle's current position, and the end rather than
+				-- flooding the 192 KiB/min hook-log upload with a whole prefix.
+				local selected = {}
+				local function selectRoute(index)
+					if index >= 0 and index < edgeLimit then selected[index] = true end
+				end
+				for index = 0, 1 do selectRoute(index) end
+				for index = current - 3, current + 8 do selectRoute(index) end
+				for index = edgeLimit - 2, edgeLimit - 1 do selectRoute(index) end
+				for i = 1, edgeLimit do
 					local edge = edges[i]
 					local id = get(edge, "edgeId") or get(edge, 1)
 					local direction = get(edge, "dir")
 					if direction == nil then direction = get(edge, 2) end
 					local text = full(get(id, "entity")) .. "/" .. full(get(id, "index")) .. "/" .. tostring(direction)
 					entries[#entries + 1] = text
-					-- Bounded ordered route prefix, not just ten nearby edges.
 					-- Geometry helps distinguish local IDs from different routes.
-					if recorded < 256 and routeRecords < 2048 then
+					if selected[i - 1] and recorded < 16 and routeRecords < 128 then
 						emit("vehicles", e, "-", "route_index=" .. (i - 1) .. " edge_entity=" .. full(get(id, "entity"))
 						.. " lane_index=" .. full(get(id, "index")) .. " direction=" .. tostring(direction)
 						.. " " .. edgeGeometry(get(id, "entity")), nil, string.format("/path-%04d", i - 1))
@@ -398,7 +410,8 @@ readers[lanes.VEHICLES] = function(api, emit, ids)
 					end
 					if i >= current - 1 and i <= current + 8 then nearby[#nearby + 1] = (i - 1) .. ":" .. text end
 				end
-				detail = " path_count=" .. #edges .. " path_hash=" .. hashStr(table.concat(entries, ";"))
+				routeHash = hashStr(table.concat(entries, ";"))
+				detail = " path_count=" .. #edges .. " path_hash=" .. routeHash
 					.. " path_sampled=" .. #entries .. " path_near=" .. table.concat(nearby, ",")
 					.. " path_omitted=" .. math.max(0, #edges - #entries) .. " path_hash_scope=local_ids"
 					.. " route_records=" .. recorded .. " route_omitted=" .. (#edges - recorded)
@@ -416,6 +429,14 @@ readers[lanes.VEHICLES] = function(api, emit, ids)
 					.. " arrival_locked=" .. tostring(get(v, "arrivalStationTerminalLocked"))
 				.. " load=" .. full(get(v, "loadState")) .. " pending=" .. full(get(get(v, "unloadPendingIncome"), "amount"))
 				.. " free=" .. freeCapacity(get(v, "lineStop2cargo2available")) .. detail)
+			-- A compact core for every vehicle survives an oversized verbose
+			-- dump in the tailer's newest-byte window. It names the vehicle
+			-- and the state needed to locate the first movement difference.
+			emit("vehicles", e, row, "state=" .. tostring(v and v.state) .. " stop=" .. tostring(v and v.stopIndex)
+				.. " line=" .. ids("lines", get(v, "line"), "line")
+				.. " edge=" .. full(pos and pos.edgeIndex) .. " pos=" .. full(pos and pos.pos)
+				.. " speed=" .. full(d and d.speed) .. " path_count=" .. routeCount
+				.. " path_hash=" .. routeHash, nil, "/core")
 		end
 	end
 	return summary(rows)
@@ -522,7 +543,7 @@ local function companyBalances(api)
 			local account = type(c.entity) == "number" and component(api, c.entity, "ACCOUNT")
 			local balance = account and account.balance
 			out[#out + 1] = tostring(c.id) .. "=" .. tostring(c.entity) .. ":"
-				.. (type(balance) == "number" and string.format("%d", balance) or "?")
+				.. (type(balance) == "number" and string.format("%.0f", balance) or "?")
 		end
 	end
 	return table.concat(out, ",")
@@ -532,7 +553,7 @@ readers[lanes.ECONOMY] = function(api, emit, ids)
 	local player = api.engine.util.getPlayer()
 	local account = component(api, player, "ACCOUNT")
 	local balance = account and account.balance
-	local text = tostring(player) .. ":" .. (balance ~= nil and string.format("%d", balance) or "?")
+	local text = tostring(player) .. ":" .. (balance ~= nil and string.format("%.0f", balance) or "?")
 	local okC, balances = pcall(companyBalances, api)
 	if okC and balances then text = text .. " companies " .. balances end
 	local offers = scriptState(api, SUBSIDY_SCRIPT)
@@ -1094,8 +1115,10 @@ function lanes.dump(api, lane, reg, box)
 			order = "1 " .. row .. "\30" .. string.format("%015d", tonumber(e) or 0)
 		end
 		key = key .. (suffix or "")
-		-- Keep all summaries before optional routes at the hook's output limit.
-		order = (suffix and "2 " or "") .. order .. (suffix or "")
+		-- Core first, then verbose base, then optional routes at the hook's
+		-- line limit. The hook writes these in the opposite priority order.
+		local priority = suffix == "/core" and "0 " or (suffix and "2 " or "1 ")
+		order = priority .. order .. (suffix or "")
 		-- Only the diagnostic spelling changes: '@' in numeric vehicle rows
 		-- looks like an email to the relay's privacy filter. Hash input is untouched.
 		if kind == "vehicles" then row = string.gsub(row, "@", "~") end

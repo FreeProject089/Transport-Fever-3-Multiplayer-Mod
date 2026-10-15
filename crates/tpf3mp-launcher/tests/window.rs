@@ -520,6 +520,62 @@ fn diagnostics_can_be_switched_off_in_settings() {
 }
 
 #[test]
+fn native_mods_are_managed_in_settings() {
+    let row = tpf3mp_agent::native_mods::NativeRow {
+        id: "bigmap".into(),
+        name: "Big Maps".into(),
+        description: "Maps up to 128 km a side.".into(),
+        homepage: Some("https://example.invalid/bigmap".into()),
+        simulation: true,
+        available: Some("0.4.0".into()),
+        installed: Some("0.3.0".into()),
+        previous: None,
+        enabled: true,
+        listed: true,
+        settings: Vec::new(),
+    };
+    let mut window = window(State {
+        native: tpf3mp_agent::native_mods::NativeView {
+            available: true,
+            serial: Some(3),
+            packages: vec![row],
+            problem: None,
+        },
+        ..State::default()
+    });
+    window.get_by_label("Settings").click();
+    window.run_steps(4);
+    window.get_by_label("Native mods");
+    window.get_by_label("Project page");
+    // The pointer comes to the button before it is pressed, as a player's
+    // does.
+    window.get_by_label("Update").hover();
+    window.run_steps(2);
+    window.get_by_label("Update").click();
+    window.run_steps(2);
+    window.get_by_label("Switch off").click();
+    window.run_steps(2);
+    assert_eq!(
+        actions(&window),
+        [
+            Action::NativeInstall {
+                id: "bigmap".into()
+            },
+            Action::NativeEnable {
+                id: "bigmap".into(),
+                on: false
+            },
+        ]
+    );
+
+    // A launcher built without the native-mods key offers none.
+    let mut window = self::window(State::default());
+    window.get_by_label("Settings").click();
+    window.run_steps(4);
+    assert!(window.query_by_label("Native mods").is_none());
+}
+
+#[test]
 fn the_game_is_started_from_a_room() {
     let mut window = window(in_room(vec![member("Ann", true, true, false)], true));
     window.get_by_label("Start Transport Fever 3").click();

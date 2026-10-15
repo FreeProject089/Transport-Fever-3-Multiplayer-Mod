@@ -459,6 +459,12 @@ impl ServerStats {
         self.shared.max_sessions - self.shared.sessions.available_permits()
     }
 
+    /// The rooms open now that `filter` keeps, with their members, for the
+    /// admin endpoint's `/rooms`.
+    pub(crate) fn room_view(&self, filter: &directory::RoomFilter) -> Vec<directory::AdminRoom> {
+        self.shared.directory.admin_view(filter)
+    }
+
     /// Tells everyone connected `text`, such as a restart coming. Returns
     /// how many connections were told.
     pub fn announce(&self, text: ChatText) -> usize {

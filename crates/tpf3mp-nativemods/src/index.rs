@@ -51,6 +51,8 @@ pub const MAX_FILES: usize = 4096;
 /// Longest package version, so that the room's terms fit a mod version
 /// ([`crate::terms`]).
 pub const MAX_VERSION: usize = 20;
+/// Longest text setting, in bytes: a room tells its native mods' settings.
+pub const MAX_TEXT_SETTING: usize = 128;
 
 /// The signed list of native mods.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +76,12 @@ pub struct Package {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// The mod's own project page, such as its repository, where its
+    /// authors publish it and players read about it: the launcher links to
+    /// it, as CKAN links to a mod's. Its files still come only as this
+    /// signed index pins them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub homepage: Option<String>,
     /// Whether it changes how the world runs. If so, every game of a room
     /// must run it in the same version with the same settings
     /// ([`crate::terms`]). A feature the hook knows to change the
@@ -246,6 +254,20 @@ impl Package {
         if let Some(bad) = self.settings.keys().find(|k| !is_id(k)) {
             return Err(format!("the setting {bad:?} is malformed"));
         }
+        // A room tells every member its settings (protocol 20's
+        // `NativeValue::Text`).
+        if let Some((bad, _)) = self.settings.iter().find(
+            |(_, value)| matches!(value, Setting::Text(text) if text.len() > MAX_TEXT_SETTING),
+        ) {
+            return Err(format!(
+                "the setting {bad:?} is longer than {MAX_TEXT_SETTING} bytes"
+            ));
+        }
+        if let Some(homepage) = &self.homepage
+            && (!homepage.starts_with("https://") || homepage.len() > 200)
+        {
+            return Err("the homepage is not a short https address".into());
+        }
         for dependency in &self.depends {
             if !is_id(&dependency.id) || semver::VersionReq::parse(&dependency.version).is_err() {
                 return Err(format!("the dependency {:?} is malformed", dependency.id));
@@ -347,6 +369,7 @@ pub(crate) mod tests {
             version: version.into(),
             name: id.into(),
             description: String::new(),
+            homepage: None,
             simulation: false,
             builds: vec![BUILD.into()],
             features: Vec::new(),

@@ -983,7 +983,7 @@ function capture.paramsNote(name, params, read)
 	for _, p in ipairs(flat) do
 		local v = p.value
 		local text
-		if v.Int ~= nil then text = "i" .. string.format("%d", v.Int)
+		if v.Int ~= nil then text = "i" .. string.format("%.0f", v.Int)
 		elseif v.Fixed ~= nil then text = "f" .. string.format("%.17g", v.Fixed)
 		else text = "b" .. (v.Bool and "1" or "0") end
 		parts[#parts + 1] = p.key .. "=" .. text
@@ -1006,7 +1006,7 @@ function capture.readParamsNote(note, name)
 	if count == nil or count ~= #parts - 3 then return nil, "the tool's settings were cut short" end
 	local out = {}
 	for i = 4, #parts do
-		local key, kind, text = parts[i]:match("^([%a_][%w_]*)=([ifb])(.*)$")
+		local key, kind, text = parts[i]:match("^([%a_][%w_%.]*)=([ifb])(.*)$")
 		local value
 		if kind == "i" and text:match("^%-?%d+$") then value = { Int = tonumber(text) }
 		elseif kind == "f" and tonumber(text) ~= nil then value = { Fixed = tonumber(text) }
@@ -1088,9 +1088,10 @@ end
 -- of one it replaces): the bridge and tunnel window's type
 -- (gui/entity_window/bridge_and_tunnel.tl, api.engine.util.proposal
 -- .createBridgeOrTunnelProposal, build 40408) makes one. It is carried as
--- the road and track modifiers' rebuild is (capture.modify), once
--- acceptance.lua's `bridges` is on: until a two-player game shows the
--- window's proposal reads as the modifiers' does, it is refused, saying so.
+-- the road and track modifiers' rebuild is (capture.modify) while
+-- acceptance.lua's `bridges` is on (since a two-player game on build 40420,
+-- 2026-10-11, showed the window's proposal reads as the modifiers' does);
+-- with it off, it is refused, saying so.
 function capture.inPlace(proposal)
 	local p = get(proposal, "proposal")
 	if p == nil or (length(get(proposal, "toAdd")) or 0) > 0 or (length(get(proposal, "toRemove")) or 0) > 0 then

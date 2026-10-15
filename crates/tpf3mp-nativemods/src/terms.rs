@@ -10,12 +10,11 @@
 //! player. A package that changes only what its player sees is not a term:
 //! players may differ in it.
 //!
-//! The protocol does not carry these terms yet (D29, proposed): until it
-//! does, the hook refuses multiplayer when a simulation package is enabled
-//! ([`crate::enabled::ROOM_TERMS_CARRIED`]). Each term already has the
-//! shape of a mod in a manifest ([`NativeTerm::mod_id`],
-//! [`NativeTerm::mod_version`]) so that it can travel either as entries of
-//! the manifest or as a field of its own.
+//! The protocol carries these terms since version 20 (D29): each goes in
+//! the content manifest's own list of native mods in the shape of a mod
+//! ([`NativeTerm::mod_id`], [`NativeTerm::mod_version`]), and the room
+//! compares them as it compares mods
+//! ([`crate::enabled::ROOM_TERMS_CARRIED`]).
 
 use std::collections::BTreeMap;
 

@@ -179,6 +179,13 @@ pub(crate) fn log_line(line: &str) {
     }
 }
 
+/// Writes a bounded incident batch with one file write.
+pub(crate) fn log_lines(lines: &[String]) {
+    if let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
+        log.lines(lines);
+    }
+}
+
 /// Where the main menu's frames last saw the game (`crate::at_menu`), and
 /// the rule that decides it.
 struct MenuSight {
