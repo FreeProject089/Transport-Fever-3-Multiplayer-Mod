@@ -410,14 +410,16 @@ pub struct Chain {
 
 impl Chain {
     /// A click of the street or track tool: `click` as read, or `None` when
-    /// it did not read (which drops the kept one too).
-    pub fn click(&mut self, number: u64, click: Option<Click>, now: Instant) {
+    /// it did not read (which drops the kept one too). The click comes
+    /// inside the tool's frame `frame`, which counts as its last: a tool
+    /// closed before its next frame misses frames too.
+    pub fn click(&mut self, number: u64, click: Option<Click>, now: Instant, frame: u64) {
         self.pending = click.map(|click| Pending {
             click,
             number,
             stage: Stage::Queued,
             since: now,
-            stepped: None,
+            stepped: Some(frame),
         });
     }
 
@@ -705,7 +707,7 @@ pub fn before_add(return_address: usize, callback: usize, number: u64) {
         }
     };
     let mut chain = chain();
-    chain.click(number, click, Instant::now());
+    chain.click(number, click, Instant::now(), FRAME.load(Ordering::Acquire));
     rearm(&chain);
 }
 
@@ -1222,9 +1224,13 @@ mod tests {
         }
     }
 
-    /// One click, handed over, applied and seen.
+    /// One click at GUI frame 0, handed over and applied.
     fn built(chain: &mut Chain, now: Instant) {
-        chain.click(7, Some(click(true, true, 1)), now);
+        built_at(chain, now, 0);
+    }
+
+    fn built_at(chain: &mut Chain, now: Instant, frame: u64) {
+        chain.click(7, Some(click(true, true, 1)), now, frame);
         assert_eq!(chain.bind(7, Some(900)), None);
         assert_eq!(chain.ordered(), Some(900));
         assert_eq!(
@@ -1238,7 +1244,7 @@ mod tests {
         let now = Instant::now();
         let mut chain = Chain::default();
         let read = |_: usize| Some(tool_now());
-        chain.click(7, Some(click(true, true, 1)), now);
+        chain.click(7, Some(click(true, true, 1)), now, 0);
         assert_eq!(
             chain.step(TOOL, 1, now, true, &read),
             Step::Wait,
@@ -1302,7 +1308,7 @@ mod tests {
         let now = Instant::now();
         let mut chain = Chain::default();
         let read = |_: usize| Some(tool_now());
-        built(&mut chain, now);
+        built_at(&mut chain, now, 11);
         chain.seen(11, 1, 0, 10);
         chain.step(TOOL, 12, now, true, &read);
         assert_eq!(
@@ -1331,28 +1337,28 @@ mod tests {
         // A newer click of the tool that did not read.
         let mut chain = Chain::default();
         built(&mut chain, now);
-        chain.click(8, None, now);
+        chain.click(8, None, now, 0);
         assert_eq!(chain.step(TOOL, 1, now, true, &read), Step::Nothing);
 
         // Not handed to the room.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now);
+        chain.click(7, Some(click(true, true, 1)), now, 0);
         assert_eq!(chain.bind(6, None), None, "another click's hand-over");
         assert!(chain.bind(7, None).is_some());
         assert_eq!(chain.ordered(), None);
 
         // Refused, or not applied.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now);
+        chain.click(7, Some(click(true, true, 1)), now, 0);
         chain.bind(7, Some(900));
         assert_eq!(chain.refused(901), None);
         assert!(chain.refused(900).is_some());
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now);
+        chain.click(7, Some(click(true, true, 1)), now, 0);
         chain.bind(7, Some(900));
         assert!(chain.applied(Some(900), false, Vec::new()).is_some());
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now);
+        chain.click(7, Some(click(true, true, 1)), now, 0);
         chain.bind(7, Some(900));
         assert!(
             chain.applied(Some(900), true, Vec::new()).is_some(),
@@ -1361,7 +1367,7 @@ mod tests {
 
         // Applied without an edge ending there.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now);
+        chain.click(7, Some(click(true, true, 1)), now, 0);
         chain.bind(7, Some(900));
         chain.applied(Some(900), true, vec![edge(5, [1, 2], [[0.0; 3], [1.0; 3]])]);
         assert!(chain.poll(now, true).1.is_some());
@@ -1386,6 +1392,15 @@ mod tests {
         chain.seen(11, 1, 0, 5);
         assert_eq!(
             chain.step(TOOL, 5, now, true, &read),
+            Step::Drop("the tool was closed")
+        );
+        // Closed right after the click, inside the click's own frame, and
+        // opened again later: no frame of the tool in between at all.
+        let mut chain = Chain::default();
+        built_at(&mut chain, now, 5);
+        chain.seen(11, 1, 0, 20);
+        assert_eq!(
+            chain.step(TOOL, 20, now, true, &read),
             Step::Drop("the tool was closed")
         );
 
@@ -1447,7 +1462,7 @@ mod tests {
                 ..tool_now()
             })
         };
-        chain.click(7, Some(click(true, true, 1)), now);
+        chain.click(7, Some(click(true, true, 1)), now, 0);
         chain.bind(7, Some(900));
         assert_eq!(chain.step(TOOL, 1, now, true, &idle), Step::Wait);
         assert_eq!(
@@ -1462,7 +1477,7 @@ mod tests {
         // Before the click's callback ran (busy), the tool's state is not
         // yet the player's.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now);
+        chain.click(7, Some(click(true, true, 1)), now, 0);
         let busy = |_: usize| {
             Some(ToolNow {
                 busy: 1,
@@ -1502,9 +1517,9 @@ mod tests {
         // not click 8's.
         let now = Instant::now();
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now);
+        chain.click(7, Some(click(true, true, 1)), now, 0);
         chain.bind(7, Some(900));
-        chain.click(8, Some(click(true, true, 1)), now);
+        chain.click(8, Some(click(true, true, 1)), now, 0);
         chain.bind(8, Some(901));
         assert_eq!(
             chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]),

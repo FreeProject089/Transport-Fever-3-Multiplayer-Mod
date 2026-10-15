@@ -3231,7 +3231,9 @@ A right-click while the click waits does not cancel it: with no start
 point, the tool's own input handler passes a right-click on
 (`UI::StreetBuilder` vf2, 0x581479..0x5814d7), so the hook sees no
 abort; whatever the game then does with it, a tool it closes misses
-frames and drops the click.
+frames and drops the click. "Closed" is three GUI frames without the
+tool's frame, counted from the click's own; a tool closed and opened
+again faster than that is not seen.
 Profile targets, all optional: `StreetBuilder::UpdateEngine/Add call`,
 `/capture` (whose signature holds every offset of the tool and the
 callback read), `StreetBuilder::UpdateEngine callback/result scan` and
