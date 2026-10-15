@@ -45,8 +45,11 @@ use tpf3mp_proto::{
 /// the password. Version 9 keeps the native mods' full settings alongside
 /// their manifest terms, so a recovered room tells new members the exact
 /// settings rather than inventing defaults. Version 8 remains readable
-/// only when its manifest has no native mods.
-pub(crate) const FORMAT_VERSION: u16 = 9;
+/// only when its manifest has no native mods. Version 10 persists the
+/// room's exact scan plan; explicit version-8/9 readers supply rolling-v1.
+/// The persisted turn-frame layout is unchanged.
+pub(crate) const FORMAT_VERSION: u16 = 10;
+pub(crate) const LEGACY_NATIVE_FORMAT_VERSION: u16 = 9;
 pub(crate) const LEGACY_NATIVE_FREE_FORMAT_VERSION: u16 = 8;
 /// Largest start record: one whose base holds the rules' state.
 const MAX_START_RECORD: usize = 16 << 20;
@@ -98,11 +101,55 @@ struct StartRecordV8 {
     manifest: Option<StoredManifest>,
     owner: PlayerId,
     max_players: u8,
-    settings: RoomSettings,
+    settings: LegacyRoomSettings,
     invite_tag: Vec<u8>,
     password_tag: Option<Vec<u8>>,
     members: Vec<StartMember>,
     base: Option<Base>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct LegacyRoomSettings {
+    steps_per_second: u16,
+    input_delay_ms: u16,
+    checkpoint_interval: u32,
+}
+impl From<LegacyRoomSettings> for RoomSettings {
+    fn from(old: LegacyRoomSettings) -> Self {
+        Self {
+            steps_per_second: old.steps_per_second,
+            input_delay_ms: old.input_delay_ms,
+            checkpoint_interval: old.checkpoint_interval,
+            scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
+        }
+    }
+}
+impl From<RoomSettings> for LegacyRoomSettings {
+    fn from(old: RoomSettings) -> Self {
+        Self {
+            steps_per_second: old.steps_per_second,
+            input_delay_ms: old.input_delay_ms,
+            checkpoint_interval: old.checkpoint_interval,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StartRecordV9 {
+    version: u16,
+    history: u64,
+    id: RoomId,
+    name: Text<48>,
+    rules: RulesName,
+    manifest: Option<StoredManifest>,
+    owner: PlayerId,
+    max_players: u8,
+    settings: LegacyRoomSettings,
+    invite_tag: Vec<u8>,
+    password_tag: Option<Vec<u8>>,
+    members: Vec<StartMember>,
+    base: Option<Base>,
+    native_mods: Vec<NativeMod>,
 }
 
 impl From<StartRecordV8> for StartRecord {
@@ -116,12 +163,33 @@ impl From<StartRecordV8> for StartRecord {
             manifest: old.manifest,
             owner: old.owner,
             max_players: old.max_players,
-            settings: old.settings,
+            settings: old.settings.into(),
             invite_tag: old.invite_tag,
             password_tag: old.password_tag,
             members: old.members,
             base: old.base,
             native_mods: Vec::new(),
+        }
+    }
+}
+
+impl From<StartRecordV9> for StartRecord {
+    fn from(old: StartRecordV9) -> Self {
+        Self {
+            version: old.version,
+            history: old.history,
+            id: old.id,
+            name: old.name,
+            rules: old.rules,
+            manifest: old.manifest,
+            owner: old.owner,
+            max_players: old.max_players,
+            settings: old.settings.into(),
+            invite_tag: old.invite_tag,
+            password_tag: old.password_tag,
+            members: old.members,
+            base: old.base,
+            native_mods: old.native_mods,
         }
     }
 }
@@ -132,6 +200,9 @@ pub(crate) fn deserialize_start(
 ) -> Result<StartRecord, postcard::Error> {
     match version {
         FORMAT_VERSION => postcard::from_bytes(payload),
+        LEGACY_NATIVE_FORMAT_VERSION => {
+            postcard::from_bytes::<StartRecordV9>(payload).map(StartRecord::from)
+        }
         LEGACY_NATIVE_FREE_FORMAT_VERSION => {
             postcard::from_bytes::<StartRecordV8>(payload).map(StartRecord::from)
         }
@@ -151,13 +222,34 @@ pub(crate) fn format8_payload(start: &StartRecord) -> Vec<u8> {
         manifest: start.manifest.clone(),
         owner: start.owner,
         max_players: start.max_players,
-        settings: start.settings,
+        settings: start.settings.into(),
         invite_tag: start.invite_tag.clone(),
         password_tag: start.password_tag.clone(),
         members: start.members.clone(),
         base: start.base.clone(),
     };
     postcard::to_stdvec(&legacy).expect("format-8 fixture serializes")
+}
+
+#[cfg(test)]
+pub(crate) fn format9_payload(start: &StartRecord) -> Vec<u8> {
+    let legacy = StartRecordV9 {
+        version: LEGACY_NATIVE_FORMAT_VERSION,
+        history: start.history,
+        id: start.id,
+        name: start.name.clone(),
+        rules: start.rules.clone(),
+        manifest: start.manifest.clone(),
+        owner: start.owner,
+        max_players: start.max_players,
+        settings: start.settings.into(),
+        invite_tag: start.invite_tag.clone(),
+        password_tag: start.password_tag.clone(),
+        members: start.members.clone(),
+        base: start.base.clone(),
+        native_mods: start.native_mods.clone(),
+    };
+    postcard::to_stdvec(&legacy).expect("format-9 fixture serializes")
 }
 
 /// A running game's state after a turn, which a compacted log starts from
@@ -612,8 +704,12 @@ mod tests {
             value: NativeValue::Int(37),
         }];
         let settings_map = BTreeMap::from([("radius".to_owned(), Setting::Int(37))]);
-        let version =
-            Text::new(format!("1.2.3+{}", &settings_digest(&settings_map)[..10])).unwrap();
+        let version = Text::new(format!(
+            "1.2.3+{}{}",
+            &settings_digest(&settings_map)[..10],
+            "a".repeat(64)
+        ))
+        .unwrap();
         let term = ModRef {
             id: Text::new("native:bigmap").unwrap(),
             version: version.clone(),
@@ -636,19 +732,35 @@ mod tests {
     }
 
     #[test]
-    fn format9_start_record_keeps_non_default_native_settings() {
+    fn format10_start_record_keeps_non_default_native_settings_and_scan_plan() {
         let (manifest, native) = native_declaration();
         let mut start = start();
         start.manifest = Some(StoredManifest::from(&manifest));
         start.native_mods = vec![native.clone()];
+        start.settings.scan_plan =
+            tpf3mp_proto::ScanPlan::from_values(Some("compare"), Some("5x10")).unwrap();
         let bytes = postcard::to_stdvec(&start).unwrap();
         let restored = deserialize_start(&bytes, FORMAT_VERSION).unwrap();
         assert_eq!(restored.version, FORMAT_VERSION);
         assert_eq!(restored.native_mods, [native]);
+        assert_eq!(restored.settings.scan_plan, start.settings.scan_plan);
         assert_eq!(
             restored.manifest.unwrap().manifest().fingerprint(),
             manifest.fingerprint()
         );
+    }
+
+    #[test]
+    fn format9_start_restores_native_settings_with_the_rolling_plan() {
+        let (manifest, native) = native_declaration();
+        let mut start = start();
+        start.manifest = Some(StoredManifest::from(&manifest));
+        start.native_mods = vec![native.clone()];
+        let restored =
+            deserialize_start(&format9_payload(&start), LEGACY_NATIVE_FORMAT_VERSION).unwrap();
+        assert_eq!(restored.settings.scan_plan, tpf3mp_proto::ScanPlan::DEFAULT);
+        assert_eq!(restored.native_mods, [native]);
+        assert_eq!(restored.manifest.unwrap().manifest(), manifest);
     }
 
     #[test]

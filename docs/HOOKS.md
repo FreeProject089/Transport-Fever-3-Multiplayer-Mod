@@ -997,6 +997,26 @@ for the table (`bridge.find`). Its contract is in
 - `tpf3mp_native.hash(s)`: the lanes' text hash of `s`, exactly what the
   mod's Lua `hashStr` returns (`crate::lanehash`), without a Lua loop over
   every byte ("What the lanes cost" below); `nil` without a string.
+- `tpf3mp_native.network()`: in a game script's `postUpdate` at a
+  checkpoint, the network lane read by the hook ("The network lane read
+  natively" below): `nil` when `TPF3MP_HOOK_NATIVE_LANES` leaves it off;
+  compared, `{ mode = "compare", count, deferred, rows, junctions = {
+  heads, preferences, lights, tails } }`; on, `{ mode = "on", count,
+  deferred, junctions = { lights } }`, the read kept for `networkSummary`.
+  `deferred` lists the junctions' nodes left to the mod. `why` stands for
+  all but the mode when the edges did not read, `junctionsWhy` for the
+  junctions. Outside a checkpoint's last update, or off the game's step's
+  own thread, it reads nothing and says so.
+  Optional: the mod reads its own without it.
+- `tpf3mp_native.constructions()`: in a game script's `postUpdate`, the
+  constructions lane read by the hook: `nil` when off, else `{ mode, text =
+  "count:hash", ms }` (compared, with its `rows`), or `{ mode, why }`.
+- `tpf3mp_native.networkSummary(preferences, lights, deferred)`: right
+  after `network()`, the network lane's text (`count:hash`) from what it
+  read, the junctions' names given as `{ [value] = name }` and `{ [type] =
+  name }` (`junctions.names`), and the rows the mod made for the junctions
+  `network()` left to it (`deferred`, its nodes; `junctions.rowsOf`); `nil`
+  and why when it cannot be made.
 - `tpf3mp_native.clicks()`: the player's builds queued in the room's game
   so far, or `nil` where the hook cannot take them to the room ("The build
   tools" below).
@@ -3710,6 +3730,8 @@ steps or a failed lane read hold the game through `scanned(false, why)`.
 Matching `err` strings are not accepted as successful rolling checks.
 
 The old full reader remains for diagnostic dumps and stand-in engines.
+Where the hook reads the static lanes natively, the rolling checks read
+them in parts instead of tiles ("The network lane read natively", below).
 `rolling world check` logs the window and cursor; `rolling world sweep`
 logs completed coverage. `rolling-check-cost` reports the mean and maximum
 per-update read cost, including saving the scan state. These diagnostic
@@ -3777,8 +3799,190 @@ against the old read at every checkpoint):
 
 Together the read took 200-275 ms there, the checkpoint's step 240-300 ms:
 still a visible stutter, about a quarter of it. Reading the network natively
-would take most of the rest; the layouts it would need are in
+takes most of the rest (below).
+
+#### The network lane read natively
+
+`TPF3MP_HOOK_NATIVE_LANES` in the game's environment lets the hook read the
+rolling checks' static lanes, network and constructions, from the engine's
+memory, one part at a time. The reader is
+`crates/tpf3mp-hook/src/netread.rs`; the build's offsets are in its native
+bundle, `profiles/<build>/netread.rs`; the layouts are in
 `investigation/TF3_NATIVE_NETWORK_2026-10-04.md`.
+
+This is a prototype. The schedule and the contract are proposals for the
+owner of the rolling checks (see below).
+
+| value | the mod |
+|---|---|
+| unset, `off` | rolling tiles through the octree, as above (scan version 1) |
+| `on` | a room that starts at step 1 keeps a history of native parts (scan version 2) |
+| `compare` | the same, and each part is also read in Lua; Lua's text counts, and a difference is logged with its rows |
+
+**Parts.** The map is split into parts. An object's part follows from its
+canonical row alone, so the hook, Lua and every game place it alike, and
+entity ids play no part:
+- an edge goes by the lower of the two ends its row names, to 0.1 m, by x,
+  then y, then z;
+- a junction goes by its node key's millimetres (`pointKey`);
+- a construction goes by its row's x and y, to 0.1 m.
+
+Cells are 256 m. Part = `(floor(x / 256 m) + 3 floor(y / 256 m)) mod N`,
+in whole tenths of a metre or millimetres, so every part has cells all over
+the map (`netread::part_of`, `lanes.partOf`, `lanes.rowPart`).
+
+**Schedule.** One batch every S updates reads one kind of objects of one
+part: the edges, the junctions or the constructions. The kinds take turns
+before the next part, and after 3·N batches the whole map is read.
+`TPF3MP_HOOK_PARTS=NxS` (default `10x1`) sets N and S for the prototype; a
+room keeps what its first update found, in its saved scan state. Each
+update still reads one rotating dynamic lane and is acknowledged once. Each
+batch's text is hashed into its lane's window hash with the step, the kind
+and the part (`parts|kind|k/N`). As with the tiles, a sweep samples objects
+when their part is read: an object moved between parts within a sweep is
+read once, twice or not at all in that sweep.
+
+**Plan agreement and work limits.** The ordinary launcher and CLI create,
+join and reconnect paths parse `TPF3MP_HOOK_NATIVE_LANES` and
+`TPF3MP_HOOK_PARTS` through the shared protocol contract, including
+`--game-env` overrides given to the launcher. The bridge caches that effective
+plan for room updates and reconnects. Malformed mode or
+plan values refuse multiplayer. Off mode always advertises rolling-v1,
+`10x1`; a valid prototype part setting has no effect in off mode. Native
+modes allow 1..1024 parts and strides 1..1000. The room fixes and persists
+that exact mode/parts/stride at creation; joins and reconnects must match
+before they replace a connection or change membership. The agent waits for
+both the room view and mod declaration before processing a turn stream,
+including on reconnect, and forwards the room plan in bridge-29 `Begin`.
+The hook uses one cached parsed configuration for its native mode and plan,
+and holds a mismatched or malformed configuration before loading a world or
+running room steps. Default-off behavior is unchanged; `on` and `compare`
+remain experimental opt-ins.
+
+A saved rolling-v2 history is refused before its next hash if this game's
+mode or part plan changed. The rolling-v1 history used when mode is `off`
+also saves and checks the mode, part count and stride. A rolling-v1 save
+from before these fields existed is adopted only when all three are absent
+and the current mode is `off`; partial metadata and native-mode resumes fail
+closed. A room recovered from format-8/9 logs uses the default rolling-v1
+plan; format 10 retains its exact configured plan.
+
+Each native part scans every entity slot's component bits before it selects
+rows, including when its cell is empty or one cell contains all rows. The
+read log reports the number of component-bit entity slots scanned. The
+4,096-slot dense-cell fixture verifies the same full-table count for both a
+hot part and an empty part. A second fixture finds a sparse construction at
+entity 131,072 in a 131,073-slot table, so IDs above 115k are not refused by
+an artificial cap. These establish the scan's work shape and high-ID
+coverage, not a performance bound. `MAX_ENTITIES` (8,388,608) is an
+input-safety ceiling, not a safe per-update CPU bound; each part still scans
+the complete entity-slot table. Compare mode also runs the Lua reference
+walk for that part and has no hard per-update work bound. There is no hard
+latency bound for this prototype, and the one local measurement below does
+not establish frame-time safety on other maps or machines.
+
+**Bindings.** In the game script's `postUpdate`, `part(n, k, kind)` reads
+one batch and keeps it. `partTexts(n, k, kind, preferences, lights,
+deferred, rows)`, called in the same update, answers its lanes' texts:
+`count:hash`, as `summary` makes them, and `nil` for a lane the kind does
+not read. It answers only for the batch asked for, read at the room's
+current step, and only once. `part()` without arguments reports the
+configured plan (`mode`, `parts`, `stride`) even when mode is `off`, and
+reads and replaces nothing.
+
+A history of parts is held, through `scanned(false, why)`, whenever the
+game reads no parts or a part did not read. This is checked on every
+update, not only on a batch's. No other reader takes over.
+
+**Rows.** The hook makes the same text the mod's Lua makes:
+- each edge's row as `lanes.edgeRow` makes it, numbers printed as the
+  game's Lua 5.2 prints them (`%.14g`, `%.3f`, `%.0f`, checked against a
+  real Lua in the tests);
+- each junction's row as `junctions.rows` makes it, but for its traffic
+  light preference and its light's resource name, which only the game's
+  Lua names: the mod hands those names in `preferences` and `lights`;
+- each construction's file (its `ResName`, +0) and the translation of its
+  `transf` (16 float32 at +0x58; x and y at +0x88 and +0x8c), as
+  `file@x,y` to 0.1 m.
+
+Rows are sorted, joined and hashed in the hook; no row comes into the
+mod's Lua unless compared.
+
+Compare mode's reference reads every row in Lua without the hook's
+decoders (`lanes.decoders` and `junctions.decoders` off). It reads the same
+owned copies of `BaseNodeConfig` as every other reader, because copying
+can lay a crosswalk set out anew. It keeps the rows of the batch's part and
+kind (`lanes.partRows`) and compares the rows themselves, not only their
+hash.
+
+What it reads, only while the game's step runs (the engine is
+`[CGameTime+8]` of the `CGameTime` the step called its speed getter on, so
+only inside the game script's `postUpdate`):
+
+- the pools of `BaseEdge`, `BaseNode`, `BaseNodeConfig` and `Construction`,
+  each the one of the engine's pools (`engine+0x78`) whose vtable is its
+  `CompVec`'s; its index there is its type id;
+- every entity whose component bits (`engine+0xc0`, 16 bytes an entity)
+  hold that type id, its data index from its component list
+  (`engine+0x90`, which must list the type id), its component from the
+  pool's dense vector or its pages; a removed entity is skipped. Entities
+  are looked up 64 at a time, and the processor is asked to fetch their
+  records, lists and elements before they are read (a prefetch hint, which
+  reads nothing and cannot fault), so that the waits for memory overlap;
+- each edge's ends, lane configs, road template, nodes and network; each
+  node's position; each junction's turns, crosswalk set, phases, flags,
+  preference and light type.
+
+Anything that does not read as the layout says fails the read with why:
+a pointer out of order, a count past its bound, an entity whose bits and
+list disagree, a flag that is not 0 or 1, a number that is not finite, a
+turn naming an edge that is not there. The history of parts then holds.
+Nothing is written, and nothing of the game's is called.
+
+It reads only in an update whose world check is due and not yet
+acknowledged, and only on the thread running the game's step, inside it:
+there nothing changes the engine beside the step's own work. On build 40408
+the game script's `postUpdate` runs there (thread 3 in the hook's
+numbering, every time); its `update` runs on the game's pool of threads,
+one or another, and so does no reads. A call on any other thread (the
+GUI's state, the console) or outside a due check reads nothing and says
+so. These two guards are what is checked; which Lua state calls is not.
+
+A junction whose phases name its crosswalks in an order that matters is
+left to the mod: one with two crosswalks or more, one of whose phases
+locks some of them but not all, or locks one of them twice. A phase names
+its lanes by index, the crosswalks' part in the order the game's Lua lists
+the crosswalk set, and the Lua lists a copy of the component, whose hash
+set a copy may lay out in another order than the engine's own (phmap's
+copy inserts anew). The hook hands those junctions' nodes over
+(`deferred`), and the mod makes their rows itself (`junctions.rowsOf`) and
+hands them back to `partTexts`.
+
+Measured on build 40408, Sep's `tpf3mp_silver_ab_20261001` (5,852 edges,
+5,049 junctions, 6,187 constructions):
+- One game alone, the same build for both, 109 checkpoint windows each.
+  The rolling tiles read the whole map once in 2,412 updates (482 s at
+  1x), at 1.71 ms an update on average, 6 ms at most. Native parts by kind,
+  8 parts every 2 updates, read it in 47 updates (9.4 s), at 3.50 ms on
+  average, 11 ms at most, 9 ms the median of each window's highest.
+- One batch cost, on average: edges 3.4 ms, junctions 5.3 ms,
+  constructions 3.3 ms.
+- The game's step calls (median, 95th and 99th percentile) were within the
+  noise between runs on that PC.
+- Compare mode found no difference, row for row, in several hundred
+  compared batches.
+
+The finding of a batch is about 2 to 3 ms, mostly memory latency: one pass
+over the component bits and three or four scattered reads an object. The
+rest is the batch's rows.
+An edges-only or constructions-only batch now resolves only its own component
+pool. In the four-pool, empty-world test this removes three repeated pool
+table walks (29 memory reads before, 8 after). This is a read-count result,
+not a measured frame-time improvement.
+
+Earlier, a full read of both lanes at the checkpoint (the first form of
+this reader) took 26-30 ms on `MP_crash_1004` and moved a 40 to 90 ms
+step onto every checkpoint on Silver.
 
 The follow-up shares the network lane's already-read edge components with
 junction rows and memoizes each node's street/track adjacency within that

@@ -14,6 +14,7 @@ pub mod installation;
 pub mod installed;
 pub mod logs;
 pub mod notes;
+pub mod previews;
 pub mod probe;
 pub mod theme;
 pub mod update;

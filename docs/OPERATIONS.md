@@ -249,6 +249,18 @@ save it, restart the server, and verify both players resume the same world.
 It needs the loopback admin port and two consecutive launcher HTTP ports;
 `TPF3MP_CHECK_UI_PORT` changes the first launcher port from its default 47471.
 
+Protocol 23 / bridge 29 adds exact room agreement for the experimental
+native scanner; it requires an updated agent, hook and server together.
+Format-10 room starts persist mode, parts and stride. Format-9 logs and
+native-free format-8 logs recover with rolling-v1 `10x1` through explicit
+legacy layouts; their turn frames remain unchanged, including append and
+compaction. Existing native-mod validation remains in force. A restored
+room cannot silently switch scan algorithms. Native modes remain opt-in,
+with no hard per-update latency bound; all members must start the launcher
+and game with the same valid scan environment settings. The default `off`
+path remains rolling-v1. A scanner mismatch on join or reconnect is refused
+before replacing a seat or loading a world.
+
 Every player must run the server's protocol version. The handshake tells
 players on another version which side to update, and their launchers
 update themselves. Upgrade the server when a release is published, which
@@ -471,6 +483,37 @@ Longer waits also mean a frozen game holds its room up for longer before
 the others play on. Their saves are larger too: a 1.4 GB world must upload
 within the 90-minute limit, so at least about 260 KB/s from the player who
 uploads it.
+
+## Native mods
+
+A server can offer its players native mods such as Big Maps
+([NATIVE_MODS.md](NATIVE_MODS.md), "A server's own index"; a proposed
+amendment to D29). Name a registry, a git repository whose `mods.txt` lists
+the mods' own repositories:
+
+```sh
+tpf3mp-server ... --native-mods-registry https://github.com/<owner>/<registry>   --native-mods-every-minutes 60
+```
+
+The server reads the list and each mod's `tpf3mp-native.json` when it
+starts and again every hour (at least every five minutes), and serves the
+index made of them to every launcher that connects. A mod that cannot be
+read, or is malformed, or claims another mod's id is left out with a
+warning in the log; a registry that cannot be read keeps the last index.
+For a GitHub registry it also reads the open pull requests and serves the
+mods they would add as *proposed*, which players see only when they ask
+and install only by choosing them. For each mod on GitHub it reads the
+mod's releases too (and, with none, the repository), for the downloads and
+dates the mod browser shows. Each reading takes one or two of GitHub's API
+calls per mod and one for the pull requests; GitHub lets an unnamed caller
+make 60 an hour, so with more than a couple of dozen mods give a token
+(`TPF3MP_GITHUB_TOKEN`, read-only, public repositories). Without it the
+mods are still served, and those GitHub refused show no downloads. Without
+`--native-mods-registry` the server offers none.
+
+Players trust a server's index as they trust its rooms: the launcher gets
+a room's native mods by itself only from a server the release lists; from a
+server a player set in Settings, only when they ask.
 
 ## Before the first release
 

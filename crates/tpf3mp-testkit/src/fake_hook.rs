@@ -8,10 +8,18 @@
 use std::{path::Path, thread::JoinHandle, time::Duration};
 
 use thiserror::Error;
+use tokio::sync::mpsc::UnboundedSender;
 use tpf3mp_bridge::{Game, Load, Notice, Session, SessionError, StepGate};
 use tpf3mp_proto::{Event, LaneDigest, PlayerId};
 
 use crate::{bot::choose, rng::SplitMix64, toy::ToyWorld};
+
+/// A milestone from a fake game, for scenarios that must coordinate with
+/// what the game actually received rather than how long setup took.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookNotice {
+    WorldLoaded { player: String, next_step: u64 },
+}
 
 #[derive(Debug, Clone)]
 pub struct FakeHookConfig {
@@ -19,6 +27,8 @@ pub struct FakeHookConfig {
     pub link_name: String,
     /// The player this game belongs to.
     pub player: PlayerId,
+    /// The player's readable name, used in optional test milestones.
+    pub player_name: String,
     /// Seed of this player's own choices.
     pub seed: u64,
     /// Seed of the shared world; the same for every game in a room.
@@ -36,6 +46,8 @@ pub struct FakeHookConfig {
     /// (`ToAgent::MenuUp`), as a game started before its room does: the
     /// agent marks the player ready there.
     pub at_menu: bool,
+    /// Reports received worlds to a test coordinating server restarts.
+    pub notices: Option<UnboundedSender<HookNotice>>,
 }
 
 #[derive(Debug, Clone)]
@@ -145,6 +157,14 @@ fn run(config: &FakeHookConfig) -> Result<HookReport, HookError> {
                 }
                 game.world = load_world(config, &load)?;
                 session.loaded(load.next_step)?;
+                if load.file.is_some()
+                    && let Some(notices) = &config.notices
+                {
+                    let _ = notices.send(HookNotice::WorldLoaded {
+                        player: config.player_name.clone(),
+                        next_step: load.next_step,
+                    });
+                }
                 ran = load.next_step - 1;
                 continue;
             }
