@@ -21,7 +21,11 @@ use eframe::egui::{
     ScrollArea, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
     pos2, vec2,
 };
-use tpf3mp_agent::launcher::{Action, Connection, State, server_address};
+use tpf3mp_agent::{
+    launcher::{Action, Connection, ModHave, State, server_address},
+    native_mods::NativeRow,
+};
+use tpf3mp_nativemods::index::Setting;
 
 use crate::{
     backend::Backend,
@@ -451,6 +455,10 @@ impl<B: Backend> LauncherApp<B> {
                 if !view.differences.is_empty() {
                     ui.add_space(14.0);
                     differences(ui, &view.differences);
+                }
+                if !state.room_native.is_empty() || state.native_busy.is_some() {
+                    ui.add_space(14.0);
+                    self.room_native(ui, state);
                 }
                 ui.add_space(22.0);
                 match self.place {
@@ -1283,6 +1291,10 @@ impl<B: Backend> LauncherApp<B> {
                 }
             });
         });
+        if state.native.available {
+            ui.add_space(14.0);
+            self.native_settings(ui, state);
+        }
         if let Some(on) = state.diagnostics {
             ui.add_space(14.0);
             group(ui, |ui| {
@@ -1800,6 +1812,228 @@ fn rules_chip(ui: &mut Ui, rules: &str) -> egui::Response {
     );
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &words));
     response
+}
+
+impl<B: Backend> LauncherApp<B> {
+    /// The room's native mods in its lobby, whether this game runs each,
+    /// and what the launcher is doing to get them.
+    fn room_native(&mut self, ui: &mut Ui, state: &State) {
+        ui.label(theme::text(
+            "The room's native mods",
+            theme::semibold(12.0),
+            theme::TEXT,
+        ));
+        ui.add_space(6.0);
+        for row in &state.room_native {
+            let (mark, color) = match row.have {
+                ModHave::Yes => ("ready", theme::TEXT),
+                ModHave::OtherVersion => ("other version or settings", theme::DIFFERS_TEXT),
+                ModHave::No => ("missing", theme::DIFFERS_TEXT),
+            };
+            ui.label(theme::text(
+                format!("{} {} · {mark}", row.name, row.version),
+                theme::body(12.0),
+                color,
+            ));
+            ui.add_space(3.0);
+        }
+        match &state.native_busy {
+            Some(busy) => {
+                ui.add_space(4.0);
+                ui.label(theme::text(busy, theme::body(12.0), theme::MUTED));
+            }
+            None if state.room_native.iter().any(|row| row.have != ModHave::Yes) => {
+                ui.add_space(6.0);
+                if theme::quiet_button(
+                    ui,
+                    state.native.available,
+                    Some("download"),
+                    "Get the room's native mods",
+                    Quiet::new(),
+                )
+                .clicked()
+                {
+                    self.backend.act(Action::NativeMatchRoom);
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Settings' native mods: the signed index's mods for this game, each
+    /// with its own project page, and those installed, with their settings.
+    fn native_settings(&mut self, ui: &mut Ui, state: &State) {
+        let native = &state.native;
+        let idle = state.native_busy.is_none();
+        group(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                icon(ui, "download", 19.0, theme::TEXT);
+                ui.label(theme::text(
+                    "Native mods",
+                    theme::semibold(14.0),
+                    theme::TEXT,
+                ));
+            });
+            ui.add_space(8.0);
+            ui.label(theme::text(
+                "Mods that change the game itself, such as Big Maps. They come only from \
+                 TPF3-MP's signed index; each links to its own project. Joining a room installs \
+                 the room's for you and starts the game again with them. Mods from Mod Hub stay \
+                 in the game's own Mods page.",
+                theme::body(12.0),
+                theme::MUTED,
+            ));
+            ui.add_space(12.0);
+            if let Some(busy) = &state.native_busy {
+                ui.label(theme::text(busy, theme::body(12.0), theme::TEXT));
+                ui.add_space(8.0);
+            }
+            if let Some(problem) = &native.problem {
+                ui.label(theme::text(problem, theme::body(12.0), theme::DIFFERS_TEXT));
+                ui.add_space(8.0);
+            }
+            if native.packages.is_empty() {
+                ui.label(theme::text(
+                    if native.serial.is_some() {
+                        "The index lists no native mod for this game yet."
+                    } else {
+                        "Check the index to see the native mods for this game."
+                    },
+                    theme::body(12.0),
+                    theme::MUTED,
+                ));
+                ui.add_space(8.0);
+            }
+            for row in &native.packages {
+                self.native_row(ui, row, idle);
+                ui.add_space(12.0);
+            }
+            if theme::quiet_button(ui, idle, Some("refresh"), "Check the index", Quiet::new())
+                .clicked()
+            {
+                self.backend.act(Action::NativeRefresh);
+            }
+        });
+    }
+
+    fn native_row(&mut self, ui: &mut Ui, row: &NativeRow, idle: bool) {
+        let version = match (&row.installed, &row.available) {
+            (Some(installed), Some(available)) if installed != available => {
+                format!("{installed} installed, {available} available")
+            }
+            (Some(installed), _) => format!("{installed} installed"),
+            (None, Some(available)) => available.clone(),
+            (None, None) => "not for this game's build".to_owned(),
+        };
+        ui.label(theme::text(
+            format!("{} · {version}", row.name),
+            theme::semibold(13.0),
+            theme::TEXT,
+        ));
+        if !row.description.is_empty() {
+            ui.add_space(2.0);
+            ui.label(theme::text(
+                &row.description,
+                theme::body(12.0),
+                theme::MUTED,
+            ));
+        }
+        if row.simulation {
+            ui.add_space(2.0);
+            ui.label(theme::text(
+                "Changes the simulation: every player of a room runs it alike.",
+                theme::body(11.0),
+                theme::MUTED,
+            ));
+        }
+        if !row.listed {
+            ui.add_space(2.0);
+            ui.label(theme::text(
+                "No longer in the index.",
+                theme::body(11.0),
+                theme::DIFFERS_TEXT,
+            ));
+        }
+        if let Some(homepage) = &row.homepage {
+            ui.add_space(2.0);
+            ui.hyperlink_to(
+                theme::text("Project page", theme::body(12.0), theme::TEXT),
+                homepage,
+            );
+        }
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            let id = row.id.clone();
+            let newer = row
+                .available
+                .as_ref()
+                .is_some_and(|available| row.installed.as_ref() != Some(available));
+            if newer {
+                let words = if row.installed.is_some() {
+                    "Update"
+                } else {
+                    "Install"
+                };
+                if theme::quiet_button(ui, idle, Some("download"), words, Quiet::new()).clicked() {
+                    self.backend.act(Action::NativeInstall { id: id.clone() });
+                }
+            }
+            if row.installed.is_some() {
+                let words = if row.enabled {
+                    "Switch off"
+                } else {
+                    "Switch on"
+                };
+                if theme::quiet_button(ui, idle, None, words, Quiet::new()).clicked() {
+                    self.backend.act(Action::NativeEnable {
+                        id: id.clone(),
+                        on: !row.enabled,
+                    });
+                }
+                if row.previous.is_some()
+                    && theme::quiet_button(ui, idle, None, "Roll back", Quiet::new()).clicked()
+                {
+                    self.backend.act(Action::NativeRollback { id: id.clone() });
+                }
+                if theme::quiet_button(ui, idle, None, "Uninstall", Quiet::new()).clicked() {
+                    self.backend.act(Action::NativeUninstall { id: id.clone() });
+                }
+            }
+        });
+        for setting in &row.settings {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::text(&setting.key, theme::body(12.0), theme::MUTED));
+                let changed = match &setting.value {
+                    Setting::Bool(on) => {
+                        let mut on = *on;
+                        ui.add_enabled(idle, egui::Checkbox::without_text(&mut on))
+                            .changed()
+                            .then_some(Setting::Bool(on))
+                    }
+                    Setting::Int(n) => {
+                        let mut n = *n;
+                        let response = ui.add_enabled(idle, egui::DragValue::new(&mut n));
+                        (response.changed() && !response.dragged() || response.drag_stopped())
+                            .then_some(Setting::Int(n))
+                    }
+                    Setting::Text(text) => {
+                        ui.label(theme::text(text, theme::body(12.0), theme::TEXT));
+                        None
+                    }
+                };
+                if let Some(value) = changed {
+                    self.backend.act(Action::NativeSetting {
+                        id: row.id.clone(),
+                        key: setting.key.clone(),
+                        value,
+                    });
+                }
+            });
+        }
+    }
 }
 
 /// How this player's game differs from the room's.

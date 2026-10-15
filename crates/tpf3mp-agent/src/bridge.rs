@@ -2753,6 +2753,7 @@ mod tests {
             game: Text::lossy("40408"),
             mods: vec![room_mod("signals"), room_mod("tpf3mp_1")],
             params: settings.clone(),
+            native: Vec::new(),
         };
         let lists = told_lists(Some(&told), Some(&listed)).unwrap();
         assert_eq!(lists.shared, listed.shared);

@@ -23,6 +23,7 @@ tokio.workspace = true
 tokio-rustls.workspace = true
 tokio-tungstenite.workspace = true
 tpf3mp-net.workspace = true
+tpf3mp-nativemods.workspace = true
 tpf3mp-proto.workspace = true
 tpf3mp-snapshot.workspace = true
 tracing.workspace = true
