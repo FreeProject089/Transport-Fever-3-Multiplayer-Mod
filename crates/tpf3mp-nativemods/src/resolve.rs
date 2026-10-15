@@ -76,6 +76,29 @@ pub fn resolve<'a>(
     wanted: &[&str],
     installed: &[&'a Package],
 ) -> Result<Vec<&'a Package>, ResolveError> {
+    let wanted: Vec<(&str, Option<semver::VersionReq>)> =
+        wanted.iter().map(|id| (*id, None)).collect();
+    resolve_pinned(context, &wanted, installed)
+}
+
+/// The packages to install for `id` in exactly `version` (a room's, which
+/// a member must run alike), dependencies first, as [`resolve`].
+pub fn resolve_exact<'a>(
+    context: Context<'a>,
+    id: &str,
+    version: &str,
+    installed: &[&'a Package],
+) -> Result<Vec<&'a Package>, ResolveError> {
+    let exact = semver::VersionReq::parse(&format!("={version}"))
+        .map_err(|_| ResolveError::Unknown(format!("{id} {version}")))?;
+    resolve_pinned(context, &[(id, Some(exact))], installed)
+}
+
+fn resolve_pinned<'a>(
+    context: Context<'a>,
+    wanted: &[(&str, Option<semver::VersionReq>)],
+    installed: &[&'a Package],
+) -> Result<Vec<&'a Package>, ResolveError> {
     let mut walk = Walk {
         context,
         installed: installed.iter().map(|p| (p.id.as_str(), *p)).collect(),
@@ -84,8 +107,8 @@ pub fn resolve<'a>(
         order: Vec::new(),
         path: Vec::new(),
     };
-    for id in wanted {
-        walk.visit(id, None, true)?;
+    for (id, requirement) in wanted {
+        walk.visit(id, requirement.as_ref(), true)?;
     }
     // Everything that will be installed afterwards: the chosen packages,
     // and the installed ones nothing replaces.
@@ -205,6 +228,26 @@ mod tests {
             tests::{BUILD, OTHER_BUILD, big_maps, index, package},
         },
     };
+
+    #[test]
+    fn a_room_gets_its_exact_version_not_the_newest() {
+        let mut newer = big_maps();
+        newer.version = "0.4.0".into();
+        let index = index(vec![big_maps(), newer]);
+        let context = Context {
+            index: &index,
+            build: BUILD,
+            registry: BIG_MAPS,
+        };
+        let newest = resolve(context, &["bigmap"], &[]).unwrap();
+        assert_eq!(newest[0].version, "0.4.0");
+        let exact = resolve_exact(context, "bigmap", "0.3.0", &[]).unwrap();
+        assert_eq!(exact[0].version, "0.3.0");
+        assert!(matches!(
+            resolve_exact(context, "bigmap", "9.9.9", &[]),
+            Err(ResolveError::NoMatch { .. })
+        ));
+    }
 
     fn needs(mut package: Package, id: &str, version: &str) -> Package {
         package.depends.push(Dependency {

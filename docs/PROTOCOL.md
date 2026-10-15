@@ -1,6 +1,6 @@
 # Protocol
 
-Current integration: protocol **19**, bridge **28**, action schema **26**.
+Current integration: protocol **20**, bridge **28**, action schema **26**.
 This selective combination differs from both prior dev and PR #37; all
 participants and the relay must be upgraded together. Numbers in feature
 history below describe their original introduction.
@@ -248,6 +248,33 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   game restored after a restart tells its mods again from it, each by its
   id, with no names, Mod Hub numbers or settings (its world carries its
   own settings); a manifest that is no room's list tells none.
+- **Native mods** (protocol 20; D29, [NATIVE_MODS.md](NATIVE_MODS.md)).
+  A manifest also names the game's native mods that change the simulation
+  (`ContentManifest::native`, at most 16, ordered by id): each a `ModRef`
+  whose id is `native:` and the package's id (no mod folder can be named
+  so) and whose version is the package's version, `+`, and the first ten
+  hex digits of a SHA-256 of its settings, defaults included
+  (`0.3.0+0123456789`). They compare as mods do: `ContentDiff` lists a
+  missing, extra or other native mod under its `native:` id, so two games
+  with different native mods, or other settings, never share a room. The
+  fingerprint covers them only when there are any: without native mods it
+  is the fingerprint protocol 19 derived, so a room logged before keeps
+  taking its players back. The owner's `RoomConfig` carries, beside its
+  mods, one `NativeMod` for each of the manifest's native mods in order
+  (`native`: the package's id, the manifest's version, a name for players
+  and every setting, `NativeSetting`, keyed once in order, each a
+  `NativeValue`: a boolean, a whole number or text of up to 128 bytes), and
+  `RoomMods::native` tells them to every member, whose launcher installs
+  that version from the project's signed index with those settings
+  (never from another player). The room refuses a declaration whose
+  native mods do not match its manifest's one for one (`InvalidContent`).
+  An owner cannot start a game with native terms until its valid room
+  declaration supplies their settings.
+  The room log's start record (format 9) keeps each native mod's full
+  settings beside the manifest terms, and a restored game tells new members
+  the same settings. Native-free format-8 logs remain readable. A format-8
+  log that names native mods is refused and kept for diagnosis because its
+  settings were not recorded.
 - **Starting.** In the lobby, members declare their content and toggle
   **ready**. The owner can start the game only when every member is ready,
   all fingerprints are equal, and the world the owner handed over, if any,

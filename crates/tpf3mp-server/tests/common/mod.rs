@@ -168,6 +168,7 @@ pub fn room_of(mods: &[&str]) -> tpf3mp_proto::RoomDeclaration {
         room: tpf3mp_proto::RoomConfig {
             info,
             params: Vec::new(),
+            native: Vec::new(),
         },
     }
 }

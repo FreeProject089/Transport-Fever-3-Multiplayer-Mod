@@ -4621,6 +4621,7 @@ dependencies = [
  "tokio-tungstenite",
  "tpf3mp-agent",
  "tpf3mp-buildinfo",
+ "tpf3mp-nativemods",
  "tpf3mp-net",
  "tpf3mp-proto",
  "tpf3mp-snapshot",

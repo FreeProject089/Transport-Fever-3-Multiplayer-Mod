@@ -388,24 +388,22 @@ Dev B:
   room's world loaded with the room's mods and the player's own, and the
   personal mods' guard for game-script mods. Tick once the two-player test
   in MODS.md passes in the real game, and its measurements are made.
-- [ ] *Added (D29, owner-approved 2026-10-08):* native mods (more than Lua,
-  such as Big Maps) installed by the launcher from the project's signed
+- [ ] *Added (D29, owner-approved 2026-10-08; server-index amendment
+  approved 2026-10-15):* native mods (more than Lua, such as Big Maps)
+  installed by the launcher from the server's index or the project's signed
   index, enabled in the hook only for their pinned build, and in a room
   part of its terms ([NATIVE_MODS.md](NATIVE_MODS.md)). PR #117 and its
   hardening implement framework only: index validation and signature
   primitives, the store and registry APIs, the enabled-list handoff, and
-  the hook's fail-closed plan. No production key or index, player-facing
-  installer, built-in native feature, or room terms on the wire exists, so
-  players cannot install or use a native mod yet. Open: the key and signing
-  workflow, the launcher's page, Big Maps as the first package, and the
-  room's terms on the wire.
-  *Proposed (D29 amendment, not decided, 2026-10-12):* each server serves
-  its own index to its players, trusted as the server is (D4), so a native
-  mod needs no project key or signing workflow before it can be offered.
-  *Proposed (D29 amendment, not decided, 2026-10-14):* a native mod may
-  carry plugins, its own code, which patch the game functions it declares
-  by signature, chained by the hook; trusted from the server's registry as
-  the server is.
+  the hook's fail-closed plan. *Built since (protocol 20):* the room's
+  native terms on the wire, with their settings; the launcher's Native mods
+  group in Settings (install, update, roll back, uninstall, switch, settings,
+  each mod's own project page); and joining a room installs the room's
+  versions from the index it trusts, with its settings, and starts the game
+  again with them. No server registry or index is configured, and no native
+  feature package exists yet, so players cannot use a native mod yet. Open:
+  the first registry and package (Big Maps), and copying a package's Lua mod
+  folder where the game loads mods. A project-signed index remains optional.
 
 Dev C:
 

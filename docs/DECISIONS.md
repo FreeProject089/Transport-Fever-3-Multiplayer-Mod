@@ -1391,18 +1391,19 @@ Not covered yet: the room's terms on the wire (an additive field of the
 content declaration, with a protocol version bump), the launcher's page for
 native mods, and Big Maps itself as the first package.
 
-### D29 amendment (PROPOSED amendment, not decided, 2026-10-12): the room's server serves the native-mods index
+### D29 amendment (2026-10-12, owner-approved 2026-10-15): the room's server serves the native-mods index
 
-**Proposed, for the owner (Juliansgith) to approve or refuse in the pull
-request. D29 above stays in force until then.**
+The owner approved this amendment on 2026-10-15. It replaces D29's
+project-signed-index-only requirement; its built-in-code rule and package
+checks remain in force until a later decision changes them.
 
 The user asked on 2026-10-12 to "build the index into the server": the
 index of native mods should come from the server a player plays on, not
 from a release asset that only a reviewer of the project's signing
-workflow can publish. As D29 stands, no native mod reaches a player until
-the project makes a native-mods key, a signing workflow and a first index,
-and every launcher is built with the key; a server's operator who wants to
-offer Big Maps cannot.
+workflow can publish. Under the original D29, no native mod could reach a
+player until the project made a native-mods key, a signing workflow and a
+first index, and every launcher was built with the key; a server's operator
+who wanted to offer Big Maps could not.
 
 - **Each server serves its own index, made from a registry.** The operator
   names a registry (`--native-mods-registry`): a git repository whose
@@ -1457,7 +1458,7 @@ Rejected:
 - **Any address, as CKAN reads netkans**: D29's reason stands; an index
   comes from a server the player chose, or from the project.
 
-Trade-off for the owner: trust moves from one reviewed key to every
+The owner accepted this trade-off: trust moves from one reviewed key to every
 server's operator, and to whoever merges pull requests into that server's
 registry. A rogue or hacked server could offer a package of Lua
 and data to its own players, and switch built-in features on for them; it
