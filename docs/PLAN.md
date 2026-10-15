@@ -388,22 +388,24 @@ Dev B:
   room's world loaded with the room's mods and the player's own, and the
   personal mods' guard for game-script mods. Tick once the two-player test
   in MODS.md passes in the real game, and its measurements are made.
-- [ ] *Added (D29, owner-approved 2026-10-08; server-index amendment
-  approved 2026-10-15):* native mods (more than Lua, such as Big Maps)
-  installed by the launcher from the server's index or the project's signed
-  index, enabled in the hook only for their pinned build, and in a room
-  part of its terms ([NATIVE_MODS.md](NATIVE_MODS.md)). PR #117 and its
-  hardening implement framework only: index validation and signature
-  primitives, the store and registry APIs, the enabled-list handoff, and
-  the hook's fail-closed plan. *Built since (protocol 20):* the room's
-  native terms on the wire, with their settings; the launcher's Native mods
-  group in Settings (install, update, roll back, uninstall, switch, settings,
-  each mod's own project page); and joining a room installs the room's
-  versions from the index it trusts, with its settings, and starts the game
-  again with them. No server registry or index is configured, and no native
-  feature package exists yet, so players cannot use a native mod yet. Open:
-  the first registry and package (Big Maps), and copying a package's Lua mod
-  folder where the game loads mods. A project-signed index remains optional.
+- [ ] *Added (D29, owner-approved 2026-10-08; server-index and
+  plugin-consent amendments approved 2026-10-15):* native mods (more than
+  Lua, such as Big Maps) installed by the launcher from the room server's
+  index or the project's signed index, enabled in the hook only for their
+  pinned build, and in a room part of its terms
+  ([NATIVE_MODS.md](NATIVE_MODS.md)). PR #117 and its hardening implement
+  framework only: index validation and signature primitives, the store and
+  registry APIs, the enabled-list handoff, and the hook's fail-closed plan.
+  *Built on dev (protocol 20):* native room terms with settings; the Native
+  mods group in Settings; and room-version install and restart on joining.
+  The open #148 work adds the server index and a full canonical package
+  identity with installed-byte/file-set verification. Plugin loading and
+  consent remain open in #151; the same identity must bind plugin hashes
+  and declared hooks before executable consent can use it. No server
+  registry or native feature package is configured yet, so players cannot
+  use a native mod. Open: the first registry and package (Big Maps), copying
+  a package's Lua folder into the game's mod folder, and plugin loading with
+  per-identity consent. A project-signed index remains optional.
 
 Dev C:
 

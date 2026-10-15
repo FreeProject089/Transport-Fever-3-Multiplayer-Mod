@@ -1,11 +1,12 @@
-# Native mods: a signed index, installed by the launcher
+# Native mods: trusted indexes, installed by the launcher
 
-*Owner-approved policy* ([DECISIONS.md](DECISIONS.md), D29, approved
-2026-10-08). The launcher's Native mods group, the room's native terms on
-the wire (protocol 22) and getting the room's native mods on joining are
-built; there is no production trust key or index, nor a built-in native
-feature yet, so players cannot use a native mod yet. The implemented and
-open parts are listed at the end.
+*Owner-approved policy* ([DECISIONS.md](DECISIONS.md), D29 and its
+server-index and plugin-consent amendments, approved 2026-10-15). The
+server registry, Mods browser, full package identities in room terms
+(protocol 22), Windows x86-64 plugin loading and per-content executable
+consent are implemented. The Big Maps plugin is supplied as source and
+packaging tooling; publishing a package and real-game acceptance remain
+separate work. No production registry is configured by this change.
 
 A **native mod** is a mod that is more than Lua: it needs code in the game.
 Big Maps ([BIGMAPS.md](BIGMAPS.md)) is the first: hook patches behind
@@ -14,14 +15,17 @@ serves, settings, and a Lua mod folder. Mod Hub carries Lua mods for the
 game's own loader, and a room's Mod Hub mods are handled by D28
 ([LOBBY.md](LOBBY.md), [MODS.md](MODS.md)); native mods come through a
 channel of their own, managed the way CKAN manages Kerbal Space Program
-mods, but only from the project's signed index.
+mods. The source is either the room server's authenticated index or the
+project's optional signed index, never an arbitrary pasted index URL.
 
 ## The index
 
-`native-mods.json` lists every package the launcher may install.
-`native-mods.json.sig` is an Ed25519 signature of its exact bytes. Both are
-assets of the `native-mods` release of the repository
-(`releases/download/native-mods/`), fetched over HTTPS only.
+`native-mods.json` lists packages in the optional project index. Its
+`native-mods.json.sig` is an Ed25519 signature of the exact bytes; both are
+assets of the repository's `native-mods` release
+(`releases/download/native-mods/`), fetched over HTTPS only. A room server
+serves the same schema over its authenticated connection and vouches for
+its own index, which has no project signature.
 
 ```json
 {
@@ -58,7 +62,7 @@ assets of the `native-mods` release of the repository
 | `serial` | Grows with every index published. The launcher remembers the highest it accepted and refuses an older one, so a withdrawn package cannot come back by replaying an old signed index. The registry also binds an accepted serial to the SHA-256 of the exact index bytes; a crash after writing a complete cache pair recovers that serial floor, and different contents cannot reuse it. |
 | `id` | 1 to 40 lowercase letters, digits and `_`. |
 | `version` | Semantic version, at most 20 characters (it travels in the room's terms). |
-| `homepage` | Optional. The mod's own project page, such as its authors' repository: the launcher links to it, as CKAN links to a mod's. An `https` address of at most 200 characters. The files still come only as the signed index pins them, wherever they are hosted (the mod's own releases included). |
+| `homepage` | Optional. The mod's own project page, such as its authors' repository: the launcher links to it, as CKAN links to a mod's. An `https` address of at most 200 characters. The files still come only as the trusted index pins them, wherever they are hosted (the mod's own releases included). |
 | `simulation` | Whether it changes how the world runs. A feature the hook knows to change the simulation makes the package count as changing it too, whatever this says. |
 | `builds` | The game builds it runs on, by the executable's SHA-256, as hook profiles pin them ([HOOKS.md](HOOKS.md)). On any other build it is not installed, and not enabled if it was. |
 | `features` | The hook features it enables (below). |
@@ -66,12 +70,12 @@ assets of the `native-mods` release of the repository
 | `depends` | Packages it needs, with a semver requirement. |
 | `conflicts` | Packages that must not be installed beside it. |
 | `files` | Data, Lua and settings files: where each goes in the package's folder (plain names joined by `/`), where it comes from, its size and SHA-256. |
-| `plugins` | Its own code: native libraries the hook loads into the game (`path`, `url`, `size`, `sha256`; `abi`, the hook's plugin interface they are built against; `platform`, `windows-x86_64` or `linux-x86_64`). A package with any must say `simulation: true`. See "Plugins" below (proposed D29 amendment). |
+| `plugins` | Its own code: native libraries the hook loads into the game (`path`, `url`, `size`, `sha256`; `abi`, the hook's plugin interface they are built against; `platform`, such as `windows-x86_64` or `linux-x86_64`). Only Windows x86-64 loading is currently implemented. A package with any must say `simulation: true`. See "Plugins" below (approved D29 amendment). |
 | `hooks` | The places in the game's code it patches, each found by signature: `target` (`<id>::<name>`), `kind` (`detour`, `splice`, `rewrite`, `call` or `slot`), `signature`, `offset`, `expected` (the bytes there), `use` (`chain` or `replace`), and per kind `steal`, `replacement` or `slot`. See "Plugins" below. |
 | `game_mods` | Folders of its files that are game mods (`mod/<name>_<n>`): the launcher puts each into the game's `mods` folder while the package is on. See "Plugins" below. |
 
 Unknown fields are refused, and one malformed entry refuses the whole index:
-the project signs it, so a mistake is fixed there, never guessed around.
+its trusted publisher must fix a mistake; the launcher never guesses around it.
 
 ### Signing
 
@@ -80,8 +84,9 @@ launcher's updater and the index call `tpf3mp_nativemods::signed` (Ed25519
 through `ring`, public keys as base64 strings, more than one so that a key
 can be changed). The key is the **native-mods key**, a key of its own as the
 dev key is (D19): the public half is built into the launcher from
-`TPF3MP_NATIVE_MODS_PUBLIC_KEY`, and a launcher built without one installs no
-native mod. A release key cannot sign the index, and the native-mods key
+`TPF3MP_NATIVE_MODS_PUBLIC_KEY`; without one, the optional project source is
+unavailable, but an authenticated server index remains usable. A release
+key cannot sign the index, and the native-mods key
 cannot sign a release.
 
 To be built with the decision: a `sign-native-mods.yml` workflow that signs
@@ -91,9 +96,8 @@ tests make a fresh test key each time.
 
 ## A server's own index
 
-*Built on a proposed amendment to D29 ([DECISIONS.md](DECISIONS.md)), not
-decided: until the owner approves it, this belongs on the branch that
-proposes it.* A server can offer native mods without the project's key:
+*Owner-approved amendment to D29 ([DECISIONS.md](DECISIONS.md), 2026-10-15).*
+A server can offer native mods without the project's key:
 its operator names a **registry** (`--native-mods-registry`,
 [OPERATIONS.md](OPERATIONS.md), "Native mods"), and the server makes an
 index of it and serves it to its players (protocol 21,
@@ -333,9 +337,8 @@ together for reasons the hook cannot see.
 
 ## Plugins
 
-*Built on a proposed amendment to D29 ([DECISIONS.md](DECISIONS.md)), not
-decided: until the owner approves it, this belongs on the branch that
-proposes it.* A package may carry code of its own: **plugins**, native
+*Owner-approved amendment to D29 ([DECISIONS.md](DECISIONS.md), 2026-10-15).*
+A package may carry code of its own: **plugins**, native
 libraries the hook loads into the game, which patch the game functions the
 package declares. Built-in features stay for what the project maintains
 itself; a plugin is how a mod's authors ship their own.
@@ -452,14 +455,14 @@ install. Two packages whose declared hooks name the same function, one
 taking it over, cannot both be switched on.
 
 **Trust.** Plugins come from the same places as every native mod: the
-project's index or the server's own (proposed D29 amendment, "A server's
+project's index or the server's own (approved D29 amendment, "A server's
 own index"), and the launcher trusts a server's registry for code as it
-does for rooms (D4). Installing is still the player's choice (a room's
-mods are got by themselves only from a server the release lists), and a
-proposed mod's plugin is never installed but by choosing it. A plugin runs
+does for rooms (D4). Executable packages require the consent below, even
+when a room needs them. A proposed mod also requires the player to choose
+that proposal explicitly. A plugin runs
 inside the game with the player's rights: there is no sandbox, and a bad
-one can crash the game or worse. That is the trade-off the amendment asks
-the owner to accept.
+one can crash the game or worse. Consent and hash verification identify
+the approved content; they do not sandbox it.
 
 **Explicit consent.** Before downloading or installing executable plugin
 bytes, switching a plugin-bearing package on, rolling it back, or matching a
@@ -475,6 +478,10 @@ a new prompt. The launcher refreshes and resolves the selection again after the
 player approves, before it installs or enables anything. Declining or failing
 that revalidation leaves the package action unapplied and blocks a room join
 that needs it.
+
+Cached data-only packages can still be installed while disconnected. A
+server plugin whose exact identity lacks approval requires reconnecting to
+that server to refresh its metadata before the consent prompt is offered.
 
 Executable plugins currently load only on Windows x86-64. Linux and macOS
 refuse plugin packages during resolve, install, enable, rollback, and launch,
@@ -545,9 +552,12 @@ room's owner also tells the room every setting of each (`RoomConfig::native`,
 
 1. The room tells its native mods on joining its lobby, or before refusing
    a join to its running game.
-2. The launcher installs each in the room's exact version from the signed
-   index, for this game's build, **never from another player**
-   (`match_room`, `Store::install_exact`). It verifies the installed files
+2. The launcher installs each in the room's exact version from the trusted
+   server index or optional project-signed index, for this game's build,
+   **never from another player** (`match_room`, `Store::install_exact_from`).
+   Before any mutation it checks every full room identity and obtains
+   executable consent for the entire dependency closure, using the room's
+   settings for each package. Declining leaves the join blocked. It verifies the installed files
    against that index even when the id and package version already match,
    replacing a stale same-version copy or refusing before join; it sets the room's settings over the
    defaults, the player's own choices left out; switches each on; and
@@ -629,20 +639,19 @@ Framework implemented (`crates/tpf3mp-nativemods`, with tests):
   signed index;
 - the launcher's updater uses the same signature and download code.
 
-Built on it (protocol 22): the room's terms on the wire with their
-settings, the launcher's Native mods group, `Store::install_exact` and
-`resolve::resolve_exact` for a room's exact version, and getting the room's
-native mods on joining, the game started again with them.
+Built on it (protocol 22): room terms with full package identities and
+settings; the server registry and Mods browser; side-effect-free dependency
+resolution; source/settings/content-bound plugin consent; verified installs,
+rollback and enablement; and Windows x86-64 plugin loading. The Big Maps
+plugin and its package builder are included. Enabled packages' game-mod
+folders are installed without overwriting a player's own same-named folder.
 
-This is not yet a feature players can use: the production trusted-key list
-is empty and `features::BUILT_IN` has no native features. The tests use
-temporary test keys.
+Still open before a player release:
 
-Still open:
-
-- the native-mods key, its signing workflow and the first index (or, with
-  the proposed amendment, a server's registry: built);
-- copying a package's Lua mod folder where the game loads mods, the way
-  TPF3-MP's own mod is installed ([MODS.md](MODS.md), "TPF3-MP's own mod");
-- Big Maps as the first package, with its features built into the hook;
-- plugin libraries.
+- configure a server registry and publish the first reviewed package;
+- if the optional project source is wanted, configure its native-mods key,
+  signing workflow and first index;
+- validate ordinary game startup, room matching and Big Maps gameplay in
+  the real game. Automated and static checks do not establish gameplay or
+  performance; this integration intentionally defers those tests;
+- plugin loading on platforms other than Windows x86-64.
