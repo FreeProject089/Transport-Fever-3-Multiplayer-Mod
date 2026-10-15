@@ -969,6 +969,7 @@ impl<G: RoomGate> StepDriver<G> {
         let now = Instant::now();
         match notice {
             Notice::Diverged { step, lanes } => {
+                crate::log::lines(&crate::persons::freed_ids::trace::incident_lines(*step));
                 let Some(ask) =
                     self.dumps
                         .diverged(*step, lanes, next, self.checkpoint_interval, now)
@@ -1005,6 +1006,9 @@ impl<G: RoomGate> StepDriver<G> {
                 {
                     None => {}
                     Some(Ok(ask)) => {
+                        crate::log::lines(&crate::persons::freed_ids::trace::incident_lines(
+                            ask.diverged,
+                        ));
                         self.log.push(format!(
                             "{} asks for a lane dump: lanes {} at steps {} (step {} diverged there)",
                             from.as_str(),
@@ -1411,6 +1415,7 @@ impl<G: RoomGate> StepDriver<G> {
     /// The room's world is loaded and runs `next_step` next: the reseed and
     /// the order measurement number updates by the room's steps from here.
     fn world_loaded(&mut self, next_step: u64) {
+        crate::persons::freed_ids::trace::reset_world();
         self.next_step = Some(next_step);
         // The released counter starts again here, whatever world ran before;
         // so do the batches the interval times (new GameSims).

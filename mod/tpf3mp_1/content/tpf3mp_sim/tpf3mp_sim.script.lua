@@ -91,7 +91,7 @@ function data()
 	local applying, followUps, followUpsOn = false, nil, false
 	-- Lanes that could not be read, and kinds the registry could not list,
 	-- logged once per state.
-	local told, toldRegistry, toldOwnership = false, false, false
+	local told, toldRegistry, toldOwnership, toldProgression = false, false, false, false
 	-- The headquarters lines last logged in this state, by company id: a
 	-- line is logged again only when it changed (tpf3mp/companies.lua).
 	local toldHeadquarters = {}
@@ -554,6 +554,10 @@ function data()
 				end
 				-- The companies' ranks (tpf3mp/progression.lua).
 				local prog = progression.ensure(saved.progression)
+				if not toldProgression and progression.multi(roster) then
+					toldProgression = true
+					progression.describe(prog, roster, function(line) l:log(line) end)
+				end
 				if #failed > 0 and not toldRegistry then
 					toldRegistry = true
 					l:log("the registry could not list " .. table.concat(failed, "; "))
@@ -572,7 +576,7 @@ function data()
 					-- The seal of the password sent with it (a company's),
 					-- which the room made; never the password.
 					local seal = work.seals and work.seals[i] or nil
-					local ok, why, made = apply.run(action, {
+					local ok, why, made, uncertain = apply.run(action, {
 						registry = reg,
 						roster = roster,
 						player = player,
@@ -580,7 +584,17 @@ function data()
 						company = company and company.entity,
 						progression = prog,
 						seal = type(seal) == "table" and seal or nil,
+						actionIndex = i,
 					})
+					if uncertain then
+						-- The native command may already have changed this world.
+						-- Do not persist a registry guessed from its unreadable result
+						-- or release another room update into that state.
+						l:log("action " .. i .. " of this step has an uncertain result: " .. tostring(why))
+						l:replaying(false)
+						applying = false
+						return false, why
+					end
 					local name = next(action)
 					-- What it changed keeps its id on whatever entity it is
 					-- now, bound before the sync would retire it.
@@ -608,6 +622,20 @@ function data()
 						l:log("action " .. i .. " of this step made no " .. kind .. " this game could name")
 					end
 					l:applied(i, ok, entity, why)
+					if name == "BuyVehicle" then
+						local canonical, canonicalStatus = nil, "unavailable"
+						if entity == nil then
+							canonicalStatus = "none"
+						else
+							local read, id = pcall(registry.id, reg, "vehicles", entity)
+							if read then
+								canonical, canonicalStatus = id, id == nil and "none" or "value"
+							end
+						end
+						local read, line = pcall(apply.vehicleBuyDiagnostic, action.BuyVehicle, ok,
+							entity, canonical, canonicalStatus, i)
+						if read then pcall(function() l:log(line) end) end
+					end
 					if ok and modbuild.BUILDS[name] then
 						local status = l:status()
 						lastBuild = (status and status.me_id ~= nil and player == status.me_id) and "mine" or "other"
@@ -911,9 +939,10 @@ function data()
 					if seed then math.randomseed(seed) end
 					-- Only action processing: no monthly charges, progression
 					-- sampling, simulation updates or checkpoint reports.
-					script.postUpdate(_params, state, 0, {
+					local finished, failed = script.postUpdate(_params, state, 0, {
 						actions = actions, origins = origins, seals = seals,
 					})
+					if finished == false then error(failed, 0) end
 				end)
 				l:replaying(false)
 				applying = false
