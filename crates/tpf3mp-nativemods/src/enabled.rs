@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     features::{self, Effect, FeatureSpec},
-    index::{Dependency, Setting},
+    index::{Dependency, HookDecl, HookKind, HookUse, Setting},
 };
 
 /// The variable naming the enabled packages' file in the game's
@@ -88,6 +88,23 @@ pub struct EnabledPackage {
     pub depends: Vec<Dependency>,
     /// Its folder, `native-mods/<id>/<version>/`.
     pub root: PathBuf,
+    /// Its plugins for this platform, in `root`, each with the SHA-256 the
+    /// hook checks again before loading it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<EnabledPlugin>,
+    /// The game functions its plugins patch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hooks: Vec<HookDecl>,
+}
+
+/// A plugin the hook loads: its path in the package's folder, its
+/// SHA-256, and the plugin interface it was built for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnabledPlugin {
+    pub path: String,
+    pub sha256: String,
+    pub abi: u32,
 }
 
 impl EnabledPackage {
@@ -95,6 +112,8 @@ impl EnabledPackage {
     /// it names does (an unknown feature counts as one, fail closed).
     pub fn changes_simulation(&self, registry: &[FeatureSpec]) -> bool {
         self.simulation
+            || !self.plugins.is_empty()
+            || !self.hooks.is_empty()
             || self.features.iter().any(|id| {
                 features::find(registry, id).is_none_or(|f| f.effect == Effect::Simulation)
             })
@@ -116,6 +135,9 @@ pub struct Active {
 pub struct Plan {
     /// The features to switch on.
     pub active: Vec<Active>,
+    /// The packages whose plugins the hook loads, or whose hooks it patches,
+    /// in the load order.
+    pub plugins: Vec<EnabledPackage>,
     /// Packages left off, with why: they change only what a player sees.
     pub left_off: Vec<String>,
     /// Why this game must not play in a room, if it must not.
@@ -178,6 +200,64 @@ pub fn load_order<'a>(packages: &[(&'a str, Vec<&'a str>)]) -> Vec<&'a str> {
     }
     order.extend(waiting.into_keys());
     order
+}
+
+/// Whether two hooks on the same site may both be on: the same kind, both
+/// sharing (`chain`), and for a rewrite, the very same bytes given by the
+/// package (a plugin's own cannot be known before it starts).
+pub fn may_share(a: &HookDecl, b: &HookDecl) -> bool {
+    a.kind == b.kind
+        && a.access == HookUse::Chain
+        && b.access == HookUse::Chain
+        && (a.kind != HookKind::Rewrite
+            || (a.expected.eq_ignore_ascii_case(&b.expected)
+                && a.replacement.is_some()
+                && a.replacement.as_deref().map(str::to_ascii_lowercase)
+                    == b.replacement.as_deref().map(str::to_ascii_lowercase)))
+}
+
+/// Why hooks `mine` and `theirs`, declared by two packages, cannot both be
+/// on, if they cannot: they patch overlapping bytes of the same place in
+/// the game's code (the same signature, overlapping offsets; a slot, the
+/// same entry) and may not share it ([`may_share`]). The hook checks again
+/// by address once it has found them.
+pub fn hooks_clash(mine: &[HookDecl], theirs: &[HookDecl]) -> Option<String> {
+    let signature = |hook: &HookDecl| {
+        hook.signature
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase()
+    };
+    let overlap = |a: &HookDecl, b: &HookDecl| {
+        if signature(a) != signature(b) {
+            return false;
+        }
+        match (a.kind, b.kind) {
+            (HookKind::Slot, HookKind::Slot) => {
+                a.offset == b.offset && a.slot.map(|s| s.index) == b.slot.map(|s| s.index)
+            }
+            (HookKind::Slot, _) | (_, HookKind::Slot) => false,
+            (HookKind::Find, _) | (_, HookKind::Find) => false,
+            _ => {
+                let end = |h: &HookDecl| h.offset + h.written_len() as i64;
+                a.offset < end(b) && b.offset < end(a)
+            }
+        }
+    };
+    mine.iter().find_map(|hook| {
+        theirs
+            .iter()
+            .find(|other| {
+                overlap(hook, other) && !(hook.offset == other.offset && may_share(hook, other))
+            })
+            .map(|other| {
+                format!(
+                    "{} and {} patch the same place in the game, and cannot share it",
+                    hook.target, other.target
+                )
+            })
+    })
 }
 
 /// Why a package with `features` cannot be on beside `others` (each a
@@ -264,9 +344,35 @@ pub fn plan(
                 })
             })
         });
+        // Its plugins: built for the interface this hook offers.
+        let problem = problem.or_else(|| {
+            package
+                .plugins
+                .iter()
+                .find(|plugin| plugin.abi != crate::index::PLUGIN_ABI)
+                .map(|plugin| {
+                    format!(
+                        "its plugin {} is built for plugin interface {}, and this hook offers {}",
+                        plugin.path,
+                        plugin.abi,
+                        crate::index::PLUGIN_ABI
+                    )
+                })
+        });
         match (problem, simulation) {
             (Some(why), true) => refusals.push(format!("{name}: {why}")),
             (Some(why), false) => plan.left_off.push(format!("{name}: {why}")),
+            (None, _) if !package.plugins.is_empty() || !package.hooks.is_empty() => {
+                plan.plugins.push(package.clone());
+                plan.active
+                    .extend(package.features.iter().map(|feature| Active {
+                        feature: feature.clone(),
+                        package: package.id.clone(),
+                        version: package.version.clone(),
+                        settings: package.settings.clone(),
+                        root: package.root.clone(),
+                    }));
+            }
             (None, _) => plan
                 .active
                 .extend(package.features.iter().map(|feature| Active {
@@ -280,6 +386,7 @@ pub fn plan(
     }
     if !refusals.is_empty() {
         plan.active.clear();
+        plan.plugins.clear();
         plan.refusal = Some(format!(
             "native mods that change the simulation cannot run: {}",
             refusals.join("; ")
@@ -346,6 +453,8 @@ mod tests {
             files_sha256: crate::terms::files_digest(&[]),
             depends: Vec::new(),
             root: PathBuf::from(format!("native-mods/{id}/1.0.0")),
+            plugins: Vec::new(),
+            hooks: Vec::new(),
         }
     }
 
@@ -537,6 +646,107 @@ mod tests {
             .is_none(),
             "unknown features clash with nothing"
         );
+    }
+
+    #[test]
+    fn plugins_load_for_their_interface_and_clash_only_when_one_takes_over() {
+        let mut plugged = package("pages", true, &[]);
+        plugged.plugins = vec![EnabledPlugin {
+            path: "plugin/pages.dll".into(),
+            sha256: "a".repeat(64),
+            abi: crate::index::PLUGIN_ABI,
+        }];
+        let list = enabled(vec![plugged.clone()]);
+        let loads = plan(&list, BUILD, BIG_MAPS, every_target, true);
+        assert_eq!(loads.refusal, None);
+        assert_eq!(loads.plugins, [plugged.clone()]);
+        // Its code changes the simulation, as far as anyone can tell.
+        let mut quiet = plugged.clone();
+        quiet.simulation = false;
+        assert!(quiet.changes_simulation(BIG_MAPS));
+        // Built for another interface: the room is refused, nothing loads.
+        plugged.plugins[0].abi = crate::index::PLUGIN_ABI + 1;
+        let refused = plan(&enabled(vec![plugged]), BUILD, BIG_MAPS, every_target, true);
+        assert!(refused.plugins.is_empty());
+        assert!(refused.refusal.unwrap().contains("plugin interface"));
+
+        let hook = |target: &str, signature: &str, access: HookUse| HookDecl {
+            target: target.into(),
+            signature: signature.into(),
+            offset: 0,
+            expected: "48".into(),
+            access,
+            kind: HookKind::Detour,
+            steal: None,
+            replacement: None,
+            slot: None,
+        };
+        let draw = "48 89 5C 24 ? 57 48 83";
+        let chained = [hook("a::draw", draw, HookUse::Chain)];
+        let chained_too = [hook("b::draw", "48  89 5c 24 ? 57 48 83", HookUse::Chain)];
+        let taken = [hook("c::draw", draw, HookUse::Replace)];
+        let elsewhere = [hook("d::tick", "40 53 48 83 EC 20 8B D9", HookUse::Replace)];
+        assert_eq!(hooks_clash(&chained, &chained_too), None, "chains share");
+        // Splices on one site share; a splice and a detour overlapping do
+        // not; rewrites share only the very same bytes.
+        let kind =
+            |target: &str, kind: HookKind, offset: i64, replacement: Option<&str>| HookDecl {
+                kind,
+                offset,
+                steal: (kind == HookKind::Splice).then_some(5),
+                replacement: replacement.map(str::to_owned),
+                ..hook(target, draw, HookUse::Chain)
+            };
+        assert_eq!(
+            hooks_clash(
+                &[kind("a::s", HookKind::Splice, 8, None)],
+                &[kind("b::s", HookKind::Splice, 8, None)]
+            ),
+            None
+        );
+        assert!(
+            hooks_clash(
+                &[kind("a::s", HookKind::Splice, 8, None)],
+                &[kind("b::d", HookKind::Detour, 0, None)]
+            )
+            .is_some(),
+            "the detour's jump covers the splice's bytes"
+        );
+        assert_eq!(
+            hooks_clash(
+                &[kind("a::s", HookKind::Splice, 20, None)],
+                &[kind("b::d", HookKind::Detour, 0, None)]
+            ),
+            None,
+            "past the detour's jump"
+        );
+        assert_eq!(
+            hooks_clash(
+                &[kind("a::r", HookKind::Rewrite, 2, Some("90"))],
+                &[kind("b::r", HookKind::Rewrite, 2, Some("90"))]
+            ),
+            None
+        );
+        assert!(
+            hooks_clash(
+                &[kind("a::r", HookKind::Rewrite, 2, Some("90"))],
+                &[kind("b::r", HookKind::Rewrite, 2, Some("CC"))]
+            )
+            .is_some()
+        );
+        assert!(
+            hooks_clash(
+                &[kind("a::r", HookKind::Rewrite, 2, None)],
+                &[kind("b::r", HookKind::Rewrite, 2, None)]
+            )
+            .is_some(),
+            "a plugin's own bytes are not known ahead"
+        );
+        assert!(
+            hooks_clash(&chained_too, &taken).is_some(),
+            "the same site, spelt apart"
+        );
+        assert_eq!(hooks_clash(&taken, &elsewhere), None);
     }
 
     #[test]

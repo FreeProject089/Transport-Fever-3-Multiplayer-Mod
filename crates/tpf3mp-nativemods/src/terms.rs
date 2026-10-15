@@ -232,6 +232,8 @@ mod tests {
             files_sha256: files_digest(&[]),
             depends: Vec::new(),
             root: PathBuf::new(),
+            plugins: Vec::new(),
+            hooks: Vec::new(),
         }];
         if with_page_only {
             packages.push(EnabledPackage {
@@ -243,6 +245,8 @@ mod tests {
                 files_sha256: files_digest(&[]),
                 depends: Vec::new(),
                 root: PathBuf::new(),
+                plugins: Vec::new(),
+                hooks: Vec::new(),
             });
         }
         Enabled {
@@ -250,6 +254,35 @@ mod tests {
             build: BUILD.into(),
             packages,
         }
+    }
+
+    #[test]
+    fn a_plugins_code_is_part_of_its_term() {
+        let mut package = crate::enabled::EnabledPackage {
+            id: "pages".into(),
+            version: "1.0.0".into(),
+            simulation: true,
+            features: Vec::new(),
+            settings: BTreeMap::new(),
+            root: std::path::PathBuf::from("native-mods/pages/1.0.0"),
+            plugins: Vec::new(),
+            hooks: Vec::new(),
+        };
+        let plain = package_digest(&package);
+        assert_eq!(
+            plain,
+            settings_digest(&package.settings),
+            "no plugin: as before"
+        );
+        package.plugins.push(crate::enabled::EnabledPlugin {
+            path: "plugin/pages.dll".into(),
+            sha256: "a".repeat(64),
+            abi: 1,
+        });
+        let one = package_digest(&package);
+        assert_ne!(one, plain);
+        package.plugins[0].sha256 = "b".repeat(64);
+        assert_ne!(package_digest(&package), one, "other bytes, another term");
     }
 
     #[test]

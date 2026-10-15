@@ -532,7 +532,7 @@ impl Store {
             return Err(StoreError::Occupied(backup));
         }
         fs::create_dir_all(&partial)?;
-        let downloaded = package.files.iter().try_for_each(|file| {
+        let downloaded = package.local_files().iter().try_for_each(|file| {
             let path = partial.join(&file.path);
             ensure_no_symlink_path(&self.root, &path)?;
             if let Some(parent) = path.parent() {
@@ -785,7 +785,70 @@ impl Store {
                     .map(|package| (other.as_str(), package.features.as_slice()))
             })
             .collect();
-        enabled::first_clash(registry, &mine.features, &others)
+        enabled::first_clash(registry, &mine.features, &others).or_else(|| {
+            self.registry
+                .packages
+                .iter()
+                .filter(|(other, installed)| other.as_str() != id && installed.enabled)
+                .find_map(|(other, installed)| {
+                    let theirs = installed.package()?;
+                    enabled::hooks_clash(&mine.hooks, &theirs.hooks)
+                        .map(|why| format!("it clashes with {other}: {why}"))
+                })
+        })
+    }
+
+    /// Puts the game mods of the packages on for `build` into the game's
+    /// `mods` folder (`mods_dir`), each a copy of its folder in the
+    /// package, and takes away those it put there before for packages no
+    /// longer on. A folder it put there holds [`GAME_MOD_MARK`]; one
+    /// without it is a player's own and is never touched: a package whose
+    /// game mod would take its name is refused. Returns what it did, for
+    /// the log.
+    pub fn sync_game_mods(&self, build: &str, mods_dir: &Path) -> Result<Vec<String>, StoreError> {
+        let mut wanted: BTreeMap<String, (PathBuf, &Package)> = BTreeMap::new();
+        for installed in self.registry.packages.values().filter(|i| i.enabled) {
+            let Some(package) = installed.package().filter(|p| p.runs_on(build)) else {
+                continue;
+            };
+            for folder in &package.game_mods {
+                let name = folder.trim_start_matches("mod/").to_owned();
+                let from = self.folder(&package.id, &package.version).join(folder);
+                wanted.insert(name, (from, package));
+            }
+        }
+        let mut done = Vec::new();
+        // Ours that are no longer wanted go first.
+        if let Ok(entries) = fs::read_dir(mods_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let path = entry.path();
+                if path.join(GAME_MOD_MARK).is_file() && !wanted.contains_key(&name) {
+                    fs::remove_dir_all(&path)?;
+                    done.push(format!("game mod {name} taken away"));
+                }
+            }
+        }
+        for (name, (from, package)) in wanted {
+            let to = mods_dir.join(&name);
+            let mark = format!("{} {}\n", package.id, package.version);
+            if to.exists() {
+                match fs::read_to_string(to.join(GAME_MOD_MARK)) {
+                    Ok(theirs) if theirs == mark => continue,
+                    Ok(_) => fs::remove_dir_all(&to)?,
+                    Err(_) => {
+                        return Err(StoreError::Occupied(to));
+                    }
+                }
+            }
+            copy_tree(&from, &to)?;
+            fs::write(to.join(GAME_MOD_MARK), mark)?;
+            done.push(format!(
+                "game mod {name} from {} {}",
+                package.id, package.version
+            ));
+        }
+        Ok(done)
     }
 
     /// The enabled packages, in the order the game switches them on
@@ -888,6 +951,17 @@ impl Store {
                 files_sha256: crate::terms::files_digest(&package.files),
                 depends: package.depends.clone(),
                 root: self.folder(id, &package.version),
+                plugins: crate::index::current_platform()
+                    .map(|platform| package.plugins_for(platform))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|plugin| enabled::EnabledPlugin {
+                        path: plugin.path.clone(),
+                        sha256: plugin.sha256.clone(),
+                        abi: plugin.abi,
+                    })
+                    .collect(),
+                hooks: package.hooks.clone(),
             });
         }
         Ok((
@@ -917,7 +991,7 @@ impl Store {
     fn damaged(&self, folder: &Path, package: &Package) -> Result<Vec<String>, StoreError> {
         check_package_paths(&self.root, folder, package)?;
         let mut damaged = Vec::new();
-        for file in &package.files {
+        for file in &package.local_files() {
             if !fetch::file_matches(&folder.join(&file.path), file.size, &file.sha256)? {
                 damaged.push(file.path.clone());
             }
@@ -955,7 +1029,7 @@ impl Store {
 fn remove_registered(root: &Path, folder: &Path, package: &Package) -> Result<(), StoreError> {
     check_package_paths(root, folder, package)?;
     let mut dirs = Vec::new();
-    for file in &package.files {
+    for file in &package.local_files() {
         let path = folder.join(&file.path);
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -1099,9 +1173,31 @@ fn ensure_no_symlink_path(root: &Path, path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// The file in a game mod's folder that says the launcher put it there,
+/// and from which package.
+pub const GAME_MOD_MARK: &str = ".tpf3mp-native-mod";
+
+/// Copies the folder `from` to `to`, files and folders, no links.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), StoreError> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            fs::copy(entry.path(), &target)?;
+        } else {
+            return Err(StoreError::UnsafePath(entry.path()));
+        }
+    }
+    Ok(())
+}
+
 fn check_package_paths(root: &Path, folder: &Path, package: &Package) -> Result<(), StoreError> {
     ensure_no_symlink_path(root, folder)?;
-    for file in &package.files {
+    for file in &package.local_files() {
         if !index::is_safe_path(&file.path) {
             return Err(StoreError::UnsafePath(folder.join(&file.path)));
         }
@@ -1809,6 +1905,68 @@ mod tests {
         // Switching off is never refused; then the other may go on.
         store.set_enabled_in(REGISTRY, "zzz_base", false).unwrap();
         store.set_enabled_in(REGISTRY, "mmm_other", true).unwrap();
+    }
+
+    #[test]
+    fn game_mods_go_into_the_games_mods_while_their_package_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let served = Served::default();
+        let files: &[(&str, &[u8])] = &[
+            ("mod/tpf3mp_bigmap_1/mod.lua", b"-- big"),
+            ("mod/tpf3mp_bigmap_1/content/gui/page.tl", b"-- page"),
+        ];
+        served.serve("bigmap", "0.3.0", files);
+        let mut package = big_maps();
+        package.files = files
+            .iter()
+            .map(|(path, bytes)| FileEntry {
+                path: (*path).to_owned(),
+                url: url_of("bigmap", "0.3.0", path),
+                size: bytes.len() as u64,
+                sha256: crate::signed::sha256_hex(bytes),
+            })
+            .collect();
+        package.game_mods = vec!["mod/tpf3mp_bigmap_1".into()];
+        assert_eq!(package.validate(), Ok(()));
+        let index = index(vec![package]);
+        let mut store = Store::open(dir.path().join("native")).unwrap();
+        store.install(context(&index), "bigmap", &served).unwrap();
+        let mods = dir.path().join("game").join("mods");
+        fs::create_dir_all(mods.join("players_own_1")).unwrap();
+
+        assert!(
+            store.sync_game_mods(BUILD, &mods).unwrap().is_empty(),
+            "not on yet"
+        );
+        store.set_enabled("bigmap", true).unwrap();
+        let done = store.sync_game_mods(BUILD, &mods).unwrap();
+        assert_eq!(done, ["game mod tpf3mp_bigmap_1 from bigmap 0.3.0"]);
+        assert_eq!(
+            fs::read(mods.join("tpf3mp_bigmap_1/content/gui/page.tl")).unwrap(),
+            b"-- page"
+        );
+        assert!(
+            store.sync_game_mods(BUILD, &mods).unwrap().is_empty(),
+            "already there"
+        );
+
+        store.set_enabled("bigmap", false).unwrap();
+        let done = store.sync_game_mods(BUILD, &mods).unwrap();
+        assert_eq!(done, ["game mod tpf3mp_bigmap_1 taken away"]);
+        assert!(!mods.join("tpf3mp_bigmap_1").exists());
+        assert!(
+            mods.join("players_own_1").exists(),
+            "a player's own is never touched"
+        );
+
+        // A player's own of the same name: refused, and left alone.
+        fs::create_dir_all(mods.join("tpf3mp_bigmap_1")).unwrap();
+        store.set_enabled("bigmap", true).unwrap();
+        assert!(matches!(
+            store.sync_game_mods(BUILD, &mods),
+            Err(StoreError::Occupied(_))
+        ));
+        assert!(mods.join("tpf3mp_bigmap_1").exists());
     }
 
     #[test]

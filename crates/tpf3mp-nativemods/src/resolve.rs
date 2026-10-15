@@ -28,7 +28,10 @@ pub enum ResolveError {
     Unknown(String),
     #[error("no version of {0} runs on this build of the game")]
     NotForBuild(String),
-    #[error("{0} needs native plugins, which this TPF3-MP does not load")]
+    #[error(
+        "{0} needs a native plugin this TPF3-MP cannot load: none for this platform, or one \
+         for another plugin interface"
+    )]
     NeedsPlugins(String),
     #[error("{package} needs the hook feature {feature}, which this TPF3-MP does not have")]
     UnknownFeature { package: String, feature: String },
@@ -184,7 +187,12 @@ impl<'a> Walk<'a> {
             }
         };
         if !package.plugins.is_empty() {
-            return Err(ResolveError::NeedsPlugins(id.to_owned()));
+            let here = crate::index::current_platform()
+                .map(|platform| package.plugins_for(platform))
+                .unwrap_or_default();
+            if here.is_empty() || here.iter().any(|p| p.abi != crate::index::PLUGIN_ABI) {
+                return Err(ResolveError::NeedsPlugins(id.to_owned()));
+            }
         }
         if let Some(feature) = package
             .features
@@ -322,19 +330,43 @@ mod tests {
             ids(&resolve(context(&index), &["bigmap"], &[]).unwrap()),
             ["bigmap 0.3.0"]
         );
-        let mut plugged = package("p", "1.0.0", &[]);
-        plugged.plugins.push(Plugin {
-            path: "p.dll".into(),
-            url: "https://test/p.dll".into(),
+        // A plugin for this platform and interface installs; one for
+        // another platform, or another interface, does not.
+        let plugin = |platform: &str, abi: u32| Plugin {
+            path: format!("p-{platform}.bin"),
+            url: "https://test/p.bin".into(),
             size: 1,
             sha256: "0".repeat(64),
-            abi: 1,
-        });
-        let index = super::super::index::tests::index(vec![plugged]);
+            abi,
+            platform: platform.into(),
+        };
+        let with = |plugins: Vec<Plugin>| {
+            let mut plugged = package("p", "1.0.0", &[]);
+            plugged.plugins = plugins;
+            super::super::index::tests::index(vec![plugged])
+        };
+        let here = crate::index::current_platform();
+        let elsewhere = crate::index::PLATFORMS
+            .iter()
+            .find(|p| Some(**p) != here)
+            .unwrap();
+        let index = with(vec![plugin(elsewhere, crate::index::PLUGIN_ABI)]);
         assert_eq!(
             resolve(context(&index), &["p"], &[]),
             Err(ResolveError::NeedsPlugins("p".into()))
         );
+        if let Some(here) = here {
+            let index = with(vec![plugin(here, crate::index::PLUGIN_ABI)]);
+            assert_eq!(
+                ids(&resolve(context(&index), &["p"], &[]).unwrap()),
+                ["p 1.0.0"]
+            );
+            let index = with(vec![plugin(here, crate::index::PLUGIN_ABI + 1)]);
+            assert_eq!(
+                resolve(context(&index), &["p"], &[]),
+                Err(ResolveError::NeedsPlugins("p".into()))
+            );
+        }
     }
 
     #[test]
