@@ -34,6 +34,7 @@ use tpf3mp_nativemods::{
     features::{self, BUILT_IN, Effect},
     fetch::sha256_of_file,
     index::{Index, Package, Setting},
+    registry::{Proposal, Proposals},
     resolve,
     store::{Source, Store, StoreError},
     terms,
@@ -98,6 +99,34 @@ pub fn build_of(exe: &Path) -> Result<String, String> {
 /// be told (fail closed).
 pub fn game_env(data_dir: &Path, exe: &Path) -> Result<GameNative, String> {
     let store = store(data_dir)?;
+    // Game mods of packages on go into the game's `mods`, and those of
+    // packages switched off come out, before anything else.
+    let ours_there = |mods: &Path| {
+        std::fs::read_dir(mods).is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                e.path()
+                    .join(tpf3mp_nativemods::store::GAME_MOD_MARK)
+                    .is_file()
+            })
+        })
+    };
+    let wanted = store
+        .registry()
+        .packages
+        .values()
+        .any(|i| i.package().is_some_and(|p| !p.game_mods.is_empty()));
+    if let Some(game) = exe
+        .parent()
+        .filter(|game| wanted || ours_there(&game.join("mods")))
+    {
+        let build = build_of(exe)?;
+        for line in store
+            .sync_game_mods(&build, &game.join("mods"))
+            .map_err(|error| format!("native mods' game mods: {error}"))?
+        {
+            info!("{line}");
+        }
+    }
     if !store.registry().packages.values().any(|i| i.enabled) {
         return Ok(GameNative::default());
     }
@@ -187,15 +216,20 @@ pub fn from_value(value: &NativeValue) -> Setting {
     }
 }
 
-/// The native mods panel: every package of the last signed index for this
-/// game's build, and every one installed.
+/// The native mods panel: every package of the server's index and of the
+/// last signed index for this game's build, every one installed, and when
+/// the player asks, the mods proposed for the server's registry.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct NativeView {
-    /// Whether this launcher was built with the native-mods key: without
-    /// it, it offers none.
+    /// Whether there is an index to offer mods from: the server played on
+    /// offers one, or this launcher was built with the native-mods key.
     pub available: bool,
     /// The serial of the index shown, once one was accepted.
     pub serial: Option<u64>,
+    /// The server whose index is shown, if any.
+    pub server: Option<String>,
+    /// Whether the mods proposed for the server's registry are shown.
+    pub proposed_shown: bool,
     pub packages: Vec<NativeRow>,
     /// Why the panel could not be read, if it could not.
     pub problem: Option<String>,
@@ -209,45 +243,213 @@ pub struct NativeRow {
     pub description: String,
     /// The mod's own project page, to open in the browser.
     pub homepage: Option<String>,
+    /// Who made it.
+    pub authors: Vec<String>,
+    /// The address of an image of it, to show.
+    pub preview: Option<String>,
     /// Whether every game of a room must run it alike.
     pub simulation: bool,
     /// The newest version the index has for this game's build.
     pub available: Option<String>,
+    /// Its download, all its files together, in bytes.
+    pub available_size: Option<u64>,
     pub installed: Option<String>,
+    /// The installed version's files together, in bytes.
+    pub installed_size: Option<u64>,
+    /// Where it comes in the order the game loads the native mods enabled,
+    /// from 1: after those it depends on, the rest by id.
+    pub load_order: Option<usize>,
+    /// Why it cannot be switched on beside those that are, if it is off
+    /// and cannot: its features clash with theirs.
+    pub clash: Option<String>,
+    /// Whether it carries code of its own, plugins the hook loads into the
+    /// game (proposed D29 amendment).
+    pub code: bool,
+    /// Why this TPF3-MP cannot install it, if it cannot: a hook feature it
+    /// lacks, or no plugin it can load.
+    pub unsupported: Option<String>,
+    /// How often its releases were downloaded, as its host says.
+    pub downloads: Option<u64>,
+    /// When it last changed, `YYYY-MM-DD`, as its host says.
+    pub updated: Option<String>,
     /// The version a rollback goes back to.
     pub previous: Option<String>,
     pub enabled: bool,
     /// Whether the index still lists it.
     pub listed: bool,
-    pub settings: Vec<NativeSettingRow>,
+    /// For a mod only proposed for the server's registry: its pull request.
+    /// Nobody has reviewed it.
+    pub proposed: Option<Proposal>,
 }
 
-/// One setting of an installed native mod: the player's value, else the
-/// default.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct NativeSettingRow {
-    pub key: String,
-    pub value: Setting,
-    pub default: Setting,
+/// Why this TPF3-MP cannot install `package`, if it cannot.
+fn unsupported(package: &Package) -> Option<String> {
+    if let Some(feature) = package
+        .features
+        .iter()
+        .find(|id| features::find(BUILT_IN, id).is_none())
+    {
+        return Some(format!(
+            "it needs the hook feature {feature}, which this TPF3-MP does not have"
+        ));
+    }
+    if package.plugins.is_empty() {
+        return None;
+    }
+    let here = tpf3mp_nativemods::index::current_platform()
+        .map(|platform| package.plugins_for(platform))
+        .unwrap_or_default();
+    if here.is_empty() {
+        Some("it has no plugin for this platform".into())
+    } else if here
+        .iter()
+        .any(|p| p.abi != tpf3mp_nativemods::index::PLUGIN_ABI)
+    {
+        Some("its plugin is built for another version of TPF3-MP".into())
+    } else {
+        None
+    }
 }
 
 /// Whether `package` changes the simulation: it says so, or a feature it
 /// names does (an unknown one counts, fail closed).
 fn changes_simulation(package: &Package) -> bool {
     package.simulation
+        || !package.plugins.is_empty()
+        || !package.hooks.is_empty()
         || package
             .features
             .iter()
             .any(|id| features::find(BUILT_IN, id).is_none_or(|f| f.effect == Effect::Simulation))
 }
 
-/// The panel for a game whose executable hashes to `build`, if known.
-pub fn view(data_dir: &Path, setup: Option<&NativeSetup>, build: Option<&str>) -> NativeView {
-    let Some(setup) = setup.filter(|setup| !setup.keys.is_empty()) else {
-        return NativeView::default();
+/// Where the launcher keeps a server's index: `native-mods/servers/<the
+/// start of the SHA-256 of its address>/`.
+fn server_dir(data_dir: &Path, server: &str) -> PathBuf {
+    let key = tpf3mp_nativemods::signed::sha256_hex(server.trim().to_ascii_lowercase().as_bytes());
+    data_dir.join(FOLDER).join("servers").join(&key[..16])
+}
+
+const SERVER_INDEX: &str = "index.json";
+const SERVER_PROPOSED: &str = "proposed.json";
+
+/// Takes in `json`, the index the server `server` serves with `serial` (or
+/// with `proposed`, the mods proposed for it), and keeps it: the server
+/// vouches for it as it vouches for its rooms (proposed D29 amendment). An
+/// index whose serial is older than the one kept is refused, and one whose
+/// serial matches must have byte-identical JSON, so a serial cannot name
+/// different contents.
+pub fn accept_server_index(
+    data_dir: &Path,
+    server: &str,
+    serial: u64,
+    json: &[u8],
+    proposed: bool,
+) -> Result<(), String> {
+    let found = if proposed {
+        Proposals::parse(json).map(|p| p.serial)
+    } else {
+        Index::parse(json)
+            .map(|index| index.serial)
+            .map_err(|error| error.to_string())
+    }
+    .map_err(|error| format!("{server}'s native mods: {error}"))?;
+    if found != serial {
+        return Err(format!("{server}'s native mods name another serial"));
+    }
+    let dir = server_dir(data_dir, server);
+    let file = dir.join(if proposed {
+        SERVER_PROPOSED
+    } else {
+        SERVER_INDEX
+    });
+    let kept_bytes = match std::fs::read(&file) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "cannot read the saved index from {server}: {error}"
+            ));
+        }
     };
+    if let Some(kept_bytes) = kept_bytes {
+        let kept = if proposed {
+            Proposals::parse(&kept_bytes).map(|p| p.serial)
+        } else {
+            Index::parse(&kept_bytes)
+                .map(|index| index.serial)
+                .map_err(|error| error.to_string())
+        }
+        .map_err(|error| format!("cannot verify the saved index from {server}: {error}"))?;
+        if kept > serial {
+            return Err(format!(
+                "{server} served an older index of native mods than before"
+            ));
+        }
+        if kept == serial && kept_bytes != json {
+            return Err(format!(
+                "{server} changed its native-mod index bytes without increasing its serial"
+            ));
+        }
+    }
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let partial = dir.join(".partial");
+    std::fs::write(&partial, json).map_err(|error| error.to_string())?;
+    std::fs::rename(&partial, &file).map_err(|error| error.to_string())
+}
+
+/// The index the server `server` served last, kept.
+pub fn server_index(data_dir: &Path, server: &str) -> Option<Index> {
+    let bytes = std::fs::read(server_dir(data_dir, server).join(SERVER_INDEX)).ok()?;
+    Index::parse(&bytes).ok()
+}
+
+/// The mods proposed for the server's registry, as it served them last.
+pub fn server_proposals(data_dir: &Path, server: &str) -> Option<Proposals> {
+    let bytes = std::fs::read(server_dir(data_dir, server).join(SERVER_PROPOSED)).ok()?;
+    Proposals::parse(&bytes).ok()
+}
+
+/// The indexes to install from, the server's first.
+fn indexes(
+    store: &mut Store,
+    data_dir: &Path,
+    setup: Option<&NativeSetup>,
+    server: Option<&str>,
+) -> (Vec<Index>, Option<String>) {
+    let mut found = Vec::new();
+    let mut problem = None;
+    if let Some(index) = server.and_then(|server| server_index(data_dir, server)) {
+        found.push(index);
+    }
+    if let Some(setup) = setup.filter(|setup| !setup.keys.is_empty()) {
+        match store.cached_index(&setup.keys) {
+            Ok(index) => found.push(index),
+            Err(StoreError::NoIndex) => {}
+            Err(error) => problem = Some(format!("native mods: {error}")),
+        }
+    }
+    (found, problem)
+}
+
+/// The panel for a game whose executable hashes to `build`, if known,
+/// played on `server`, with the proposed mods when `proposed`.
+pub fn view(
+    data_dir: &Path,
+    setup: Option<&NativeSetup>,
+    build: Option<&str>,
+    server: Option<&str>,
+    proposed: bool,
+) -> NativeView {
+    let server_has = server.and_then(|server| server_index(data_dir, server));
+    let keyed = setup.is_some_and(|setup| !setup.keys.is_empty());
+    if server_has.is_none() && !keyed {
+        return NativeView::default();
+    }
     let mut view = NativeView {
         available: true,
+        server: server_has.as_ref().and(server).map(str::to_owned),
+        proposed_shown: proposed,
         ..NativeView::default()
     };
     let mut store = match store(data_dir) {
@@ -257,67 +459,93 @@ pub fn view(data_dir: &Path, setup: Option<&NativeSetup>, build: Option<&str>) -
             return view;
         }
     };
-    let index = match store.cached_index(&setup.keys) {
-        Ok(index) => Some(index),
-        Err(StoreError::NoIndex) => None,
-        Err(error) => {
-            view.problem = Some(format!("native mods: {error}"));
-            None
-        }
-    };
-    view.serial = index.as_ref().map(|index| index.serial);
+    let (indexes, problem) = indexes(&mut store, data_dir, setup, server);
+    view.problem = problem;
+    view.serial = indexes.first().map(|index| index.serial);
+    let proposals = proposed
+        .then(|| server.and_then(|server| server_proposals(data_dir, server)))
+        .flatten();
     let mut ids: Vec<&str> = store
         .registry()
         .packages
         .keys()
         .map(String::as_str)
         .collect();
-    if let Some(index) = &index {
+    for index in &indexes {
         ids.extend(index.packages.iter().map(|p| p.id.as_str()));
+    }
+    if let Some(proposals) = &proposals {
+        ids.extend(proposals.packages.iter().map(|p| p.id.as_str()));
     }
     ids.sort_unstable();
     ids.dedup();
     view.packages = ids
         .into_iter()
-        .filter_map(|id| row(&store, index.as_ref(), id, build))
+        .filter_map(|id| row(&store, &indexes, proposals.as_ref(), id, build))
         .collect();
     view
 }
 
-fn row(store: &Store, index: Option<&Index>, id: &str, build: Option<&str>) -> Option<NativeRow> {
+fn row(
+    store: &Store,
+    indexes: &[Index],
+    proposals: Option<&Proposals>,
+    id: &str,
+    build: Option<&str>,
+) -> Option<NativeRow> {
     let installed = store.registry().packages.get(id);
-    let versions = index.map(|index| index.versions(id)).unwrap_or_default();
+    let mut versions = indexes
+        .iter()
+        .map(|index| index.versions(id))
+        .find(|versions| !versions.is_empty())
+        .unwrap_or_default();
+    let proposal = match proposals {
+        Some(proposals) if versions.is_empty() => {
+            versions = proposals.packages.iter().filter(|p| p.id == id).collect();
+            versions.sort_by_key(|p| std::cmp::Reverse(p.semver()));
+            proposals.pulls.get(id).filter(|_| !versions.is_empty())
+        }
+        _ => None,
+    };
     let available = versions
         .iter()
         .find(|p| build.is_none_or(|build| p.runs_on(build)))
         .copied();
     let shown = installed.and_then(|i| i.package()).or(available)?;
-    let settings = installed
-        .and_then(|i| i.package().map(|p| (i, p)))
-        .map(|(i, package)| {
-            package
-                .settings
-                .iter()
-                .map(|(key, default)| NativeSettingRow {
-                    key: key.clone(),
-                    value: i.settings.get(key).unwrap_or(default).clone(),
-                    default: default.clone(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    // The newest description of it: what the index offers, else what is
+    // installed.
+    let newest = available.unwrap_or(shown);
+    let size = |package: &Package| package.files.iter().map(|f| f.size).sum::<u64>();
+    let listing = indexes.iter().find_map(|index| index.listings.get(id));
+    let load_order = installed
+        .filter(|i| i.enabled)
+        .and_then(|_| store.load_order().iter().position(|other| other == id))
+        .map(|at| at + 1);
+    let clash = installed
+        .filter(|i| !i.enabled)
+        .and_then(|_| store.clash(BUILT_IN, id));
     Some(NativeRow {
         id: id.to_owned(),
         name: shown.name.clone(),
         description: shown.description.clone(),
         homepage: shown.homepage.clone(),
+        authors: newest.authors.clone(),
+        preview: newest.preview.clone(),
         simulation: changes_simulation(shown),
         available: available.map(|p| p.version.clone()),
+        available_size: available.map(size),
         installed: installed.map(|i| i.current.clone()),
+        installed_size: installed.and_then(|i| i.package()).map(size),
+        load_order,
+        clash,
+        code: !newest.plugins.is_empty() || !newest.hooks.is_empty(),
+        unsupported: available.and_then(unsupported),
+        downloads: listing.and_then(|l| l.downloads),
+        updated: listing.and_then(|l| l.updated.clone()),
         previous: installed.and_then(|i| i.previous.clone()),
         enabled: installed.is_some_and(|i| i.enabled),
         listed: !versions.is_empty(),
-        settings,
+        proposed: proposal.cloned(),
     })
 }
 
@@ -328,11 +556,12 @@ pub enum Change {
     Refresh,
     /// Install the newest version for this build, or upgrade to it.
     Install(String),
+    /// Install a mod only proposed for the server's registry, which the
+    /// player chose knowing nobody reviewed it.
+    InstallProposed(String),
     Uninstall(String),
     Rollback(String),
     Enable(String, bool),
-    Set(String, String, Setting),
-    Reset(String),
 }
 
 /// Carries out `change`, for a game whose executable hashes to `build`.
@@ -341,19 +570,30 @@ pub fn apply(
     data_dir: &Path,
     setup: &NativeSetup,
     build: Option<&str>,
+    server: Option<&str>,
     change: Change,
 ) -> Result<(), String> {
     let error = |error: StoreError| format!("native mods: {error}");
     let mut store = store(data_dir)?;
+    let proposed = matches!(change, Change::InstallProposed(_));
     match change {
+        // The server's index is fetched over its connection, by the caller.
+        Change::Refresh if setup.keys.is_empty() => Ok(()),
         Change::Refresh => store
             .refresh(setup.source.as_ref(), &setup.keys)
             .map(drop)
             .map_err(error),
-        Change::Install(id) => {
+        Change::Install(id) | Change::InstallProposed(id) => {
             let build =
                 build.ok_or("start the game once, or name it, so the launcher knows its build")?;
-            let index = index_listing(&mut store, setup, &[(&id, None)])?;
+            let index = if proposed {
+                server
+                    .and_then(|server| server_proposals(data_dir, server))
+                    .map(|proposals| proposals.index())
+                    .ok_or("the server proposes no such mod now")?
+            } else {
+                index_listing(&mut store, data_dir, setup, server, &[(&id, None)])?
+            };
             let done = store
                 .install(
                     resolve::Context {
@@ -371,16 +611,16 @@ pub fn apply(
         Change::Uninstall(id) => store.uninstall(&id).map_err(error),
         Change::Rollback(id) => store.rollback(&id).map_err(error),
         Change::Enable(id, on) => store.set_enabled(&id, on).map_err(error),
-        Change::Set(id, key, value) => store.set_setting(&id, &key, value).map_err(error),
-        Change::Reset(id) => store.reset_settings(&id).map_err(error),
     }
 }
 
-/// The index with every one of `wanted` in it: the cached one, else a
-/// fresh one from the source.
+/// The index with every one of `wanted` in it: the server's, else the
+/// signed one kept, else a signed one fetched again.
 fn index_listing(
     store: &mut Store,
+    data_dir: &Path,
     setup: &NativeSetup,
+    server: Option<&str>,
     wanted: &[(&str, Option<&str>)],
 ) -> Result<Index, String> {
     let lists = |index: &Index| {
@@ -389,10 +629,12 @@ fn index_listing(
             None => !index.versions(id).is_empty(),
         })
     };
-    if let Ok(index) = store.cached_index(&setup.keys)
-        && lists(&index)
-    {
+    let (indexes, _) = indexes(store, data_dir, Some(setup), server);
+    if let Some(index) = indexes.into_iter().find(|index| lists(index)) {
         return Ok(index);
+    }
+    if setup.keys.is_empty() {
+        return Err("no index of native mods lists the room's".into());
     }
     store
         .refresh(setup.source.as_ref(), &setup.keys)
@@ -400,17 +642,19 @@ fn index_listing(
 }
 
 /// Makes the next game on the build `build` run exactly the room's native
-/// mods `room`: each installed in the room's version from the signed index,
-/// with the room's settings, and enabled; every other simulation-changing
-/// one switched off. Ones that change only what a player sees stay the
-/// player's. Returns whether anything changed, and so whether a running
-/// game must start again to run them. Refused when the index does not list
-/// the room's version for this build, or the result does not match the
-/// room: then that player cannot join.
+/// mods `room`: each checked against the signed index (including when the
+/// id and version already match), installed if its files or metadata are
+/// stale, given the room's settings, and enabled; every other
+/// simulation-changing one is switched off. Ones that change only what a
+/// player sees stay the player's. Returns whether anything changed, and so
+/// whether a running game must start again to run them. Refused when the
+/// index does not list the room's version for this build, or the result
+/// does not match the room: then that player cannot join.
 pub fn match_room(
     data_dir: &Path,
     setup: &NativeSetup,
     build: &str,
+    server: Option<&str>,
     room: &[NativeMod],
 ) -> Result<bool, String> {
     let error = |error: StoreError| format!("native mods: {error}");
@@ -421,38 +665,31 @@ pub fn match_room(
         .map(|m| (m.id.as_str(), Some(m.package_version())))
         .collect();
     if !room.is_empty() {
-        let index = index_listing(&mut store, setup, &wanted)?;
+        let index = index_listing(&mut store, data_dir, setup, server, &wanted)?;
         for native in room {
             let (id, version) = (native.id.as_str(), native.package_version());
-            let current = store
-                .registry()
-                .packages
-                .get(id)
-                .is_some_and(|i| i.current == version);
-            if !current {
-                let package = index
-                    .package(id, version)
-                    .filter(|p| p.runs_on(build))
-                    .ok_or_else(|| {
-                        format!(
-                            "the signed index has no {} {version} for your game's build",
-                            native.name
-                        )
-                    })?;
-                info!(%id, %version, "installing the room's native mod");
-                store
-                    .install_exact(
-                        resolve::Context {
-                            index: &index,
-                            build,
-                            registry: BUILT_IN,
-                        },
-                        &package.id,
-                        version,
-                        setup.source.as_ref(),
+            let package = index
+                .package(id, version)
+                .filter(|p| p.runs_on(build))
+                .ok_or_else(|| {
+                    format!(
+                        "the signed index has no {} {version} for your game's build",
+                        native.name
                     )
-                    .map_err(error)?;
-            }
+                })?;
+            info!(%id, %version, "checking the room's native mod against its signed package");
+            store
+                .install_exact(
+                    resolve::Context {
+                        index: &index,
+                        build,
+                        registry: BUILT_IN,
+                    },
+                    &package.id,
+                    version,
+                    setup.source.as_ref(),
+                )
+                .map_err(error)?;
             // The room's settings, all of them: a told setting overrides the
             // default, and none of this player's own stays.
             store.reset_settings(id).map_err(error)?;
@@ -538,6 +775,10 @@ mod tests {
             conflicts: Vec::new(),
             files: Vec::new(),
             plugins: Vec::new(),
+            authors: Vec::new(),
+            preview: None,
+            hooks: Vec::new(),
+            game_mods: Vec::new(),
         };
         let registry = tpf3mp_nativemods::store::Registry {
             format: 1,
@@ -592,6 +833,10 @@ mod tests {
             conflicts: Vec::new(),
             files: Vec::new(),
             plugins: Vec::new(),
+            authors: Vec::new(),
+            preview: None,
+            hooks: Vec::new(),
+            game_mods: Vec::new(),
         };
         let registry = tpf3mp_nativemods::store::Registry {
             format: 1,
@@ -613,6 +858,56 @@ mod tests {
 
         assert!(game_env(dir.path(), &exe).is_err());
         assert!(!root.join(enabled::FILE).exists());
+    }
+
+    #[test]
+    fn startup_refuses_to_declare_a_signed_identity_after_a_package_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game").unwrap();
+        let build = build_of(&exe).unwrap();
+        let (mut package, (url, bytes)) = native_package("bigmap", "0.3.0", &build);
+        package.files[0].path = "content/simulation.lua".into();
+        let setup = setup(vec![(package, (url, bytes))]);
+
+        apply(
+            &dir.path().join("player"),
+            &setup,
+            Some(&build),
+            None,
+            Change::Refresh,
+        )
+        .unwrap();
+        apply(
+            &dir.path().join("player"),
+            &setup,
+            Some(&build),
+            None,
+            Change::Install("bigmap".into()),
+        )
+        .unwrap();
+        apply(
+            &dir.path().join("player"),
+            &setup,
+            Some(&build),
+            None,
+            Change::Enable("bigmap".into(), true),
+        )
+        .unwrap();
+
+        let player = dir.path().join("player");
+        assert_eq!(game_env(&player, &exe).unwrap().terms.len(), 1);
+        fs::write(
+            player
+                .join(FOLDER)
+                .join("bigmap/0.3.0/content/simulation.lua"),
+            b"changed after installation",
+        )
+        .unwrap();
+
+        let error = game_env(&player, &exe).unwrap_err();
+        assert!(error.contains("content/simulation.lua"), "{error}");
+        assert!(next_terms(&player, &exe).is_err());
     }
 
     /// A signed index and its files, held in memory, signed with a TEST
@@ -669,6 +964,10 @@ mod tests {
                 sha256: tpf3mp_nativemods::signed::sha256_hex(&bytes),
             }],
             plugins: Vec::new(),
+            authors: Vec::new(),
+            preview: None,
+            hooks: Vec::new(),
+            game_mods: Vec::new(),
         };
         (package, (url, bytes))
     }
@@ -681,6 +980,7 @@ mod tests {
             format: 1,
             serial: 1,
             packages: packages.iter().map(|(p, _)| p.clone()).collect(),
+            listings: Default::default(),
         };
         let json = serde_json::to_vec(&index).unwrap();
         let signature = pair.sign(&json).as_ref().to_vec();
@@ -711,7 +1011,7 @@ mod tests {
 
         // The owner: Big Maps 0.3.0, deeper than the default.
         let owner = dir.path().join("owner");
-        apply(&owner, &setup, Some(&build), Change::Refresh).unwrap();
+        apply(&owner, &setup, Some(&build), None, Change::Refresh).unwrap();
         let mut store = Store::open(owner.join(FOLDER)).unwrap();
         let index = store.cached_index(&setup.keys).unwrap();
         let context = resolve::Context {
@@ -737,6 +1037,7 @@ mod tests {
             &member,
             &setup,
             Some(&build),
+            None,
             Change::Install("bigmap".into()),
         )
         .unwrap();
@@ -744,6 +1045,7 @@ mod tests {
             &member,
             &setup,
             Some(&build),
+            None,
             Change::Install("other".into()),
         )
         .unwrap();
@@ -751,31 +1053,133 @@ mod tests {
             &member,
             &setup,
             Some(&build),
+            None,
             Change::Enable("other".into(), true),
         )
         .unwrap();
         assert_ne!(next_terms(&member, &exe).unwrap(), room);
 
-        assert!(match_room(&member, &setup, &build, &room).unwrap());
+        assert!(match_room(&member, &setup, &build, None, &room).unwrap());
         let theirs = next_terms(&member, &exe).unwrap();
         assert_eq!(theirs, room, "the same version, settings and nothing else");
-        let row = view(&member, Some(&setup), Some(&build))
+        let row = view(&member, Some(&setup), Some(&build), None, false)
             .packages
             .into_iter()
             .find(|row| row.id == "other")
             .unwrap();
         assert!(!row.enabled, "the room does not run it");
         // Matched already: nothing changes, and the game need not restart.
-        assert!(!match_room(&member, &setup, &build, &room).unwrap());
+        assert!(!match_room(&member, &setup, &build, None, &room).unwrap());
 
         // A version the index does not have for this build: refused.
         let mut gone = room.clone();
         gone[0].version = Text::lossy("9.9.9+0000000000");
-        assert!(match_room(&member, &setup, &build, &gone).is_err());
+        assert!(match_room(&member, &setup, &build, None, &gone).is_err());
 
         // A room without native mods: the member's are switched off.
-        assert!(match_room(&member, &setup, &build, &[]).unwrap());
+        assert!(match_room(&member, &setup, &build, None, &[]).unwrap());
         assert!(next_terms(&member, &exe).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_same_version_package_with_changed_simulation_lua_is_replaced_before_join() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game").unwrap();
+        let build = build_of(&exe).unwrap();
+        let server = "eu.example:29470";
+        let mut old = native_package("bigmap", "0.3.0", &build).0;
+        old.files[0].path = "content/simulation.lua".into();
+        let old_url = old.files[0].url.clone();
+        let old_bytes = b"return 1".to_vec();
+        old.files[0].size = old_bytes.len() as u64;
+        old.files[0].sha256 = tpf3mp_nativemods::signed::sha256_hex(&old_bytes);
+        let mut old_setup = setup(vec![(old.clone(), (old_url.clone(), old_bytes.clone()))]);
+        old_setup.keys.clear();
+
+        let old_index = Index {
+            format: 1,
+            serial: 1,
+            packages: vec![old.clone()],
+            listings: Default::default(),
+        };
+        let old_json = serde_json::to_vec(&old_index).unwrap();
+        let owner = dir.path().join("owner");
+        let member = dir.path().join("member");
+        accept_server_index(&owner, server, 1, &old_json, false).unwrap();
+        accept_server_index(&member, server, 1, &old_json, false).unwrap();
+        for player in [&owner, &member] {
+            apply(
+                player,
+                &old_setup,
+                Some(&build),
+                Some(server),
+                Change::Install("bigmap".into()),
+            )
+            .unwrap();
+            apply(
+                player,
+                &old_setup,
+                Some(&build),
+                Some(server),
+                Change::Enable("bigmap".into(), true),
+            )
+            .unwrap();
+        }
+        let old_terms = next_terms(&owner, &exe).unwrap();
+        assert_eq!(next_terms(&member, &exe).unwrap(), old_terms);
+
+        let new_bytes = b"return 2".to_vec();
+        let mut updated = old.clone();
+        updated.files[0].size = new_bytes.len() as u64;
+        updated.files[0].sha256 = tpf3mp_nativemods::signed::sha256_hex(&new_bytes);
+        let mut updated_setup = setup(vec![(
+            updated.clone(),
+            (old_url.clone(), new_bytes.clone()),
+        )]);
+        updated_setup.keys.clear();
+        let updated_index = Index {
+            format: 1,
+            serial: 2,
+            packages: vec![updated],
+            listings: Default::default(),
+        };
+        let updated_json = serde_json::to_vec(&updated_index).unwrap();
+        accept_server_index(&owner, server, 2, &updated_json, false).unwrap();
+        accept_server_index(&member, server, 2, &updated_json, false).unwrap();
+
+        // The owner installs the refreshed same-version package. Settings
+        // and the version stay fixed; only the simulation Lua bytes change.
+        apply(
+            &owner,
+            &updated_setup,
+            Some(&build),
+            Some(server),
+            Change::Install("bigmap".into()),
+        )
+        .unwrap();
+        let room_terms = next_terms(&owner, &exe).unwrap();
+        assert_eq!(room_terms[0].package_version(), "0.3.0");
+        assert_ne!(room_terms[0].version, old_terms[0].version);
+        assert_eq!(
+            &room_terms[0].version.as_str().rsplit_once('+').unwrap().1[..10],
+            &old_terms[0].version.as_str().rsplit_once('+').unwrap().1[..10],
+            "the settings digest remains the same"
+        );
+
+        assert!(match_room(&member, &updated_setup, &build, Some(server), &room_terms,).unwrap());
+        assert_eq!(next_terms(&member, &exe).unwrap(), room_terms);
+        assert_eq!(
+            fs::read(
+                member
+                    .join(FOLDER)
+                    .join("bigmap")
+                    .join("0.3.0")
+                    .join("content/simulation.lua")
+            )
+            .unwrap(),
+            new_bytes
+        );
     }
 
     #[test]
@@ -793,12 +1197,208 @@ mod tests {
     #[test]
     fn without_the_key_the_panel_offers_nothing() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(view(dir.path(), None, None), NativeView::default());
+        assert_eq!(
+            view(dir.path(), None, None, None, false),
+            NativeView::default()
+        );
         let mut keyless = setup(Vec::new());
         keyless.keys.clear();
-        assert!(!view(dir.path(), Some(&keyless), None).available);
-        let shown = view(dir.path(), Some(&setup(Vec::new())), None);
+        assert!(!view(dir.path(), Some(&keyless), None, None, false).available);
+        let shown = view(dir.path(), Some(&setup(Vec::new())), None, None, false);
         assert!(shown.available);
         assert_eq!(shown.serial, None, "no index fetched yet");
+    }
+
+    /// A server's own index needs no key: the launcher takes it from the
+    /// server, installs the room's mods from it, and shows the mods its
+    /// registry's open pull requests propose only when asked.
+    #[test]
+    fn a_servers_own_index_and_its_proposals() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game build two").unwrap();
+        let build = build_of(&exe).unwrap();
+        let big = native_package("bigmap", "0.3.0", &build);
+        let trees = native_package("trees", "1.0.0", &build);
+        let mut keyless = setup(vec![big.clone(), trees.clone()]);
+        keyless.keys.clear();
+        let server = "eu.example:29470";
+        let mut shown_big = big.0.clone();
+        shown_big.authors = vec!["Ann".into()];
+        shown_big.preview = Some("https://example.invalid/bigmap.png".into());
+        let index = Index {
+            format: 1,
+            serial: 5,
+            packages: vec![shown_big],
+            listings: [(
+                "bigmap".to_owned(),
+                tpf3mp_nativemods::index::Listing {
+                    downloads: Some(1234),
+                    updated: Some("2026-10-01".into()),
+                },
+            )]
+            .into(),
+        };
+        let json = serde_json::to_vec(&index).unwrap();
+        let player = dir.path().join("player");
+        assert!(!view(&player, Some(&keyless), Some(&build), Some(server), false).available);
+        accept_server_index(&player, server, 5, &json, false).unwrap();
+        accept_server_index(&player, server, 5, &json, false).unwrap();
+        let mut same_serial_changed = index.clone();
+        same_serial_changed.packages[0].description = "different bytes".into();
+        assert!(
+            accept_server_index(
+                &player,
+                server,
+                5,
+                &serde_json::to_vec(&same_serial_changed).unwrap(),
+                false,
+            )
+            .is_err()
+        );
+        // Another serial than it says, or an older index: refused.
+        assert!(accept_server_index(&player, server, 6, &json, false).is_err());
+        let older = Index {
+            serial: 4,
+            ..index.clone()
+        };
+        assert!(
+            accept_server_index(
+                &player,
+                server,
+                4,
+                &serde_json::to_vec(&older).unwrap(),
+                false
+            )
+            .is_err()
+        );
+
+        let shown = view(&player, Some(&keyless), Some(&build), Some(server), false);
+        assert!(shown.available);
+        assert_eq!(shown.server.as_deref(), Some(server));
+        assert_eq!(shown.packages.len(), 1);
+        // What the browser shows of it: who made it, an image, its size,
+        // and what its host says.
+        let row = &shown.packages[0];
+        assert_eq!(row.authors, ["Ann"]);
+        assert_eq!(
+            row.preview.as_deref(),
+            Some("https://example.invalid/bigmap.png")
+        );
+        assert_eq!(row.available_size, Some(b"bigmap 0.3.0".len() as u64));
+        assert_eq!(
+            (row.downloads, row.updated.as_deref()),
+            (Some(1234), Some("2026-10-01"))
+        );
+        assert_eq!((row.installed_size, row.load_order), (None, None));
+        // Another server's index is not this one's.
+        assert!(
+            !view(
+                &player,
+                Some(&keyless),
+                Some(&build),
+                Some("other:1"),
+                false
+            )
+            .available
+        );
+
+        // A room's mod, from the server's index.
+        // The digest is the defaults': match it as the owner would.
+        let owner = dir.path().join("owner");
+        accept_server_index(&owner, server, 5, &json, false).unwrap();
+        apply(
+            &owner,
+            &keyless,
+            Some(&build),
+            Some(server),
+            Change::Install("bigmap".into()),
+        )
+        .unwrap();
+        apply(
+            &owner,
+            &keyless,
+            Some(&build),
+            Some(server),
+            Change::Enable("bigmap".into(), true),
+        )
+        .unwrap();
+        let owners = next_terms(&owner, &exe).unwrap();
+        assert_eq!(owners[0].package_version(), "0.3.0");
+        let installed = view(&owner, Some(&keyless), Some(&build), Some(server), false);
+        assert_eq!(
+            (
+                installed.packages[0].installed_size,
+                installed.packages[0].load_order
+            ),
+            (Some(b"bigmap 0.3.0".len() as u64), Some(1)),
+            "the first, and only, native mod the game loads"
+        );
+        assert!(match_room(&player, &keyless, &build, Some(server), &owners).unwrap());
+        assert_eq!(next_terms(&player, &exe).unwrap(), owners);
+
+        // Proposals: shown only when asked, marked with their pull request.
+        let proposals = Proposals {
+            format: 1,
+            serial: 5,
+            packages: vec![trees.0.clone()],
+            pulls: [(
+                "trees".to_owned(),
+                Proposal {
+                    number: 12,
+                    title: "Add Trees".into(),
+                    url: "https://github.com/r/reg/pull/12".into(),
+                },
+            )]
+            .into(),
+        };
+        accept_server_index(
+            &player,
+            server,
+            5,
+            &serde_json::to_vec(&proposals).unwrap(),
+            true,
+        )
+        .unwrap();
+        let mut same_serial_proposals_changed = proposals.clone();
+        same_serial_proposals_changed
+            .pulls
+            .get_mut("trees")
+            .unwrap()
+            .title = "Different title".into();
+        assert!(
+            accept_server_index(
+                &player,
+                server,
+                5,
+                &serde_json::to_vec(&same_serial_proposals_changed).unwrap(),
+                true,
+            )
+            .is_err()
+        );
+        let hidden = view(&player, Some(&keyless), Some(&build), Some(server), false);
+        assert!(hidden.packages.iter().all(|row| row.id != "trees"));
+        let shown = view(&player, Some(&keyless), Some(&build), Some(server), true);
+        let row = shown.packages.iter().find(|row| row.id == "trees").unwrap();
+        assert_eq!(row.proposed.as_ref().unwrap().number, 12);
+        // Never from the index proper; only when the player chooses it.
+        assert!(
+            apply(
+                &player,
+                &keyless,
+                Some(&build),
+                Some(server),
+                Change::Install("trees".into())
+            )
+            .is_err()
+        );
+        apply(
+            &player,
+            &keyless,
+            Some(&build),
+            Some(server),
+            Change::InstallProposed("trees".into()),
+        )
+        .unwrap();
     }
 }

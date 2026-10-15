@@ -77,6 +77,9 @@ pub(crate) struct View {
     /// What the launcher is doing with native mods now, such as installing
     /// the room's.
     pub(crate) native_busy: Option<String>,
+    /// Whether the player asked to see the mods proposed for the server's
+    /// registry.
+    pub(crate) native_proposed: bool,
 }
 
 /// Something the player asks for.
@@ -211,14 +214,13 @@ pub enum Action {
         id: String,
         on: bool,
     },
-    /// Sets one of a native mod's settings, for the next game.
-    NativeSetting {
-        id: String,
-        key: String,
-        value: tpf3mp_nativemods::index::Setting,
+    /// Shows or hides the mods proposed for the server's registry: open
+    /// pull requests nobody has reviewed yet.
+    NativeShowProposed {
+        on: bool,
     },
-    /// Puts a native mod's settings back to its defaults.
-    NativeReset {
+    /// Installs a mod only proposed for the server's registry.
+    NativeInstallProposed {
         id: String,
     },
     /// Gets the room's native mods with the room's settings, and starts the
@@ -1027,17 +1029,12 @@ mod tests {
             }
         );
         assert!(serde_json::from_str::<Action>(r#"{"action":"format_disk"}"#).is_err());
-        let action: Action = serde_json::from_str(
-            r#"{"action":"native_setting","id":"bigmap","key":"depth","value":12}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            action,
-            Action::NativeSetting {
-                id: "bigmap".into(),
-                key: "depth".into(),
-                value: tpf3mp_nativemods::index::Setting::Int(12),
-            }
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"action":"native_setting","id":"bigmap","key":"depth","value":12}"#,
+            )
+            .is_err(),
+            "a native mod's settings are not the player's to change"
         );
         let action: Action = serde_json::from_str(r#"{"action":"native_match_room"}"#).unwrap();
         assert_eq!(action, Action::NativeMatchRoom);
@@ -1049,7 +1046,7 @@ mod tests {
     fn the_state_says_which_native_mods_the_game_runs_alike() {
         let native = |id: &str, version: &str| tpf3mp_proto::NativeMod {
             id: tpf3mp_proto::Text::lossy(id),
-            version: tpf3mp_proto::Text::lossy(version),
+            version: tpf3mp_proto::Text::lossy(&format!("{}{}", version, "a".repeat(64))),
             name: tpf3mp_proto::Text::lossy(id),
             settings: Vec::new(),
         };

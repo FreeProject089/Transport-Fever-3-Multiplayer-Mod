@@ -1390,3 +1390,84 @@ there), D4 (trust in the project, fail closed). PLAN.md, Part 3: a new item.
 Not covered yet: the room's terms on the wire (an additive field of the
 content declaration, with a protocol version bump), the launcher's page for
 native mods, and Big Maps itself as the first package.
+
+### D29 amendment (2026-10-12, owner-approved 2026-10-15): the room's server serves the native-mods index
+
+The owner approved this amendment on 2026-10-15. It replaces D29's
+project-signed-index-only requirement; its built-in-code rule and package
+checks remain in force until a later decision changes them.
+
+The user asked on 2026-10-12 to "build the index into the server": the
+index of native mods should come from the server a player plays on, not
+from a release asset that only a reviewer of the project's signing
+workflow can publish. Under the original D29, no native mod could reach a
+player until the project made a native-mods key, a signing workflow and a
+first index, and every launcher was built with the key; a server's operator
+who wanted to offer Big Maps could not.
+
+- **Each server serves its own index, made from a registry.** The operator
+  names a registry (`--native-mods-registry`): a git repository whose
+  `mods.txt` lists the mods' own repositories, as CKAN's metadata
+  repository lists Kerbal mods. Each mod's repository holds
+  `tpf3mp-native.json`, its packages in D29's format, whose names and
+  descriptions are the preview players see. The server reads them again
+  every hour and hands the index made of them to its clients on the control
+  stream (a new request, `NativeIndex`, in pages, with a `PROTOCOL_VERSION`
+  bump). A mod that cannot be read, is malformed or claims another's id is
+  left out, the others served. The format is D29's unchanged: every package
+  pins the game builds it runs on, every file its size and SHA-256, its
+  dependencies, conflicts and settings, and the hook features it enables.
+  Files may live anywhere over HTTPS, the mod's own releases included; each
+  is checked against the index as it downloads, as now.
+- **Proposed mods are shown apart, never installed by themselves.** A mod
+  joins a registry through a pull request adding its repository. For a
+  GitHub registry the server also serves what open pull requests would add,
+  as proposals, each with its pull request. The launcher shows them only
+  when the player asks ("Show proposed mods"), marks them as not reviewed,
+  and installs one only when the player chooses it; a room never gets one
+  by itself.
+- **The server's word is the signature.** A launcher trusts the index of
+  the server it plays on as it trusts that server's rooms (D4): reached
+  over TLS with a certificate from a public authority, as every server is.
+  No separate key is needed. An index signed with the project's
+  native-mods key (D29) is still accepted from anywhere, so the project can
+  publish one later without changing the launcher.
+- **Only built-in code runs, as in D29.** A package still only enables
+  features compiled into TPF3-MP's hook (`features::BUILT_IN`) and ships
+  data, Lua and settings; one with plugin libraries is refused. A server
+  therefore cannot make a game run native code TPF3-MP does not ship; what
+  it can add is Lua and data, which a Mod Hub mod can add too.
+- **A room installs from its own server.** A member gets the room's
+  native mods from the index of the server that hosts the room, in the
+  room's versions, never from another player. The serial floor and the
+  cached index are kept per server, so one server's index cannot replay or
+  replace another's.
+- **The player sees whose index it is.** The launcher's Native mods group
+  names the server whose index it shows. It gets a room's native mods by
+  itself only from a server the release lists; from a server the player set
+  in Settings (D12), only when the player asks.
+
+Rejected:
+
+- **Keep the project's signing workflow as the only way** (D29 as it is):
+  safest, but nothing ships until the project builds it, and an operator
+  of another listed server cannot offer a mod the project has not signed.
+- **Each operator signs with their own key, built into launchers**: the
+  same wait, once per operator, and launchers would need a key list per
+  release.
+- **Any address, as CKAN reads netkans**: D29's reason stands; an index
+  comes from a server the player chose, or from the project.
+
+The owner accepted this trade-off: trust moves from one reviewed key to every
+server's operator, and to whoever merges pull requests into that server's
+registry. A rogue or hacked server could offer a package of Lua
+and data to its own players, and switch built-in features on for them; it
+could not run native code the hook does not have. Players on the project's
+servers trust the project, as now.
+
+Touches: D29 (where the index comes from and who vouches for it; the
+format, built-in features only, per-file checks and room terms stay), D4
+(servers trusted by clients), D12 and its approved amendment (several
+operated servers; a server set in Settings). PLAN.md, Part 3, the D29
+item: the key and signing workflow would no longer be needed before
+players can use a native mod.

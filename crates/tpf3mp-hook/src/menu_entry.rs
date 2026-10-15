@@ -452,12 +452,54 @@ fn patch_once(state: *mut c_void) {
         return;
     }
     note(&format!("menu patch installed in Lua state {state:p}"));
+    run_plugin_lua(state, load, pcallk, settop);
     // A main page this state loaded before the patch was in it is the
     // game's own: say so plainly.
     if let Some(key) = eval_string(state, MAIN_PAGE_LOADED) {
         note(&format!(
             "main_page.tl MISSED: {key} was loaded in state {state:p} before the menu patch; the main menu is the game's own, without the Multiplayer entry"
         ));
+    }
+}
+
+/// Runs the Lua native mods' plugins handed over (`crate::plugins`), in the
+/// load order, in `state`, after the hook's own patch. One that fails to
+/// load or raises is logged and the next still runs: a plugin's Lua is its
+/// own, and so is its failure.
+#[allow(unsafe_code)]
+fn run_plugin_lua(state: *mut c_void, load: LuaLoad, pcallk: LuaPcallk, settop: LuaSettop) {
+    for (at, text) in crate::plugins::lua_chunks().iter().enumerate() {
+        let mut chunk = Chunk {
+            ptr: text.as_ptr(),
+            len: text.len(),
+            done: false,
+        };
+        // SAFETY: as for the hook's own patch: a live lua_State on its own
+        // thread, a reader over a buffer that outlives the call, and
+        // NUL-terminated name and mode.
+        let status = unsafe {
+            load(
+                state,
+                read_chunk,
+                (&mut chunk as *mut Chunk).cast::<c_void>(),
+                c"=tpf3mp-native-mod".as_ptr(),
+                c"t".as_ptr(),
+            )
+        };
+        // SAFETY: the compiled chunk is on the stack; no arguments, no
+        // results.
+        let status = if status == 0 {
+            unsafe { pcallk(state, 0, 0, 0, 0, std::ptr::null()) }
+        } else {
+            status
+        };
+        if status != 0 {
+            // The error message is on the stack; pop it.
+            unsafe { settop(state, -2) };
+            note(&format!(
+                "native mods' Lua chunk {at} failed (status {status}) in state {state:p}"
+            ));
+        }
     }
 }
 

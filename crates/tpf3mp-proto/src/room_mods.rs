@@ -15,12 +15,13 @@
 //! and the player confirms; it proves nothing.
 //!
 //! The room's native mods (docs/NATIVE_MODS.md, D29) travel the same way:
-//! the manifest names each by its id and a version holding a digest of its
-//! settings ([`crate::NATIVE_PREFIX`]), and beside it the declaration gives
-//! the settings themselves ([`NativeMod`]), so that a member's launcher can
-//! install that version from the project's signed index and run it with the
-//! room's settings. The fingerprint still decides: a member whose settings
-//! do not digest to the room's does not match.
+//! the manifest names each by its id and a version holding the settings
+//! digest prefix and full package identity ([`crate::NATIVE_PREFIX`]), and
+//! beside it the declaration gives the settings themselves
+//! ([`NativeMod`]), so that a member's launcher can install that version
+//! from the project's signed index and run it with the room's settings. The
+//! fingerprint still decides: a member whose package or settings differ
+//! from the room's does not match.
 
 use std::collections::HashSet;
 
@@ -30,8 +31,9 @@ use crate::{
     ContentManifest, MAX_NATIVE_TERMS, ModId, ModRef, ModVersion, NATIVE_PREFIX, OWN_MOD, Text,
 };
 
-/// Most mods a room runs, TPF3-MP's own counted. A selection of more is
-/// refused, never cut short: every game loads the whole list.
+/// Most ordinary mods a room runs, TPF3-MP's own counted. Native mods have
+/// their own [`MAX_NATIVE_TERMS`] limit. A selection of more ordinary mods
+/// is refused, never cut short: every game loads the whole list.
 pub const MAX_ROOM_MODS: usize = 256;
 /// Most mod settings a room carries, over all its mods.
 pub const MAX_ROOM_PARAMS: usize = 512;
@@ -97,8 +99,8 @@ pub struct NativeSetting {
 pub struct NativeMod {
     /// The package's id in the signed index.
     pub id: Text<40>,
-    /// The version the manifest names: the package's version, `+`, and the
-    /// start of its settings' digest.
+    /// The version the manifest names: package version, `+`, ten settings
+    /// digest hex digits, and the full package identity SHA-256.
     pub version: ModVersion,
     /// Its name for players.
     pub name: Text<48>,
@@ -115,11 +117,11 @@ impl NativeMod {
         }
     }
 
-    /// The package's version in the index: the version before its `+`.
+    /// The package's version in the index: before the final `+` digest.
     pub fn package_version(&self) -> &str {
         self.version
             .as_str()
-            .split_once('+')
+            .rsplit_once('+')
             .map_or(self.version.as_str(), |(version, _)| version)
     }
 }
@@ -185,7 +187,7 @@ impl RoomMods {
 /// Why a [`RoomDeclaration`] is refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RoomModsError {
-    #[error("a room runs at most {MAX_ROOM_MODS} mods, TPF3-MP counted; this one has {0}")]
+    #[error("a room runs at most {MAX_ROOM_MODS} ordinary mods, TPF3-MP counted; this one has {0}")]
     TooMany(usize),
     #[error("the room's mods do not match the declared ones one for one")]
     NotAligned,
@@ -399,6 +401,10 @@ mod tests {
         }
     }
 
+    fn full_version(package: &str, settings: &str, identity: char) -> String {
+        format!("{package}+{settings}{}", identity.to_string().repeat(64))
+    }
+
     fn with_native(mut room: RoomDeclaration, native: Vec<NativeMod>) -> RoomDeclaration {
         room.manifest = room.manifest.with_native(
             native
@@ -415,39 +421,38 @@ mod tests {
 
     #[test]
     fn a_room_tells_its_native_mods_with_their_settings() {
-        let room = with_native(
-            declaration(&["a", OWN_MOD]),
-            vec![big_maps("0.3.0+0123456789")],
-        );
+        let version = full_version("0.3.0", "0123456789", 'a');
+        let room = with_native(declaration(&["a", OWN_MOD]), vec![big_maps(&version)]);
         assert_eq!(room.validate(), Ok(()));
         let told = room.room_mods();
         assert_eq!(told.native[0].package_version(), "0.3.0");
+        assert_eq!(told.native[0].version.as_str().len(), 80);
         assert_eq!(told.manifest(), room.manifest);
         assert_eq!(told.manifest().fingerprint(), room.manifest.fingerprint());
     }
 
     #[test]
     fn native_mods_must_match_the_manifest_one_for_one() {
+        let version = full_version("0.3.0", "0123456789", 'a');
+        let other_version = full_version("0.3.1", "0123456789", 'b');
         // Told but not named.
         let mut room = declaration(&["a", OWN_MOD]);
-        room.room.native = vec![big_maps("0.3.0+0123456789")];
+        room.room.native = vec![big_maps(&version)];
         assert_eq!(room.validate(), Err(RoomModsError::Native));
         // Named in another version.
-        let mut room = with_native(
-            declaration(&["a", OWN_MOD]),
-            vec![big_maps("0.3.0+0123456789")],
-        );
-        room.room.native[0].version = Text::lossy("0.3.1+0123456789");
+        let mut room = with_native(declaration(&["a", OWN_MOD]), vec![big_maps(&version)]);
+        room.room.native[0].version = Text::lossy(&other_version);
         assert_eq!(room.validate(), Err(RoomModsError::Native));
         // An id the index could not have.
-        let mut odd = big_maps("1.0.0+00");
+        let bad_version = full_version("1.0.0", "0000000000", 'a');
+        let mut odd = big_maps(&bad_version);
         odd.id = Text::lossy("Big-Maps");
         assert_eq!(
             with_native(declaration(&[OWN_MOD]), vec![odd]).validate(),
             Err(RoomModsError::Native)
         );
         // Settings out of order or twice.
-        let mut twice = big_maps("1.0.0+00");
+        let mut twice = big_maps(&bad_version);
         twice.settings.push(twice.settings[0].clone());
         assert_eq!(
             with_native(declaration(&[OWN_MOD]), vec![twice]).validate(),
@@ -646,5 +651,76 @@ mod tests {
         assert!(encode_frame(&request, CONTROL_MAX_FRAME).is_ok());
         let told = ServerMessage::RoomMods(Some(Box::new(room.room_mods())));
         assert!(encode_frame(&told, CONTROL_MAX_FRAME).is_ok());
+    }
+
+    /// The 16-native cap still fits beside the full 256 ordinary mods when
+    /// every native term uses the maximum package version and full identity.
+    #[test]
+    fn max_native_identities_fit_room_declaration_and_control_frames() {
+        let native: Vec<NativeMod> = (0..MAX_NATIVE_TERMS)
+            .map(|n| NativeMod {
+                id: Text::new(format!("n{n:02}")).unwrap(),
+                version: Text::new(format!(
+                    "{}+{}{}",
+                    "v".repeat(crate::MAX_NATIVE_PACKAGE_VERSION),
+                    "a".repeat(10),
+                    "b".repeat(64)
+                ))
+                .unwrap(),
+                name: Text::new("n").unwrap(),
+                settings: Vec::new(),
+            })
+            .collect();
+        let ordinary_count = MAX_ROOM_MODS;
+        let mods: Vec<ModRef> = (0..ordinary_count - 1)
+            .map(|n| ModRef {
+                id: Text::new(format!("m{n}")).unwrap(),
+                version: Text::new("1").unwrap(),
+            })
+            .chain([ModRef {
+                id: Text::new(OWN_MOD).unwrap(),
+                version: Text::new("1").unwrap(),
+            }])
+            .collect();
+        let room = RoomDeclaration {
+            manifest: ContentManifest::new(Text::new("1").unwrap(), mods)
+                .with_native(native.iter().map(NativeMod::term).collect()),
+            room: RoomConfig {
+                info: (0..ordinary_count)
+                    .map(|_| ModInfo {
+                        name: Text::new("n").unwrap(),
+                        source: Text::new("").unwrap(),
+                        modio: None,
+                    })
+                    .collect(),
+                params: Vec::new(),
+                native,
+            },
+        };
+
+        assert_eq!(
+            room.manifest.mods.len() + room.manifest.native.len(),
+            MAX_ROOM_MODS + MAX_NATIVE_TERMS
+        );
+        assert_eq!(room.manifest.mods.len(), MAX_ROOM_MODS);
+        assert_eq!(room.manifest.native.len(), MAX_NATIVE_TERMS);
+        assert_eq!(room.validate(), Ok(()));
+        assert!(postcard::to_allocvec(&room).unwrap().len() <= MAX_ROOM_DECLARATION_BYTES);
+        let request = crate::ClientMessage::Request {
+            id: u32::MAX,
+            request: Request::DeclareRoom(Box::new(room.clone())),
+        };
+        assert!(encode_frame(&request, CONTROL_MAX_FRAME).is_ok());
+        let told = ServerMessage::RoomMods(Some(Box::new(room.room_mods())));
+        assert!(encode_frame(&told, CONTROL_MAX_FRAME).is_ok());
+
+        let mut too_many = room;
+        let extra = NativeMod {
+            id: Text::new("n16").unwrap(),
+            ..too_many.room.native[0].clone()
+        };
+        too_many.manifest.native.push(extra.term());
+        too_many.room.native.push(extra);
+        assert_eq!(too_many.validate(), Err(RoomModsError::Native));
     }
 }

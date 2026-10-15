@@ -66,6 +66,7 @@ pub(crate) mod original;
 pub mod perf;
 pub mod persons;
 mod platform;
+pub mod plugins;
 pub mod previewcancel;
 pub mod previews;
 pub mod probe;
@@ -139,6 +140,10 @@ pub fn bootstrap() {
             // rooms.
             if let Some(reason) = native_mods::decide(&profiles, &profile.build.sha256, &mut log) {
                 log.line(&format!("multiplayer disabled (fail-closed): {reason}"));
+            } else if let Err(reason) = native_mods::load_plugins(&profiles, &mut log) {
+                log.line(&format!(
+                    "multiplayer disabled (fail-closed): native mods' plugins: {reason}"
+                ));
             } else {
                 match install::install(&profile, &link_name, Logger::open(data_dir.as_deref())) {
                     install::Installed::Yes { step_rva } => log.line(&format!(

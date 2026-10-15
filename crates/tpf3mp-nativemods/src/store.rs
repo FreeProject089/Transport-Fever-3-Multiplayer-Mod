@@ -25,7 +25,7 @@
 #[cfg(feature = "install")]
 use std::time::Duration;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
 };
@@ -165,8 +165,33 @@ pub enum StoreError {
     Setting(String),
     #[error("native-mod path is unsafe or crosses a symbolic link: {0}")]
     UnsafePath(PathBuf),
+    #[error("{id} cannot be switched on: {why}")]
+    Clash { id: String, why: String },
     #[error("simulation-changing native mod {id} is not pinned to this game build ({build})")]
     SimulationPackageNotForBuild { id: String, build: String },
+}
+
+/// Whether a failed current-version change already made it to registry.json.
+/// Install replacement must keep the new folder when only old-version
+/// cleanup failed after that durable write.
+struct MakeCurrentError {
+    source: StoreError,
+    saved: bool,
+}
+
+impl From<StoreError> for MakeCurrentError {
+    fn from(source: StoreError) -> Self {
+        Self {
+            source,
+            saved: false,
+        }
+    }
+}
+
+impl From<MakeCurrentError> for StoreError {
+    fn from(error: MakeCurrentError) -> Self {
+        error.source
+    }
 }
 
 /// Every installed package.
@@ -464,24 +489,30 @@ impl Store {
             .registry
             .packages
             .get(&package.id)
-            .is_some_and(|i| i.versions.contains_key(&package.version));
-        if registered {
-            // The version kept for a rollback: in use again if it is whole,
-            // downloaded again if it is not.
-            if self.damaged(&folder, package)?.is_empty() {
-                return self.make_current(package);
-            }
-            remove_registered(&self.root, &folder, package)?;
-            if let Some(installed) = self.registry.packages.get_mut(&package.id) {
-                installed.versions.remove(&package.version);
-            }
-        } else if folder.exists() {
-            // Left by an install cut short after the rename: taken if it is
-            // exactly the package, refused otherwise.
-            if !self.damaged(&folder, package)?.is_empty() {
+            .and_then(|installed| installed.versions.get(&package.version))
+            .cloned();
+        let expected = package_file_set(package);
+        let present = package_file_set_on_disk(&self.root, &folder)?;
+        if let Some(old) = &registered {
+            // Every file already in this folder must have belonged to the
+            // registered package. In particular, a user file whose path was
+            // only added by the new manifest remains an extra and is never
+            // silently overwritten.
+            let old_files = package_file_set(old);
+            if !present.is_subset(&old_files) {
                 return Err(StoreError::Occupied(folder));
             }
-            return self.make_current(package);
+            if present == expected && self.damaged(&folder, package)?.is_empty() {
+                return self.make_current(package).map_err(StoreError::from);
+            }
+        } else if folder.exists() {
+            // An unregistered folder may be left by an interrupted install.
+            // Take it only when its complete file set and bytes are exactly
+            // those of the signed package.
+            if present != expected || !self.damaged(&folder, package)?.is_empty() {
+                return Err(StoreError::Occupied(folder));
+            }
+            return self.make_current(package).map_err(StoreError::from);
         }
         let partial = self
             .root
@@ -492,8 +523,16 @@ impl Store {
             ensure_no_symlink_tree(&self.root, &partial)?;
             fs::remove_dir_all(&partial)?;
         }
+        let backup = self
+            .root
+            .join(&package.id)
+            .join(format!("{PARTIAL}{}-previous", package.version));
+        ensure_no_symlink_path(&self.root, &backup)?;
+        if backup.exists() {
+            return Err(StoreError::Occupied(backup));
+        }
         fs::create_dir_all(&partial)?;
-        let downloaded = package.files.iter().try_for_each(|file| {
+        let downloaded = package.local_files().iter().try_for_each(|file| {
             let path = partial.join(&file.path);
             ensure_no_symlink_path(&self.root, &path)?;
             if let Some(parent) = path.parent() {
@@ -507,17 +546,53 @@ impl Store {
             return Err(error);
         }
         ensure_no_symlink_tree(&self.root, &partial)?;
+        if package_file_set_on_disk(&self.root, &partial)? != expected
+            || !self.damaged(&partial, package)?.is_empty()
+        {
+            let _ = remove_partial_tree(&self.root, &partial);
+            return Err(StoreError::Fetch(FetchError::Mismatch));
+        }
         ensure_no_symlink_path(&self.root, &folder)?;
-        if let Err(error) = fs::rename(&partial, &folder) {
+        let moved_old = registered.is_some() && folder.exists();
+        if moved_old && let Err(error) = fs::rename(&folder, &backup) {
             let _ = remove_partial_tree(&self.root, &partial);
             return Err(error.into());
         }
-        self.make_current(package)
+        if let Err(error) = fs::rename(&partial, &folder) {
+            if moved_old {
+                let _ = fs::rename(&backup, &folder);
+            }
+            let _ = remove_partial_tree(&self.root, &partial);
+            return Err(error.into());
+        }
+        let registry_before = self.registry.clone();
+        if let Err(error) = self.make_current(package) {
+            if error.saved {
+                // registry.json now describes the new bytes. Keep the new
+                // folder in place; restoring the backup would split the
+                // registry identity from the files it authenticates.
+                if moved_old {
+                    remove_partial_tree(&self.root, &backup)?;
+                }
+                return Err(error.source);
+            }
+            self.registry = registry_before;
+            let _ = fs::rename(&folder, &partial);
+            if moved_old {
+                let _ = fs::rename(&backup, &folder);
+            }
+            let _ = remove_partial_tree(&self.root, &partial);
+            return Err(error.source);
+        }
+        if moved_old {
+            remove_partial_tree(&self.root, &backup)?;
+        }
+        Ok(())
     }
 
     /// Records `package`, on disk, as its id's version in use, keeping the
     /// one before and deleting older ones.
-    fn make_current(&mut self, package: &Package) -> Result<(), StoreError> {
+    fn make_current(&mut self, package: &Package) -> Result<(), MakeCurrentError> {
         let prior_current = self
             .registry
             .packages
@@ -571,11 +646,16 @@ impl Store {
         }
         self.save()?;
         for package in old {
-            remove_registered(
+            if let Err(source) = remove_registered(
                 &self.root,
                 &self.folder(&package.id, &package.version),
                 &package,
-            )?;
+            ) {
+                return Err(MakeCurrentError {
+                    source,
+                    saved: true,
+                });
+            }
         }
         Ok(())
     }
@@ -647,15 +727,8 @@ impl Store {
             .and_then(|v| installed.versions.get(v))
             .ok_or_else(|| StoreError::NoPrevious(id.to_owned()))?
             .clone();
-        let damaged = self.damaged(&self.folder(id, &previous.version), &previous)?;
-        if !damaged.is_empty() {
-            return Err(StoreError::Damaged {
-                id: id.to_owned(),
-                version: previous.version,
-                files: damaged,
-            });
-        }
-        self.make_current(&previous)
+        self.verify_package(&self.folder(id, &previous.version), &previous)?;
+        self.make_current(&previous).map_err(StoreError::from)
     }
 
     /// Checks the files of the version of `id` in use.
@@ -666,26 +739,139 @@ impl Store {
             .get(id)
             .and_then(Installed::package)
             .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?;
-        let damaged = self.damaged(&self.folder(id, &package.version), package)?;
-        if damaged.is_empty() {
-            Ok(())
-        } else {
-            Err(StoreError::Damaged {
-                id: id.to_owned(),
-                version: package.version.clone(),
-                files: damaged,
-            })
-        }
+        self.verify_package(&self.folder(id, &package.version), package)
     }
 
     /// Switches `id` on or off for the next game.
     pub fn set_enabled(&mut self, id: &str, on: bool) -> Result<(), StoreError> {
+        self.set_enabled_in(features::BUILT_IN, id, on)
+    }
+
+    /// [`Store::set_enabled`] with the features in `registry`: switching a
+    /// package on whose features clash with those of one already on is
+    /// refused ([`enabled::first_clash`]).
+    pub fn set_enabled_in(
+        &mut self,
+        registry: &[features::FeatureSpec],
+        id: &str,
+        on: bool,
+    ) -> Result<(), StoreError> {
+        if on && let Some(why) = self.clash(registry, id) {
+            return Err(StoreError::Clash {
+                id: id.to_owned(),
+                why,
+            });
+        }
         self.registry
             .packages
             .get_mut(id)
             .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?
             .enabled = on;
         self.save()
+    }
+
+    /// Why the installed package `id` cannot be on beside those that are,
+    /// with the features in `registry`, if it cannot.
+    pub fn clash(&self, registry: &[features::FeatureSpec], id: &str) -> Option<String> {
+        let mine = self.registry.packages.get(id)?.package()?;
+        let others: Vec<(&str, &[String])> = self
+            .registry
+            .packages
+            .iter()
+            .filter(|(other, installed)| other.as_str() != id && installed.enabled)
+            .filter_map(|(other, installed)| {
+                installed
+                    .package()
+                    .map(|package| (other.as_str(), package.features.as_slice()))
+            })
+            .collect();
+        enabled::first_clash(registry, &mine.features, &others).or_else(|| {
+            self.registry
+                .packages
+                .iter()
+                .filter(|(other, installed)| other.as_str() != id && installed.enabled)
+                .find_map(|(other, installed)| {
+                    let theirs = installed.package()?;
+                    enabled::hooks_clash(&mine.hooks, &theirs.hooks)
+                        .map(|why| format!("it clashes with {other}: {why}"))
+                })
+        })
+    }
+
+    /// Puts the game mods of the packages on for `build` into the game's
+    /// `mods` folder (`mods_dir`), each a copy of its folder in the
+    /// package, and takes away those it put there before for packages no
+    /// longer on. A folder it put there holds [`GAME_MOD_MARK`]; one
+    /// without it is a player's own and is never touched: a package whose
+    /// game mod would take its name is refused. Returns what it did, for
+    /// the log.
+    pub fn sync_game_mods(&self, build: &str, mods_dir: &Path) -> Result<Vec<String>, StoreError> {
+        let mut wanted: BTreeMap<String, (PathBuf, &Package)> = BTreeMap::new();
+        for installed in self.registry.packages.values().filter(|i| i.enabled) {
+            let Some(package) = installed.package().filter(|p| p.runs_on(build)) else {
+                continue;
+            };
+            for folder in &package.game_mods {
+                let name = folder.trim_start_matches("mod/").to_owned();
+                let from = self.folder(&package.id, &package.version).join(folder);
+                wanted.insert(name, (from, package));
+            }
+        }
+        let mut done = Vec::new();
+        // Ours that are no longer wanted go first.
+        if let Ok(entries) = fs::read_dir(mods_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let path = entry.path();
+                if path.join(GAME_MOD_MARK).is_file() && !wanted.contains_key(&name) {
+                    fs::remove_dir_all(&path)?;
+                    done.push(format!("game mod {name} taken away"));
+                }
+            }
+        }
+        for (name, (from, package)) in wanted {
+            let to = mods_dir.join(&name);
+            let mark = format!("{} {}\n", package.id, package.version);
+            if to.exists() {
+                match fs::read_to_string(to.join(GAME_MOD_MARK)) {
+                    Ok(theirs) if theirs == mark => continue,
+                    Ok(_) => fs::remove_dir_all(&to)?,
+                    Err(_) => {
+                        return Err(StoreError::Occupied(to));
+                    }
+                }
+            }
+            copy_tree(&from, &to)?;
+            fs::write(to.join(GAME_MOD_MARK), mark)?;
+            done.push(format!(
+                "game mod {name} from {} {}",
+                package.id, package.version
+            ));
+        }
+        Ok(done)
+    }
+
+    /// The enabled packages, in the order the game switches them on
+    /// ([`enabled::load_order`]).
+    pub fn load_order(&self) -> Vec<String> {
+        let packages: Vec<(&str, Vec<&str>)> = self
+            .registry
+            .packages
+            .iter()
+            .filter(|(_, installed)| installed.enabled)
+            .filter_map(|(id, installed)| {
+                installed.package().map(|package| {
+                    (
+                        id.as_str(),
+                        package.depends.iter().map(|d| d.id.as_str()).collect(),
+                    )
+                })
+            })
+            .collect();
+        enabled::load_order(&packages)
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
     }
 
     /// Puts `id`'s settings back to its package's defaults.
@@ -723,12 +909,18 @@ impl Store {
     }
 
     /// The enabled packages for the game build hashing to `build`, with
-    /// their settings. An enabled package not for this build is left out,
-    /// with its id in the second list.
+    /// their settings. Every enabled package's listed bytes and complete
+    /// file set are verified before its identity is declared. An enabled
+    /// package not for this build is left out, with its id in the second
+    /// list.
     pub fn enabled_for(&self, build: &str) -> Result<(Enabled, Vec<String>), StoreError> {
         let mut packages = Vec::new();
         let mut left_out = Vec::new();
-        for (id, installed) in &self.registry.packages {
+        for id in self.load_order() {
+            let Some(installed) = self.registry.packages.get(&id) else {
+                continue;
+            };
+            let id = &id;
             let Some(package) = installed.package().filter(|_| installed.enabled) else {
                 continue;
             };
@@ -747,7 +939,7 @@ impl Store {
                 left_out.push(id.clone());
                 continue;
             }
-            check_package_paths(&self.root, &self.folder(id, &package.version), package)?;
+            self.verify_package(&self.folder(id, &package.version), package)?;
             let mut settings = package.settings.clone();
             settings.extend(installed.settings.clone());
             packages.push(EnabledPackage {
@@ -756,7 +948,20 @@ impl Store {
                 simulation: package.simulation,
                 features: package.features.clone(),
                 settings,
+                files_sha256: crate::terms::files_digest(&package.files),
+                depends: package.depends.clone(),
                 root: self.folder(id, &package.version),
+                plugins: crate::index::current_platform()
+                    .map(|platform| package.plugins_for(platform))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|plugin| enabled::EnabledPlugin {
+                        path: plugin.path.clone(),
+                        sha256: plugin.sha256.clone(),
+                        abi: plugin.abi,
+                    })
+                    .collect(),
+                hooks: package.hooks.clone(),
             });
         }
         Ok((
@@ -786,12 +991,27 @@ impl Store {
     fn damaged(&self, folder: &Path, package: &Package) -> Result<Vec<String>, StoreError> {
         check_package_paths(&self.root, folder, package)?;
         let mut damaged = Vec::new();
-        for file in &package.files {
+        for file in &package.local_files() {
             if !fetch::file_matches(&folder.join(&file.path), file.size, &file.sha256)? {
                 damaged.push(file.path.clone());
             }
         }
         Ok(damaged)
+    }
+
+    fn verify_package(&self, folder: &Path, package: &Package) -> Result<(), StoreError> {
+        let damaged = self.damaged(folder, package)?;
+        if !damaged.is_empty() {
+            return Err(StoreError::Damaged {
+                id: package.id.clone(),
+                version: package.version.clone(),
+                files: damaged,
+            });
+        }
+        if package_file_set_on_disk(&self.root, folder)? != package_file_set(package) {
+            return Err(StoreError::Occupied(folder.to_owned()));
+        }
+        Ok(())
     }
 
     fn save(&self) -> Result<(), StoreError> {
@@ -809,7 +1029,7 @@ impl Store {
 fn remove_registered(root: &Path, folder: &Path, package: &Package) -> Result<(), StoreError> {
     check_package_paths(root, folder, package)?;
     let mut dirs = Vec::new();
-    for file in &package.files {
+    for file in &package.local_files() {
         let path = folder.join(&file.path);
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -953,15 +1173,86 @@ fn ensure_no_symlink_path(root: &Path, path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// The file in a game mod's folder that says the launcher put it there,
+/// and from which package.
+pub const GAME_MOD_MARK: &str = ".tpf3mp-native-mod";
+
+/// Copies the folder `from` to `to`, files and folders, no links.
+fn copy_tree(from: &Path, to: &Path) -> Result<(), StoreError> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        let target = to.join(entry.file_name());
+        if kind.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else if kind.is_file() {
+            fs::copy(entry.path(), &target)?;
+        } else {
+            return Err(StoreError::UnsafePath(entry.path()));
+        }
+    }
+    Ok(())
+}
+
 fn check_package_paths(root: &Path, folder: &Path, package: &Package) -> Result<(), StoreError> {
     ensure_no_symlink_path(root, folder)?;
-    for file in &package.files {
+    for file in &package.local_files() {
         if !index::is_safe_path(&file.path) {
             return Err(StoreError::UnsafePath(folder.join(&file.path)));
         }
         ensure_no_symlink_path(root, &folder.join(&file.path))?;
     }
     Ok(())
+}
+
+/// The paths a package's signed manifest names, case-folded as Windows does.
+fn package_file_set(package: &Package) -> BTreeSet<String> {
+    package
+        .files
+        .iter()
+        .map(|file| file.path.to_ascii_lowercase())
+        .collect()
+}
+
+/// Regular files physically present in a package folder, case-folded as
+/// Windows does. Links and special files are refused before being followed.
+fn package_file_set_on_disk(root: &Path, folder: &Path) -> Result<BTreeSet<String>, StoreError> {
+    ensure_no_symlink_tree(root, folder)?;
+    let metadata = match fs::symlink_metadata(folder) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(error) => return Err(error.into()),
+    };
+    if !metadata.is_dir() {
+        return Err(StoreError::Occupied(folder.to_owned()));
+    }
+
+    let mut files = BTreeSet::new();
+    let mut directories = vec![folder.to_owned()];
+    while let Some(directory) = directories.pop() {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                directories.push(path);
+            } else if kind.is_file() {
+                let relative = path
+                    .strip_prefix(folder)
+                    .map_err(|_| StoreError::UnsafePath(path.clone()))?;
+                files.insert(
+                    relative
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .to_ascii_lowercase(),
+                );
+            } else {
+                return Err(StoreError::Occupied(path));
+            }
+        }
+    }
+    Ok(files)
 }
 
 fn ensure_no_symlink_tree(root: &Path, folder: &Path) -> Result<(), StoreError> {
@@ -1430,6 +1721,81 @@ mod tests {
     }
 
     #[test]
+    fn a_same_version_install_replaces_removed_files_and_preserves_untracked_extras() {
+        const RENAMED: &[(&str, &[u8])] = &[
+            ("mod/tpf3mp_bigmap_1/mod.lua", b"-- version 1"),
+            ("data/renamed.toml", b"renamed = true"),
+        ];
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("native-mods");
+        let folder = root.join("bigmap/1.0.0");
+        let served = Served::default();
+        served.serve("bigmap", "1.0.0", V1);
+        served.serve("bigmap", "1.0.0", RENAMED);
+        let old_index = index(vec![package("bigmap", "1.0.0", V1)]);
+        let new_index = index(vec![package("bigmap", "1.0.0", RENAMED)]);
+        let mut store = Store::open(&root).unwrap();
+        store
+            .install(context(&old_index), "bigmap", &served)
+            .unwrap();
+
+        let user_file = folder.join("data/renamed.toml");
+        fs::write(&user_file, b"keep this").unwrap();
+        assert!(matches!(
+            store.install_exact(context(&new_index), "bigmap", "1.0.0", &served),
+            Err(StoreError::Occupied(_))
+        ));
+        assert_eq!(fs::read(&user_file).unwrap(), b"keep this");
+        assert!(folder.join("data/sizes.toml").exists());
+
+        fs::remove_file(user_file).unwrap();
+        store
+            .install_exact(context(&new_index), "bigmap", "1.0.0", &served)
+            .unwrap();
+
+        assert_eq!(
+            tree(&folder),
+            [
+                "data",
+                "data/renamed.toml",
+                "mod",
+                "mod/tpf3mp_bigmap_1",
+                "mod/tpf3mp_bigmap_1/mod.lua"
+            ]
+        );
+        assert!(!folder.join("data/sizes.toml").exists());
+        assert_eq!(
+            store.registry().packages["bigmap"].package().unwrap().files,
+            package("bigmap", "1.0.0", RENAMED).files
+        );
+        store.verify("bigmap").unwrap();
+    }
+
+    #[test]
+    fn enabled_files_must_still_match_their_signed_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let served = Served::default();
+        served.serve("bigmap", "1.0.0", V1);
+        let index = index(vec![package("bigmap", "1.0.0", V1)]);
+        let mut store = Store::open(dir.path()).unwrap();
+        store.install(context(&index), "bigmap", &served).unwrap();
+        store.set_enabled("bigmap", true).unwrap();
+        fs::write(
+            store.folder("bigmap", "1.0.0").join("data/sizes.toml"),
+            b"tampered simulation data",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            store.write_enabled(BUILD),
+            Err(StoreError::Damaged { id, files, .. })
+                if id == "bigmap" && files == ["data/sizes.toml"]
+        ));
+        assert!(!dir.path().join(enabled::FILE).exists());
+    }
+
+    #[test]
     fn the_hook_gets_the_enabled_packages_for_its_build_with_settings() {
         let dir = tempfile::tempdir().unwrap();
         let served = Served::default();
@@ -1473,6 +1839,134 @@ mod tests {
             store.write_enabled(OTHER_BUILD),
             Err(StoreError::SimulationPackageNotForBuild { .. })
         ));
+    }
+
+    #[test]
+    fn packages_load_after_their_dependencies_and_never_clash() {
+        use crate::features::{FeatureSpec, replace};
+        const REGISTRY: &[FeatureSpec] = &[
+            FeatureSpec {
+                id: "base.own",
+                effect: Effect::Ui,
+                targets: &[replace("ui::page")],
+            },
+            FeatureSpec {
+                id: "other.own",
+                effect: Effect::Ui,
+                targets: &[replace("ui::page")],
+            },
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::open(dir.path()).unwrap();
+        let mut add = |id: &str, depends: &[&str], features: &[&str]| {
+            let mut package = package(id, "1.0.0", &[]);
+            package.simulation = false;
+            package.features = features.iter().map(|f| (*f).to_owned()).collect();
+            package.depends = depends
+                .iter()
+                .map(|d| Dependency {
+                    id: (*d).to_owned(),
+                    version: "*".into(),
+                })
+                .collect();
+            store.registry.packages.insert(
+                id.to_owned(),
+                Installed {
+                    current: "1.0.0".into(),
+                    previous: None,
+                    enabled: false,
+                    settings: BTreeMap::new(),
+                    versions: BTreeMap::from([("1.0.0".to_owned(), package)]),
+                },
+            );
+        };
+        add("aaa_needs", &["zzz_base"], &[]);
+        add("zzz_base", &[], &["base.own"]);
+        add("mmm_other", &[], &["other.own"]);
+        store.set_enabled_in(REGISTRY, "aaa_needs", true).unwrap();
+        store.set_enabled_in(REGISTRY, "zzz_base", true).unwrap();
+        assert_eq!(store.load_order(), ["zzz_base", "aaa_needs"]);
+        let (list, _) = store.enabled_for(BUILD).unwrap();
+        let ids: Vec<&str> = list.packages.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["zzz_base", "aaa_needs"],
+            "the game gets them in that order"
+        );
+
+        // Both take the page over: the second is refused, and says why.
+        assert!(store.clash(REGISTRY, "mmm_other").is_some());
+        let refused = store.set_enabled_in(REGISTRY, "mmm_other", true);
+        assert!(
+            matches!(&refused, Err(StoreError::Clash { id, why }) if id == "mmm_other" && why.contains("zzz_base")),
+            "{refused:?}"
+        );
+        assert!(!store.registry.packages["mmm_other"].enabled);
+        // Switching off is never refused; then the other may go on.
+        store.set_enabled_in(REGISTRY, "zzz_base", false).unwrap();
+        store.set_enabled_in(REGISTRY, "mmm_other", true).unwrap();
+    }
+
+    #[test]
+    fn game_mods_go_into_the_games_mods_while_their_package_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let served = Served::default();
+        let files: &[(&str, &[u8])] = &[
+            ("mod/tpf3mp_bigmap_1/mod.lua", b"-- big"),
+            ("mod/tpf3mp_bigmap_1/content/gui/page.tl", b"-- page"),
+        ];
+        served.serve("bigmap", "0.3.0", files);
+        let mut package = big_maps();
+        package.files = files
+            .iter()
+            .map(|(path, bytes)| FileEntry {
+                path: (*path).to_owned(),
+                url: url_of("bigmap", "0.3.0", path),
+                size: bytes.len() as u64,
+                sha256: crate::signed::sha256_hex(bytes),
+            })
+            .collect();
+        package.game_mods = vec!["mod/tpf3mp_bigmap_1".into()];
+        assert_eq!(package.validate(), Ok(()));
+        let index = index(vec![package]);
+        let mut store = Store::open(dir.path().join("native")).unwrap();
+        store.install(context(&index), "bigmap", &served).unwrap();
+        let mods = dir.path().join("game").join("mods");
+        fs::create_dir_all(mods.join("players_own_1")).unwrap();
+
+        assert!(
+            store.sync_game_mods(BUILD, &mods).unwrap().is_empty(),
+            "not on yet"
+        );
+        store.set_enabled("bigmap", true).unwrap();
+        let done = store.sync_game_mods(BUILD, &mods).unwrap();
+        assert_eq!(done, ["game mod tpf3mp_bigmap_1 from bigmap 0.3.0"]);
+        assert_eq!(
+            fs::read(mods.join("tpf3mp_bigmap_1/content/gui/page.tl")).unwrap(),
+            b"-- page"
+        );
+        assert!(
+            store.sync_game_mods(BUILD, &mods).unwrap().is_empty(),
+            "already there"
+        );
+
+        store.set_enabled("bigmap", false).unwrap();
+        let done = store.sync_game_mods(BUILD, &mods).unwrap();
+        assert_eq!(done, ["game mod tpf3mp_bigmap_1 taken away"]);
+        assert!(!mods.join("tpf3mp_bigmap_1").exists());
+        assert!(
+            mods.join("players_own_1").exists(),
+            "a player's own is never touched"
+        );
+
+        // A player's own of the same name: refused, and left alone.
+        fs::create_dir_all(mods.join("tpf3mp_bigmap_1")).unwrap();
+        store.set_enabled("bigmap", true).unwrap();
+        assert!(matches!(
+            store.sync_game_mods(BUILD, &mods),
+            Err(StoreError::Occupied(_))
+        ));
+        assert!(mods.join("tpf3mp_bigmap_1").exists());
     }
 
     #[test]
