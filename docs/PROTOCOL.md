@@ -268,9 +268,13 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   that version from the project's signed index with those settings
   (never from another player). The room refuses a declaration whose
   native mods do not match its manifest's one for one (`InvalidContent`).
-  The log's layout is unchanged (format 8): it keeps the native mods after
-  the mods under their `native:` ids, and a restored game tells them again
-  by id and version, without their settings.
+  An owner cannot start a game with native terms until its valid room
+  declaration supplies their settings.
+  The room log's start record (format 9) keeps each native mod's full
+  settings beside the manifest terms, and a restored game tells new members
+  the same settings. Native-free format-8 logs remain readable. A format-8
+  log that names native mods is refused and kept for diagnosis because its
+  settings were not recorded.
 - **Starting.** In the lobby, members declare their content and toggle
   **ready**. The owner can start the game only when every member is ready,
   all fingerprints are equal, and the world the owner handed over, if any,
