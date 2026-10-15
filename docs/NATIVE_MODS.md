@@ -374,10 +374,12 @@ room's owner also tells the room every setting of each (`RoomConfig::native`,
 4. The lobby lists the room's native mods with whether this game runs each
    alike, and offers **Get the room's native mods** when an attempt failed.
 
-A room restored after a server restart keeps its terms in its log (format
-8, unchanged: the native mods follow the mods under their `native:` ids),
-but not their settings: a member whose launcher must install one then runs
-it with its defaults, and matches only if those are the room's.
+A room restored after a server restart keeps its native mods and their full
+settings in the start record (format 9), so a new member's launcher installs
+and enables the exact room terms. Native-free format-8 logs remain
+recoverable. A format-8 log that names native mods is refused and preserved
+for diagnosis because its settings were never recorded; recovery does not
+invent defaults.
 
 Mods from Mod Hub are not native mods: players get those through their own
 game and Mod Hub account (D28).

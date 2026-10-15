@@ -29,8 +29,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tpf3mp_proto::{
-    ContentFingerprint, ContentManifest, ModRef, NATIVE_PREFIX, Platform, PlayerId, RoomId,
-    RoomSettings, RulesName, Speed, TURN_MAX_FRAME, Text, Unlisted,
+    ContentFingerprint, ContentManifest, ModRef, NATIVE_PREFIX, NativeMod, Platform, PlayerId,
+    RoomId, RoomSettings, RulesName, Speed, TURN_MAX_FRAME, Text, Unlisted,
 };
 
 /// Version of the log's layout. Version 2 added histories: the start
@@ -42,8 +42,12 @@ use tpf3mp_proto::{
 /// played by, and version 6 the game's content manifest. Version 7's
 /// invite tag is of the room's six-character code alone. Version 8's
 /// commands carry the seal of a password sent with them (protocol 8), never
-/// the password.
-pub(crate) const FORMAT_VERSION: u16 = 8;
+/// the password. Version 9 keeps the native mods' full settings alongside
+/// their manifest terms, so a recovered room tells new members the exact
+/// settings rather than inventing defaults. Version 8 remains readable
+/// only when its manifest has no native mods.
+pub(crate) const FORMAT_VERSION: u16 = 9;
+pub(crate) const LEGACY_NATIVE_FREE_FORMAT_VERSION: u16 = 8;
 /// Largest start record: one whose base holds the rules' state.
 const MAX_START_RECORD: usize = 16 << 20;
 /// Largest record after the start record: a turn frame at its cap. Kept
@@ -77,6 +81,83 @@ pub(crate) struct StartRecord {
     pub(crate) members: Vec<StartMember>,
     /// For a compacted log, the game's state before its first turn.
     pub(crate) base: Option<Base>,
+    /// Full room declarations for native mods.
+    pub(crate) native_mods: Vec<NativeMod>,
+}
+
+/// The released/dev format-8 start-record layout, before native settings
+/// were persisted. Keep this decoder explicit because postcard sequences
+/// cannot apply serde defaults to a missing trailing field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StartRecordV8 {
+    version: u16,
+    history: u64,
+    id: RoomId,
+    name: Text<48>,
+    rules: RulesName,
+    manifest: Option<StoredManifest>,
+    owner: PlayerId,
+    max_players: u8,
+    settings: RoomSettings,
+    invite_tag: Vec<u8>,
+    password_tag: Option<Vec<u8>>,
+    members: Vec<StartMember>,
+    base: Option<Base>,
+}
+
+impl From<StartRecordV8> for StartRecord {
+    fn from(old: StartRecordV8) -> Self {
+        Self {
+            version: old.version,
+            history: old.history,
+            id: old.id,
+            name: old.name,
+            rules: old.rules,
+            manifest: old.manifest,
+            owner: old.owner,
+            max_players: old.max_players,
+            settings: old.settings,
+            invite_tag: old.invite_tag,
+            password_tag: old.password_tag,
+            members: old.members,
+            base: old.base,
+            native_mods: Vec::new(),
+        }
+    }
+}
+
+pub(crate) fn deserialize_start(
+    payload: &[u8],
+    version: u16,
+) -> Result<StartRecord, postcard::Error> {
+    match version {
+        FORMAT_VERSION => postcard::from_bytes(payload),
+        LEGACY_NATIVE_FREE_FORMAT_VERSION => {
+            postcard::from_bytes::<StartRecordV8>(payload).map(StartRecord::from)
+        }
+        _ => unreachable!("the caller checks supported start-record versions"),
+    }
+}
+
+/// Encodes the prior start-record layout for backward-compatibility tests.
+#[cfg(test)]
+pub(crate) fn format8_payload(start: &StartRecord) -> Vec<u8> {
+    let legacy = StartRecordV8 {
+        version: start.version,
+        history: start.history,
+        id: start.id,
+        name: start.name.clone(),
+        rules: start.rules.clone(),
+        manifest: start.manifest.clone(),
+        owner: start.owner,
+        max_players: start.max_players,
+        settings: start.settings,
+        invite_tag: start.invite_tag.clone(),
+        password_tag: start.password_tag.clone(),
+        members: start.members.clone(),
+        base: start.base.clone(),
+    };
+    postcard::to_stdvec(&legacy).expect("format-8 fixture serializes")
 }
 
 /// A running game's state after a turn, which a compacted log starts from
@@ -441,6 +522,12 @@ impl From<&ContentManifest> for StoredManifest {
 }
 
 impl StoredManifest {
+    pub(crate) fn has_native_terms(&self) -> bool {
+        self.mods
+            .iter()
+            .any(|listed| listed.id.as_str().starts_with(NATIVE_PREFIX))
+    }
+
     /// The manifest kept. A mod named as a native one is taken as one: a
     /// game that declared such a mod among its mods gets another
     /// fingerprint back, and the room then tells nothing from it.
@@ -460,7 +547,10 @@ impl StoredManifest {
 
 #[cfg(test)]
 mod tests {
-    use tpf3mp_proto::FixedBytes;
+    use std::collections::BTreeMap;
+
+    use tpf3mp_nativemods::{index::Setting, terms::settings_digest};
+    use tpf3mp_proto::{ContentManifest, FixedBytes, ModRef, NativeSetting, NativeValue};
 
     use super::*;
 
@@ -512,7 +602,63 @@ mod tests {
             password_tag: None,
             members: Vec::new(),
             base: None,
+            native_mods: Vec::new(),
         }
+    }
+
+    fn native_declaration() -> (ContentManifest, NativeMod) {
+        let settings = vec![NativeSetting {
+            key: Text::new("radius").unwrap(),
+            value: NativeValue::Int(37),
+        }];
+        let settings_map = BTreeMap::from([("radius".to_owned(), Setting::Int(37))]);
+        let version =
+            Text::new(format!("1.2.3+{}", &settings_digest(&settings_map)[..10])).unwrap();
+        let term = ModRef {
+            id: Text::new("native:bigmap").unwrap(),
+            version: version.clone(),
+        };
+        let manifest = ContentManifest::new(
+            Text::new("40420").unwrap(),
+            vec![ModRef {
+                id: Text::new("tpf3mp_1").unwrap(),
+                version: Text::new("1.0.0").unwrap(),
+            }],
+        )
+        .with_native(vec![term]);
+        let native = NativeMod {
+            id: Text::new("bigmap").unwrap(),
+            version,
+            name: Text::new("Big Maps").unwrap(),
+            settings,
+        };
+        (manifest, native)
+    }
+
+    #[test]
+    fn format9_start_record_keeps_non_default_native_settings() {
+        let (manifest, native) = native_declaration();
+        let mut start = start();
+        start.manifest = Some(StoredManifest::from(&manifest));
+        start.native_mods = vec![native.clone()];
+        let bytes = postcard::to_stdvec(&start).unwrap();
+        let restored = deserialize_start(&bytes, FORMAT_VERSION).unwrap();
+        assert_eq!(restored.version, FORMAT_VERSION);
+        assert_eq!(restored.native_mods, [native]);
+        assert_eq!(
+            restored.manifest.unwrap().manifest().fingerprint(),
+            manifest.fingerprint()
+        );
+    }
+
+    #[test]
+    fn format8_native_free_start_uses_the_legacy_layout() {
+        let mut start = start();
+        start.version = LEGACY_NATIVE_FREE_FORMAT_VERSION;
+        let bytes = format8_payload(&start);
+        let restored = deserialize_start(&bytes, LEGACY_NATIVE_FREE_FORMAT_VERSION).unwrap();
+        assert_eq!(restored.version, LEGACY_NATIVE_FREE_FORMAT_VERSION);
+        assert!(restored.native_mods.is_empty());
     }
 
     fn read_all(path: &Path) -> Result<(LogReader, Vec<Vec<u8>>), LogError> {
