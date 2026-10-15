@@ -213,6 +213,32 @@ Test "installs into a mods folder given when Steam's folder is on a share that c
     Check ((Read-File "$($s.Mods)\tpf3mp_1\res\x.lua") -eq '-- x') 'the mod installed'
 }
 
+Test 'does not treat an unexpected Steam path inspection error as a missing path' {
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($Installer, [ref]$tokens, [ref]$parseErrors)
+    $helper = $ast.Find({ param($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+        $node.Name -eq 'Test-LibraryPath'
+    }, $true)
+    . ([scriptblock]::Create($helper.Extent.Text))
+
+    $oldFunction = Get-Item Function:\Test-Path -ErrorAction SilentlyContinue
+    Set-Item Function:\Test-Path -Value {
+        throw [System.IO.IOException]::new('Inspection failed.', [System.ComponentModel.Win32Exception]::new(5))
+    }
+    try {
+        $propagated = $false
+        try { $null = Test-LibraryPath 'C:\private\Steam' Container }
+        catch [System.IO.IOException] { $propagated = $true }
+        Check $propagated 'an unexpected path inspection error propagates'
+    }
+    finally {
+        if ($oldFunction) { Set-Item Function:\Test-Path -Value $oldFunction.ScriptBlock }
+        else { Remove-Item Function:\Test-Path -ErrorAction SilentlyContinue }
+    }
+}
+
 Test 'says when Steam has no mods folder for the game yet' {
     $s = New-Setup 'fresh'
     Remove-Item -Recurse "$($s.Steam)\userdata"
@@ -240,6 +266,12 @@ function Assert-OpenFileRefused($Setup) {
     Assert-Code (Invoke-Installer $Setup @()) 0
     Write-File "$($Setup.Package)\mod\tpf3mp_1\mod.lua" '-- new'
     $open = [IO.File]::Open("$($Setup.Mods)\tpf3mp_1\res\x.lua", 'Open', 'Read', 'Read')
+    $backupRoot = Join-Path $Setup.Data 'TPF3-MP\backups'
+    $backupRootExistedBefore = Test-Path -LiteralPath $backupRoot -PathType Container
+    $backupNamesBefore = @()
+    if ($backupRootExistedBefore) {
+        $backupNamesBefore = @(Get-ChildItem -LiteralPath $backupRoot -Directory | Select-Object -ExpandProperty Name)
+    }
     try {
         foreach ($uninstall in @($false, $true)) {
             $result = Invoke-Installer $Setup @(if ($uninstall) { '-Uninstall' })
@@ -249,6 +281,12 @@ function Assert-OpenFileRefused($Setup) {
             Check ((Read-File "$($Setup.Mods)\tpf3mp_1\mod.lua") -eq '-- mod') "the installed mod untouched (uninstall: $uninstall)"
             Check (Test-Path "$($Setup.Mods)\tpf3mp_1\res\x.lua") "the open file still there (uninstall: $uninstall)"
             Check (Test-Path $Setup.Record) 'the record kept'
+            Check ((Test-Path -LiteralPath $backupRoot -PathType Container) -eq $backupRootExistedBefore) "backup folder existence unchanged (uninstall: $uninstall)"
+            $backupNamesAfter = @()
+            if ($backupRootExistedBefore) {
+                $backupNamesAfter = @(Get-ChildItem -LiteralPath $backupRoot -Directory | Select-Object -ExpandProperty Name)
+            }
+            Check (($backupNamesAfter -join '|') -eq ($backupNamesBefore -join '|')) "no backup directory left by the refused move (uninstall: $uninstall)"
         }
     }
     finally {
