@@ -300,7 +300,11 @@ the hook):
   demonstrated crosswalk toggles, a lane-connection change and traffic
   lights with matching network checkpoints. Custom phases/reset,
   geometry preservation and the remaining HOOKS.md acceptance checks
-  are still required before enabling it.
+  are still required before enabling it. *Added (2026-10-15, proposed
+  in the PR, for the owner):* with the switch off, two edits go already
+  (BUILDING.md, "Junction edits"): a double slip switch, seen in a
+  two-game room on build 40420, and the crossing tool's tram lanes, not
+  yet seen in the game; a regression scenario `slip_and_tram`.
 - [ ] Line priority per line; loading rules per station or line.
 - [ ] The new click-to-assign line creation: a new UI flow, captured from
   scratch.

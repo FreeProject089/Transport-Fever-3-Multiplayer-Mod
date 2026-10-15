@@ -1799,13 +1799,27 @@ fn a_double_slip_switch_and_tram_lanes_go_through_the_room_before_the_junction_a
     let game = narrow_game(0, false);
     game.load(
         r#"
-        api.engine.system.streetSystem.getNodeTrackSegments = function(n)
+        local system = api.engine.system.streetSystem
+        system.getNodeTrackSegments = function(n)
             if n == 1 then return {101,102,103,104} end
             return {}
         end
+        -- The junction window sets the preference to No with the switch:
+        -- only where no street joins the node.
+        local function slipNo(c) c.doubleSlipSwitch=true c.trafficLightPreference=2 end
+        local ok, why = pcall(EDIT, slipNo)
+        assert(not ok and tostring(why):find('preference',1,true), tostring(why))
+        local streets = system.getNodeStreetSegments
+        system.getNodeStreetSegments = function() return {} end
+        assert(EDIT(slipNo))
+        ok, why = pcall(EDIT, function(c) c.trafficLightPreference=2 end)
+        assert(not ok and tostring(why):find('preference',1,true), tostring(why))
+        ok, why = pcall(EDIT, function(c) slipNo(c) c.userModifiedTrafficLightStates=true end)
+        assert(not ok and tostring(why):find('traffic lights',1,true), tostring(why))
+        system.getNodeStreetSegments = streets
         local lane = {segment0=101,lane0=1,segment1=103,lane1=0,withRoad=false,withTram=false}
         assert(EDIT(function(c) c.doubleSlipSwitch=true c.laneConnections[3]=lane end))
-        local ok, why = pcall(EDIT, function(c) c.laneConnections[3]=lane end)
+        ok, why = pcall(EDIT, function(c) c.laneConnections[3]=lane end)
         assert(not ok and tostring(why):find('neither a tram',1,true), tostring(why))
         -- Turned on, it takes no track lane away; turned off, it may.
         CONFIGS[1].laneConnections[3] = lane
@@ -5912,9 +5926,10 @@ fn the_game_script_builds_a_road_as_the_players_tool_would() {
          +e-1/0:7>-5 ::/street/town_small.street_template \
          +e-2/0:-5>-6 ::/street/town_small.street_template \
          +e-3/0:8>-5 ::/street/country.street_template \
-         +e-4/0:-5>9 ::/street/country.street_template -e100 -n -c8,9",
+         +e-4/0:-5>9 ::/street/country.street_template -e100 -n -c8,9 \
+         +j8{lanes 0 tram 0} +j9{lanes 0 tram 0}",
         "applied, and what was sent in the log: the split street's ends lose their lane \
-         configurations with it"
+         configurations with it, and get them back"
     );
     let built: String = lua
         .load(

@@ -254,15 +254,21 @@ end
 -- taken (the crossing tool's tram mode: a tram track joined to a railway).
 -- Everything else at the node must stay as it is; lanes do not change under
 -- traffic light phases, whose indices address their order.
-local function narrowWhyNot(old, new)
+local function narrowWhyNot(old, new, streetless)
 	if new == nil then return "a reset of a junction's settings" end
 	if old == nil then return "a junction with no settings yet" end
-	if old.preference ~= new.preference or old.light ~= new.light or old.custom_phases ~= new.custom_phases then
-		return "a change of its traffic lights"
+	local slip = old.double_slip ~= new.double_slip
+	-- The junction window sets the preference to No with the switch (seen
+	-- in the game, build 40420: Auto to No); at a node with no street a
+	-- light has nothing to stop, so there it may change with the switch.
+	local preference = old.preference == new.preference or (slip and streetless)
+	if not preference or old.light ~= new.light or old.custom_phases ~= new.custom_phases then
+		return string.format("a change of its traffic lights (preference %s>%s, light %s>%s, custom phases %s>%s)",
+			tostring(old.preference), tostring(new.preference), tostring(old.light), tostring(new.light),
+			tostring(old.custom_phases), tostring(new.custom_phases))
 	end
 	if table.concat(old.walks, ",") ~= table.concat(new.walks, ",") then return "a change of its crosswalks" end
 	if table.concat(old.phases, ";") ~= table.concat(new.phases, ";") then return "a change of its traffic light phases" end
-	local slip = old.double_slip ~= new.double_slip
 	-- A double slip switch has the turns of a single one and more: turned
 	-- on it only adds track lanes, turned off it only takes them away.
 	local function slipLane(t, added)
@@ -300,13 +306,19 @@ end
 function junctions.requireNarrow(node, config, source)
 	if junctions.strict_junctions then return end
 	local api = source or api
-	local tracks = {}
+	local tracks, streetless = {}, false
 	if node >= 0 then
-		for _, id in ipairs(list(api.engine.system.streetSystem.getNodeTrackSegments(node))) do tracks[id] = true end
+		local system = api.engine.system.streetSystem
+		for _, id in ipairs(list(system.getNodeTrackSegments(node))) do tracks[id] = true end
+		streetless = next(tracks) ~= nil and #list(system.getNodeStreetSegments(node)) == 0
 	end
 	local old = node >= 0 and component(node, "BASE_NODE_CONFIG", api) or nil
-	local why = narrowWhyNot(old and plain(old, tracks), config and plain(config, tracks))
-	if why then error(AWAITING .. ": " .. why, 0) end
+	local before, after = old and plain(old, tracks), config and plain(config, tracks)
+	local why = narrowWhyNot(before, after, streetless)
+	if why then
+		local turns = function(c) return c and tostring(#c.order) or "-" end
+		error(AWAITING .. ": " .. why .. " (lanes " .. turns(before) .. ">" .. turns(after) .. ")", 0)
+	end
 end
 
 function junctions.edit(proposal)

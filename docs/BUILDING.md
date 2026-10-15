@@ -803,12 +803,23 @@ put in with the one its own game has at the node, entity by entity:
 Everything else at the node must stay as it is: preference, light,
 phases (compared in whole milliseconds, as the wire carries them), the
 custom-phase mark and crosswalks; no road connection may be
-added, removed or change its road. A reset, a node with no configuration
-yet, and lane changes at a junction with light phases (their locked
-indices address the lanes' order) are refused, as is an edit that
-changes neither. The refusal names what it saw, after the
-`strict_junctions` reason. Road and track builds carry their junction
-settings as before, unchecked by this. Tests cover native
+added, removed or change its road. One exception: the junction window
+sets the preference to No with the switch (seen on build 40420: Auto to
+No), and at a node no street joins, where a light has nothing to stop,
+the preference may change with the switch. A reset, a node with no
+configuration yet, and lane changes at a junction with light phases
+(their locked indices address the lanes' order) are refused, as is an
+edit that changes neither. The refusal names what it saw, after the
+`strict_junctions` reason, with the old and new light settings and the
+lanes' count. Road and track builds carry their junction settings as
+before, unchecked by this; the log's `handed the player's build` and
+`building` lines name each node's settings they carry (`+j<node>{lanes
+N tram M}`) and take out (`-j<node>`).
+
+Seen in two games on the local server on 2026-10-15 (Steam Windows
+40420): a double slip switch turned on at a track crossing in one game
+was carried as `EditJunctions` and applied in both, with matching
+checkpoints. The crossing tool's tram mode is not yet seen in the game. Tests cover native
 memory decoding, portable round trips into replicas with different IDs,
 curved-edge preservation, refusal cases and checkpoint differences. This
 is adapter evidence, not a completed real-game playtest. Follow the
