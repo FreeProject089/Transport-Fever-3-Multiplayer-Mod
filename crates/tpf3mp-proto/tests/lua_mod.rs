@@ -4814,7 +4814,7 @@ fn a_station_by_a_road_leaves_its_own_entrances_junction_settings_to_it() {
          local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
          ACTION = assert(capture.construction(PROPOSAL)) \
          assert(schema_check(ACTION)) \
-         assert(#ACTION.BuildConstruction.connection.junctions == 4, 'the four the tool proposed')"
+         assert(#ACTION.BuildConstruction.connection.junctions == 2, 'the street ends; the entrance stays with the station')"
     ))
     .exec()
     .unwrap_or_else(|error| panic!("{error}"));
@@ -4851,8 +4851,8 @@ fn a_station_by_a_road_leaves_its_own_entrances_junction_settings_to_it() {
     );
     assert_eq!(removed, "8,9", "the settings they replace go");
     assert!(
-        hook_log(&lua).contains("left to the construction: 2 junction(s): Street(50.0,0.0)"),
-        "{}",
+        !hook_log(&lua).contains("left to the construction"),
+        "the originator left them out already: {}",
         hook_log(&lua)
     );
 }
@@ -4998,8 +4998,69 @@ fn a_rail_station_leaves_its_own_tracks_junction_settings_to_it() {
         .eval()
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(
-        carried, "3|Track(300,0)",
-        "the snapped track and its setting; nothing of the platform track the station builds"
+        carried, "3",
+        "the snapped track; no setting on the station's own track, which every game leaves to it"
+    );
+}
+
+/// A joined station can have more than the 64 junction settings an action
+/// carries, mostly for switches on track the station builds itself. Capture
+/// leaves those settings with the construction before validating the action.
+#[test]
+fn a_large_station_does_not_send_its_own_switch_settings() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let joined = RAIL_STATION_OPEN.replace(
+        "{JOIN}",
+        ", { entity = -6, type = 1, comp = { node0 = -3, node1 = 8, type = 0, typeIndex = -1, \
+           tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+           roadTemplate = '::/track/standard.track_template', roadStyle = '' } }",
+    );
+    lua.load(format!("PROPOSAL = {joined}")).exec().unwrap();
+    let (valid, carried, links): (bool, usize, usize) = lua
+        .load(
+            r#"
+            local s = PROPOSAL.proposal
+            s.nodeConfigsToAdd = {}
+            for i = 1, 70 do
+                local node = -100 - i
+                s.addedNodes[#s.addedNodes + 1] = {
+                    entity = node,
+                    comp = { position = { x = 300 + i, y = 10, z = 0 } }
+                }
+                s.addedSegments[#s.addedSegments + 1] = {
+                    entity = -300 - i, type = 1,
+                    comp = {
+                        node0 = -3, node1 = node, type = 0, typeIndex = -1,
+                        tangent0 = { x = 1, y = 10, z = 0 },
+                        tangent1 = { x = 1, y = 10, z = 0 },
+                        roadTemplate = '::/track/standard.track_template', roadStyle = ''
+                    }
+                }
+                s.nodeConfigsToAdd[i] = {
+                    entity = node,
+                    comp = {
+                        trafficLightPreference = 0, doubleSlipSwitch = false,
+                        userModifiedTrafficLightStates = false,
+                        laneConnections = {}, crosswalks = {},
+                        trafficLightConfig = { trafficLightType = -1, states = {} }
+                    }
+                }
+            end
+            local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua')
+            local action, why = capture.construction(PROPOSAL)
+            if not action then error(why) end
+            local connection = action.BuildConstruction.connection
+            return schema_check(action), #connection.junctions, #connection.links
+            "#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(valid, "the action stays within its junction limit");
+    assert_eq!(carried, 0, "the station keeps its own switch settings");
+    assert!(
+        links >= 70,
+        "the captured network still represents the placement"
     );
 }
 

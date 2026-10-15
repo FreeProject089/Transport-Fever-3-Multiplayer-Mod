@@ -721,34 +721,36 @@ function apply.ownStreets(polyline)
 	return links, skipped
 end
 
+-- Leave the construction's own street and track junctions to its build.
+-- Both capture and replay use this rule, so the originator does not send
+-- settings for nodes and edges that no replica builds separately.
+function apply.ownJunctions(polyline)
+	local links, skipped = apply.ownStreets(polyline)
+	local keep, ownEdges, ownNodes = {}, {}, {}
+	for _, link in ipairs(links) do keep[link] = true end
+	local function place(i)
+		local p = arr(polyline.vertices[i + 1].pos)
+		return { x = p[1], y = p[2], z = p[3] }
+	end
+	for _, link in ipairs(polyline.links) do
+		if not keep[link] then
+			local net = link.kind and link.kind.network
+			ownEdges[#ownEdges + 1] = { network = net, ends = { a = place(link.from), b = place(link.to) } }
+			for _, i in ipairs({ link.from, link.to }) do
+				if skipped[i + 1] then ownNodes[#ownNodes + 1] = { network = net, at = place(i) } end
+			end
+		end
+	end
+	return junctions.without(polyline.junctions, ownNodes, ownEdges)
+end
+
 function networkInto(proposal, network, templateName, style, polyline, dangling, gone)
 	local links, skipped = polyline.links, {}
 	local settings = polyline.junctions
 	if dangling then
 		links, skipped = apply.ownStreets(polyline)
-		-- The tool's settings at the construction's own street's nodes, or
-		-- naming its own edges (the entrance at the junction it joins), go
-		-- with that street: they name what this build does not make
-		-- (2026-10-02: a street station refused in every game, "the
-		-- junction no longer exists"). The construction and its refresh
-		-- give those junctions the game's own, alike in every game.
-		local keep, ownEdges, ownNodes = {}, {}, {}
-		for _, link in ipairs(links) do keep[link] = true end
-		local function place(i)
-			local p = arr(polyline.vertices[i + 1].pos)
-			return { x = p[1], y = p[2], z = p[3] }
-		end
-		for _, link in ipairs(polyline.links) do
-			if not keep[link] then
-				local net = link.kind and link.kind.network
-				ownEdges[#ownEdges + 1] = { network = net, ends = { a = place(link.from), b = place(link.to) } }
-				for _, i in ipairs({ link.from, link.to }) do
-					if skipped[i + 1] then ownNodes[#ownNodes + 1] = { network = net, at = place(i) } end
-				end
-			end
-		end
 		local left
-		settings, left = junctions.without(settings, ownNodes, ownEdges)
+		settings, left = apply.ownJunctions(polyline)
 		if #left > 0 then
 			local ok, text = pcall(junctions.summary, { EditJunctions = { changes = left } })
 			log("left to the construction: " .. (ok and text or (#left .. " junction(s)")))

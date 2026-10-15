@@ -333,6 +333,15 @@ switches itself. It also carries fewer configurations: counted with its
 own switches, a large station's preview had 99, over the 64 an action
 holds.
 
+Capture also applies replay's construction-owned junction rule before
+encoding a joined station. A 144-setting station encountered on 2026-10-10
+would otherwise exceed the action's 64-setting limit even though the station
+itself creates most of those switches. This only removes settings for the
+construction's own network; settings for external junctions still travel.
+If the game's one construction proposal refuses a snap onto existing track,
+the action remains refused before changing that track. Rebuilding removed
+track in a later command is not a safe substitute for an atomic placement.
+
 `lua_mod.rs` reproduces the recorded depot topology: before the fix its
 first build contains four duplicate nodes and edges; afterwards it contains
 none, and the stand-in engine accepts the refresh. A longer station
