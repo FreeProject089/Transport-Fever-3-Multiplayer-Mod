@@ -258,12 +258,12 @@ fn read_with(
         .map_or(0, |since| since.as_secs());
     let serial = registry::next_serial(previous, now);
     budget_available(&budget)?;
-    let mut built = registry::build(&list, serial, &get);
+    let mut built = registry::build(&list, serial, get);
     budget_available(&budget)?;
     for problem in &built.problems {
         warn!(%problem, "a native mod is left out of the index");
     }
-    let (listings, problems) = registry::listings(&built.sources, &api);
+    let (listings, problems) = registry::listings(&built.sources, api);
     budget_available(&budget)?;
     for problem in &problems {
         warn!(%problem, "cannot read a native mod's downloads and date");
@@ -281,7 +281,7 @@ fn read_with(
         .unwrap_or_default();
     budget_available(&budget)?;
     let (proposals, proposed_json, problems) =
-        registry::propose(&list, &built.index, &pulls, serial, &get);
+        registry::propose(&list, &built.index, &pulls, serial, get);
     budget_available(&budget)?;
     for problem in &problems {
         warn!(%problem, "a proposed native mod is left out");

@@ -554,11 +554,9 @@ impl Store {
         }
         ensure_no_symlink_path(&self.root, &folder)?;
         let moved_old = registered.is_some() && folder.exists();
-        if moved_old {
-            if let Err(error) = fs::rename(&folder, &backup) {
-                let _ = remove_partial_tree(&self.root, &partial);
-                return Err(error.into());
-            }
+        if moved_old && let Err(error) = fs::rename(&folder, &backup) {
+            let _ = remove_partial_tree(&self.root, &partial);
+            return Err(error.into());
         }
         if let Err(error) = fs::rename(&partial, &folder) {
             if moved_old {
