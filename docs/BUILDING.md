@@ -788,28 +788,19 @@ The schema caps an edit at 64 junctions, each with 256 connections,
 Standalone edits are behind `strict_junctions` in `junctions.lua`, **off
 by default** under PLAN.md Part 3. For the acceptance test, set it true
 in matching mod copies on both test games and use the new hook/profile.
-With it off, the capture and replay both let two edits through and refuse
+With it off, the capture and replay both let one edit through and refuse
 the rest (`junctions.requireNarrow`), each comparing the configuration
-put in with the one its own game has at the node, entity by entity:
-
-- a double slip switch turned on or off (the junction window's
-  `createDoubleSlipSwitchProposal`), with lane connections between the
-  node's own tracks, neither road's nor tram's, that come with it: added
-  when it is turned on, taken away when it is turned off;
-- tram lane connections added or removed (tram's, not road's), or an
-  existing connection's tram given or taken (the crossing tool's tram
-  mode, which joins a tram track to a railway).
-
-Everything else at the node must stay as it is: preference, light,
-phases (compared in whole milliseconds, as the wire carries them), the
-custom-phase mark and crosswalks; no road connection may be
-added, removed or change its road. One exception: the junction window
-sets the preference to No with the switch (seen on build 40420: Auto to
-No), and at a node no street joins, where a light has nothing to stop,
-the preference may change with the switch. A reset, a node with no
-configuration yet, and lane changes at a junction with light phases
-(their locked indices address the lanes' order) are refused, as is an
-edit that changes neither. The refusal names what it saw, after the
+put in with the one its own game has at the node, entity by entity: the
+junction window's double slip switch turned on or off, as the window was
+seen to send it on build 40420. Nothing else at the node may change:
+lane connections, crosswalks, light, phases (compared in whole
+milliseconds, as the wire carries them) and the custom-phase mark stay
+exactly as they are. The one side effect seen with the switch, the
+preference from Auto to No, may come with it, and only at a node no
+street joins, where a light has nothing to stop. A reset, a node with no
+configuration yet and an edit that leaves the switch as it is are
+refused. The crossing tool's tram lanes stay refused until the tool is
+seen in the game. The refusal names what it saw, after the
 `strict_junctions` reason, with the old and new light settings and the
 lanes' count. Road and track builds carry their junction settings as
 before, unchecked by this; the log's `handed the player's build` and
@@ -819,7 +810,7 @@ N tram M}`) and take out (`-j<node>`).
 Seen in two games on the local server on 2026-10-15 (Steam Windows
 40420): a double slip switch turned on at a track crossing in one game
 was carried as `EditJunctions` and applied in both, with matching
-checkpoints. The crossing tool's tram mode is not yet seen in the game. Tests cover native
+checkpoints. Tests cover native
 memory decoding, portable round trips into replicas with different IDs,
 curved-edge preservation, refusal cases and checkpoint differences. This
 is adapter evidence, not a completed real-game playtest. Follow the

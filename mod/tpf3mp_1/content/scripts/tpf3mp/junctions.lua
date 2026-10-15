@@ -4,7 +4,7 @@
 -- PLAN.md Part 3: enable in matching acceptance-test copies on both games,
 -- then change the default only after the two-player sandbox check passes.
 -- Until then a standalone edit goes only as junctions.requireNarrow allows:
--- a double slip switch, and tram lane connections.
+-- the junction window's double slip switch.
 local junctions = { strict_junctions = false }
 
 local AWAITING = "junction tools await the two-player acceptance test (strict_junctions)"
@@ -213,19 +213,16 @@ end
 
 -- A node configuration's settings in this game's own terms (edge entities,
 -- the light's resource id, the preference's enum value), to compare two of
--- them at the same node; `tracks` holds the node's track edges.
-local function plain(c, tracks)
+-- them at the same node.
+local function plain(c)
 	local lights = c.trafficLightConfig
 	if lights == nil then error("traffic light configuration did not read", 0) end
-	local out = { turns = {}, order = {}, walks = {}, phases = {}, preference = c.trafficLightPreference,
+	local out = { lanes = {}, walks = {}, phases = {}, preference = c.trafficLightPreference,
 		light = lights.trafficLightType, double_slip = c.doubleSlipSwitch == true,
 		custom_phases = c.userModifiedTrafficLightStates == true }
 	for _, t in ipairs(list(c.laneConnections)) do
-		local key = t.segment0 .. ":" .. t.lane0 .. ">" .. t.segment1 .. ":" .. t.lane1
-		if out.turns[key] then error(AWAITING .. ": a lane connection listed twice", 0) end
-		out.turns[key] = { road = t.withRoad == true, tram = t.withTram == true,
-			track = tracks[t.segment0] == true and tracks[t.segment1] == true }
-		out.order[#out.order+1] = key .. ":" .. tostring(t.withRoad == true) .. ":" .. tostring(t.withTram == true)
+		out.lanes[#out.lanes+1] = t.segment0 .. ":" .. t.lane0 .. ">" .. t.segment1 .. ":" .. t.lane1 .. ":"
+			.. tostring(t.withRoad == true) .. ":" .. tostring(t.withTram == true)
 	end
 	for _, e in ipairs(list(c.crosswalks)) do out.walks[#out.walks+1] = e end
 	table.sort(out.walks)
@@ -246,22 +243,19 @@ end
 
 -- Why `new` (nil for a reset) is not an edit of `old` (nil for a node with
 -- no configuration) that a room carries with strict_junctions off, or nil
--- when it is. Before the full acceptance (PLAN.md Part 3) two edits go:
--- a double slip switch turned on or off (the junction window's
--- createDoubleSlipSwitchProposal), with the changes of lane connections
--- between the node's tracks that come with it, and tram lane connections
--- (neither road's) added or removed, or an existing one's tram given or
--- taken (the crossing tool's tram mode: a tram track joined to a railway).
--- Everything else at the node must stay as it is; lanes do not change under
--- traffic light phases, whose indices address their order.
-local function narrowWhyNot(old, new, streetless)
+-- when it is. Before the full acceptance (PLAN.md Part 3) one edit goes, as
+-- the junction window was seen to send it on build 40420: its double slip
+-- switch turned on or off, and nothing else at the node changed, but for
+-- the one side effect seen with it, the preference from Auto to No, and that
+-- only at a node no street joins, where a light has nothing to stop. The
+-- lane connections, crosswalks, light, phases and the custom-phase mark
+-- stay exactly as they are. `enums` is TrafficLightPreference.
+local function narrowWhyNot(old, new, streetless, enums)
 	if new == nil then return "a reset of a junction's settings" end
 	if old == nil then return "a junction with no settings yet" end
-	local slip = old.double_slip ~= new.double_slip
-	-- The junction window sets the preference to No with the switch (seen
-	-- in the game, build 40420: Auto to No); at a node with no street a
-	-- light has nothing to stop, so there it may change with the switch.
-	local preference = old.preference == new.preference or (slip and streetless)
+	if old.double_slip == new.double_slip then return "no double slip switch change" end
+	local preference = old.preference == new.preference
+		or (streetless and old.preference == enums.AUTO and new.preference == enums.NO)
 	if not preference or old.light ~= new.light or old.custom_phases ~= new.custom_phases then
 		return string.format("a change of its traffic lights (preference %s>%s, light %s>%s, custom phases %s>%s)",
 			tostring(old.preference), tostring(new.preference), tostring(old.light), tostring(new.light),
@@ -269,34 +263,7 @@ local function narrowWhyNot(old, new, streetless)
 	end
 	if table.concat(old.walks, ",") ~= table.concat(new.walks, ",") then return "a change of its crosswalks" end
 	if table.concat(old.phases, ";") ~= table.concat(new.phases, ";") then return "a change of its traffic light phases" end
-	-- A double slip switch has the turns of a single one and more: turned
-	-- on it only adds track lanes, turned off it only takes them away.
-	local function slipLane(t, added)
-		return slip and added == new.double_slip and t.track and not t.road and not t.tram
-	end
-	local function tramLane(t) return t.tram and not t.road end
-	local changed = false
-	for key, t in pairs(new.turns) do
-		local was = old.turns[key]
-		if was == nil then
-			changed = true
-			if not (tramLane(t) or slipLane(t, true)) then return "a lane connection added, neither a tram's nor a double slip switch's" end
-		elseif was.road ~= t.road then
-			return "a lane connection's road changed"
-		elseif was.tram ~= t.tram then
-			changed = true
-		end
-	end
-	for key, t in pairs(old.turns) do
-		if new.turns[key] == nil then
-			changed = true
-			if not (tramLane(t) or slipLane(t, false)) then return "a lane connection removed, neither a tram's nor a double slip switch's" end
-		end
-	end
-	if #new.phases > 0 and table.concat(old.order, ";") ~= table.concat(new.order, ";") then
-		return "a lane change under traffic light phases"
-	end
-	if not slip and not changed then return "no double slip switch or tram lane change" end
+	if table.concat(old.lanes, ";") ~= table.concat(new.lanes, ";") then return "a change of its lane connections" end
 end
 
 -- With strict_junctions off, raises unless putting `config` (a
@@ -306,18 +273,17 @@ end
 function junctions.requireNarrow(node, config, source)
 	if junctions.strict_junctions then return end
 	local api = source or api
-	local tracks, streetless = {}, false
+	local streetless = false
 	if node >= 0 then
 		local system = api.engine.system.streetSystem
-		for _, id in ipairs(list(system.getNodeTrackSegments(node))) do tracks[id] = true end
-		streetless = next(tracks) ~= nil and #list(system.getNodeStreetSegments(node)) == 0
+		streetless = #list(system.getNodeTrackSegments(node)) > 0 and #list(system.getNodeStreetSegments(node)) == 0
 	end
 	local old = node >= 0 and component(node, "BASE_NODE_CONFIG", api) or nil
-	local before, after = old and plain(old, tracks), config and plain(config, tracks)
-	local why = narrowWhyNot(before, after, streetless)
+	local before, after = old and plain(old), config and plain(config)
+	local why = narrowWhyNot(before, after, streetless, api.type.enum.TrafficLightPreference)
 	if why then
-		local turns = function(c) return c and tostring(#c.order) or "-" end
-		error(AWAITING .. ": " .. why .. " (lanes " .. turns(before) .. ">" .. turns(after) .. ")", 0)
+		local lanes = function(c) return c and tostring(#c.lanes) or "-" end
+		error(AWAITING .. ": " .. why .. " (lanes " .. lanes(before) .. ">" .. lanes(after) .. ")", 0)
 	end
 end
 
