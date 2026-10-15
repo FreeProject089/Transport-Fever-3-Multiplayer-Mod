@@ -396,16 +396,17 @@ Dev B:
   ([NATIVE_MODS.md](NATIVE_MODS.md)). PR #117 and its hardening implement
   framework only: index validation and signature primitives, the store and
   registry APIs, the enabled-list handoff, and the hook's fail-closed plan.
-  *Built on dev (protocol 20):* native room terms with settings; the Native
-  mods group in Settings; and room-version install and restart on joining.
-  The open #148 work adds the server index and a full canonical package
-  identity with installed-byte/file-set verification. Plugin loading and
-  consent remain open in #151; the same identity must bind plugin hashes
-  and declared hooks before executable consent can use it. No server
-  registry or native feature package is configured yet, so players cannot
-  use a native mod. Open: the first registry and package (Big Maps), copying
-  a package's Lua folder into the game's mod folder, and plugin loading with
-  per-identity consent. A project-signed index remains optional.
+  *Implemented (protocol 22, combined #148/#151/#152):* native room terms
+  with full package identity and settings; the server registry and Mods
+  browser; installed-byte/file-set verification; Windows x86-64 plugin
+  loading with source/settings/content-bound consent; dependency-aware
+  room matching; and installation of enabled packages' game-mod folders.
+  The identity binds every plugin descriptor and declared hook. The Big
+  Maps plugin and package builder are included. Still open: configure the
+  first production registry and publish its package, validate ordinary
+  game startup and Big Maps gameplay before release, and support plugin
+  loading on other platforms. A project-signed index remains optional.
+  The overall item stays unchecked until player-facing acceptance passes.
 
 Dev C:
 
