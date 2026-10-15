@@ -781,8 +781,11 @@ each link's own end where it lies a millimetre or more off its vertex
 (`position0`, `position1`, at most 32 m off on each axis), and the replay
 builds the edge to end there. Before schema 27 the replay put every end on
 its node, and such a track ended in a buffer stop in every game of the
-room (2026-10-15). A split still builds each half from the split edge's
-node positions.
+room (2026-10-15). With schema 27, checked in a two-game room the same
+day: a tram street built and upgraded in one game, then two tracks laid
+onto its free end; in both games the street's tram lanes and the tracks
+share the end node's transport-network nodes (four, as in single player).
+A split still builds each half from the split edge's node positions.
 The tests `tpf3mp-proto/tests/lua_capture.rs` (a junction rebuilt around a
 new street, a level crossing, a bridge, a tunnel, an upgrade, the TF3
 proposal's shape) and `lua_mod.rs` (the replay) run it in Lua and decode
