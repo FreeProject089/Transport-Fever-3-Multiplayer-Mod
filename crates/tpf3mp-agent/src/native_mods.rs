@@ -1595,6 +1595,7 @@ mod tests {
         }
     }
 
+    #[cfg(all(windows, target_arch = "x86_64"))]
     fn with_plugin(mut package: Package) -> Package {
         package.authors = vec!["Native Mod Authors".into()];
         package.plugins.push(tpf3mp_nativemods::index::Plugin {
