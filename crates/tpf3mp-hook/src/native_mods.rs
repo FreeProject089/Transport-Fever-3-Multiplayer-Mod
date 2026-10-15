@@ -1,4 +1,4 @@
-//! Native mods in the game (proposed D29, docs/NATIVE_MODS.md): the hook
+//! Native mods in the game (D29, docs/NATIVE_MODS.md): the hook
 //! switches on only the built-in features the launcher enabled, for the
 //! build it enabled them for, where the matched profiles have every target
 //! they patch.

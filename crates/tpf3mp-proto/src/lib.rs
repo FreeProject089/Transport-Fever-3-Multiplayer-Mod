@@ -32,7 +32,8 @@ pub use bounded::{BoundedVec, TooMany};
 pub use bytes::{FixedBytes, MAX_PAYLOAD, Payload, PayloadTooLarge};
 pub use content::{
     ContentDiff, ContentManifest, GameBuilds, MAX_DIFF_LISTED, MAX_LISTED_MODS, MAX_MANIFEST_BYTES,
-    ModChange, ModId, ModRef, ModVersion, OWN_MOD, Unlisted, own_mod_short,
+    MAX_NATIVE_TERMS, ModChange, ModId, ModRef, ModVersion, NATIVE_PREFIX, OWN_MOD, Unlisted,
+    own_mod_short,
 };
 pub use control::{
     AUTH_DOMAIN, AUTH_EXPORTER_LABEL, BANNERS, BannerId, ChatText, ClientMessage,
@@ -52,8 +53,8 @@ pub use ids::{
 };
 pub use room_mods::{
     GAME_SETTINGS, MAX_ROOM_DECLARATION_BYTES, MAX_ROOM_MODS, MAX_ROOM_PARAMS, MODIO_SOURCE,
-    ModInfo, ModParam, ModParams, RoomConfig, RoomDeclaration, RoomMod, RoomMods, RoomModsError,
-    is_mod_id,
+    ModInfo, ModParam, ModParams, NativeMod, NativeSetting, NativeValue, RoomConfig,
+    RoomDeclaration, RoomMod, RoomMods, RoomModsError, is_mod_id,
 };
 pub use snapshot::{
     BULK_REQUEST_MAX_FRAME, BULK_RESPONSE_MAX_FRAME, BulkOpen, BulkRequest, BulkResponse,
@@ -91,8 +92,11 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// ([`Request::DeclareRoom`]), tells every member the room's mods
 /// ([`ServerMessage::RoomMods`]) and how each member's game differs
 /// ([`MemberView::differs`]); version 19 checks an invite on a server without
-/// joining its room ([`Request::ResolveInvite`], [`Response::InviteMatch`]).
-pub const PROTOCOL_VERSION: u32 = 19;
+/// joining its room ([`Request::ResolveInvite`], [`Response::InviteMatch`]);
+/// version 20 carries a game's native mods that change the simulation in its
+/// content manifest ([`ContentManifest::native`]) and the room's, with their
+/// settings, beside its mods ([`RoomConfig::native`], [`RoomMods::native`]).
+pub const PROTOCOL_VERSION: u32 = 20;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";
@@ -383,8 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn invite_resolution_round_trips_at_protocol_19() {
-        assert_eq!(PROTOCOL_VERSION, 19);
+    fn invite_resolution_round_trips_since_protocol_19() {
         let request = ClientMessage::Request {
             id: 7,
             request: Request::ResolveInvite {

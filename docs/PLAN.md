@@ -394,11 +394,15 @@ Dev B:
   part of its terms ([NATIVE_MODS.md](NATIVE_MODS.md)). PR #117 and its
   hardening implement framework only: index validation and signature
   primitives, the store and registry APIs, the enabled-list handoff, and
-  the hook's fail-closed plan. No production key or index, player-facing
-  installer, built-in native feature, or room terms on the wire exists, so
-  players cannot install or use a native mod yet. Open: the key and signing
-  workflow, the launcher's page, Big Maps as the first package, and the
-  room's terms on the wire.
+  the hook's fail-closed plan. *Built since (protocol 20):* the room's
+  native terms on the wire, with their settings; the launcher's Native mods
+  group in Settings (install, update, roll back, uninstall, switch, settings,
+  each mod's own project page); and joining a room installs the room's
+  versions from the signed index, with its settings, and starts the game
+  again with them. No production key or index, or built-in native feature
+  exists yet, so players cannot use a native mod yet. Open: the key and
+  signing workflow, the first index, Big Maps as the first package, and
+  copying a package's Lua mod folder where the game loads mods.
 
 Dev C:
 
