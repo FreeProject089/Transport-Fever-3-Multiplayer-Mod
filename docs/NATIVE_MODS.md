@@ -229,7 +229,9 @@ build is left out with a log message. An enabled simulation-changing
 package that is not pinned to that build stops the start instead of
 producing an empty list. Nothing enabled, nothing installed: no variable,
 and the executable is not hashed. A registry that cannot be read stops the
-start.
+start. Before writing `enabled.json` or declaring room terms, the launcher
+checks every enabled package's installed file set and bytes against its
+recorded signed manifest; changed, missing or extra files stop the start.
 
 The hook makes its plan once, at bootstrap, after matching the build's
 profile and before installing anything (`tpf3mp-hook`'s `native_mods`,

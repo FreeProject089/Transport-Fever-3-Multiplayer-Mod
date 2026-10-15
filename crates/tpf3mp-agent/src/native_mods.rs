@@ -789,6 +789,56 @@ mod tests {
         assert!(!root.join(enabled::FILE).exists());
     }
 
+    #[test]
+    fn startup_refuses_to_declare_a_signed_identity_after_a_package_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game").unwrap();
+        let build = build_of(&exe).unwrap();
+        let (mut package, (url, bytes)) = native_package("bigmap", "0.3.0", &build);
+        package.files[0].path = "content/simulation.lua".into();
+        let setup = setup(vec![(package, (url, bytes))]);
+
+        apply(
+            &dir.path().join("player"),
+            &setup,
+            Some(&build),
+            None,
+            Change::Refresh,
+        )
+        .unwrap();
+        apply(
+            &dir.path().join("player"),
+            &setup,
+            Some(&build),
+            None,
+            Change::Install("bigmap".into()),
+        )
+        .unwrap();
+        apply(
+            &dir.path().join("player"),
+            &setup,
+            Some(&build),
+            None,
+            Change::Enable("bigmap".into(), true),
+        )
+        .unwrap();
+
+        let player = dir.path().join("player");
+        assert_eq!(game_env(&player, &exe).unwrap().terms.len(), 1);
+        fs::write(
+            player
+                .join(FOLDER)
+                .join("bigmap/0.3.0/content/simulation.lua"),
+            b"changed after installation",
+        )
+        .unwrap();
+
+        let error = game_env(&player, &exe).unwrap_err();
+        assert!(error.contains("content/simulation.lua"), "{error}");
+        assert!(next_terms(&player, &exe).is_err());
+    }
+
     /// A signed index and its files, held in memory, signed with a TEST
     /// key made for the test.
     struct Fake {
