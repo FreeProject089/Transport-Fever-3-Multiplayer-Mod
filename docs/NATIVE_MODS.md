@@ -141,6 +141,13 @@ out, with the reason in the server's log; the others are served. Its index
 is numbered by the time it was made, always past the one before, and the
 launcher refuses one older than it kept from that server.
 
+A refresh shares a five-minute budget across the list, mod files, GitHub
+listings and proposals, with at most 1,024 requests and 128 MiB of response
+allowance (a failed read charges its response cap). Each in-flight request
+still has its 60-second timeout. If the shared
+budget is exceeded, the server keeps the previous complete index and tries
+again at the next refresh; it does not publish a partial replacement.
+
 **Downloads and dates.** For a mod on GitHub the server also asks GitHub
 for its releases: how often their files were downloaded, all versions
 together, and when the newest was published (with no release, when the
