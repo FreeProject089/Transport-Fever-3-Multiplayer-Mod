@@ -82,7 +82,8 @@ pub use session::{Begin, Game, Load, Notice, SaveOrder, Session, SessionError, S
 /// listed server in [`LobbyAction::Join`]; 28 the release's trusted servers
 /// in [`LobbyView::servers`] before a room list
 /// is fetched, so the game's invite form can ask for an explicit region.
-pub const BRIDGE_VERSION: u32 = 28;
+/// Version 29 carries the agreed world-check scan plan in [`ToHook::Begin`].
+pub const BRIDGE_VERSION: u32 = 29;
 /// Most servers the room list names ([`LobbyRoomList::servers`]).
 pub const MAX_LOBBY_SERVERS: usize = 8;
 /// The link name the agent creates and the hook opens, unless told
@@ -107,6 +108,7 @@ pub enum ToHook {
     /// local player, as the room's events name the actor: the hook knows its
     /// own commands by it when the room orders them.
     Begin {
+        scan_plan: tpf3mp_proto::ScanPlan,
         rules: RulesName,
         steps_per_second: u16,
         checkpoint_interval: u32,

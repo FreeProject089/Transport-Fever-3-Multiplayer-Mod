@@ -106,17 +106,18 @@ impl Mode {
     }
 }
 
-/// [`ENV`]'s mode, read once; the first call logs a value that is not one.
+/// The same validated contract the launcher advertises at create/join.
+pub fn configured_plan() -> Result<tpf3mp_proto::ScanPlan, &'static str> {
+    static CONFIG: OnceLock<Result<tpf3mp_proto::ScanPlan, &'static str>> = OnceLock::new();
+    *CONFIG.get_or_init(tpf3mp_proto::ScanPlan::from_environment)
+}
+
 pub fn mode() -> Mode {
-    static MODE: OnceLock<Mode> = OnceLock::new();
-    *MODE.get_or_init(|| {
-        let value = std::env::var(ENV).ok();
-        let (mode, why) = Mode::from_env(value.as_deref());
-        if let Some(why) = why {
-            crate::log::line(&why);
-        }
-        mode
-    })
+    match configured_plan().map(|plan| plan.mode) {
+        Ok(tpf3mp_proto::ScanMode::NativeCompareV2) => Mode::Compare,
+        Ok(tpf3mp_proto::ScanMode::NativeV2) => Mode::On,
+        _ => Mode::Off,
+    }
 }
 
 /// The running game's memory, each range checked before it is copied,
@@ -841,18 +842,10 @@ pub fn construction_rows(
 /// keeps what its first update found.
 pub const PLAN_ENV: &str = "TPF3MP_HOOK_PARTS";
 
-/// [`PLAN_ENV`]'s parts and stride, read once.
+/// Parts and stride from the one cached, validated configuration.
 pub fn plan() -> (u32, u32) {
-    static PLAN: OnceLock<(u32, u32)> = OnceLock::new();
-    *PLAN.get_or_init(|| {
-        let value = std::env::var(PLAN_ENV).unwrap_or_default();
-        let parsed = value.trim().split_once(['x', 'X']).and_then(|(n, s)| {
-            let (n, s) = (n.parse::<u32>().ok()?, s.parse::<u32>().ok()?);
-            (1..=MAX_PARTS).contains(&n).then_some(())?;
-            (1..=1000).contains(&s).then_some((n, s))
-        });
-        parsed.unwrap_or((10, 1))
-    })
+    let plan = configured_plan().unwrap_or(tpf3mp_proto::ScanPlan::DEFAULT);
+    (plan.parts, plan.stride)
 }
 
 /// The side of a part's cell (lanes.lua, `lanes.rowPart`): 256 m, in the

@@ -441,6 +441,8 @@ pub struct CreateRoom {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinRoom {
+    /// Must equal the room's world-check plan before any seat is changed.
+    pub scan_plan: crate::ScanPlan,
     pub invite: Invite,
     pub password: Option<Text<64>>,
     /// For a running game: where this client continues, to receive only
@@ -516,6 +518,8 @@ pub enum RequestError {
     NotListed,
     /// No such banner or portrait (see [`BANNERS`], [`PORTRAITS`]).
     UnknownBanner,
+    /// Members must use the same world-check algorithm and partition plan.
+    ScanPlanMismatch,
 }
 
 impl fmt::Display for RequestError {
@@ -546,6 +550,7 @@ impl fmt::Display for RequestError {
                 "the save the room starts from is still being uploaded; start once it is there"
             }
             Self::NotListed => "the room is private, so it is in no list",
+            Self::ScanPlanMismatch => "world-check settings differ from this room; use the same native scan mode and parts/stride, then restart the launcher and game",
             Self::UnknownBanner => "there is no such banner",
         })
     }
@@ -554,6 +559,8 @@ impl fmt::Display for RequestError {
 /// Settings fixed when a room is created.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomSettings {
+    /// The world-check algorithm and partition schedule agreed before play.
+    pub scan_plan: crate::ScanPlan,
     /// Simulation steps per second at 1x speed. TPF2 runs 5; TPF3 is
     /// measured on release day.
     pub steps_per_second: u16,
@@ -567,6 +574,7 @@ pub struct RoomSettings {
 
 impl RoomSettings {
     pub const DEFAULT: Self = Self {
+        scan_plan: crate::ScanPlan::DEFAULT,
         steps_per_second: 5,
         input_delay_ms: 250,
         checkpoint_interval: 50,
@@ -574,7 +582,8 @@ impl RoomSettings {
 
     /// Whether every setting is within the range the server accepts.
     pub fn is_valid(&self) -> bool {
-        (1..=240).contains(&self.steps_per_second)
+        self.scan_plan.is_valid()
+            && (1..=240).contains(&self.steps_per_second)
             && (20..=2000).contains(&self.input_delay_ms)
             && (1..=1_000_000).contains(&self.checkpoint_interval)
     }

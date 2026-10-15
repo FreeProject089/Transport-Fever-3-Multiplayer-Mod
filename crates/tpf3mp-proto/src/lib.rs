@@ -21,6 +21,7 @@ mod diagnostics;
 mod ids;
 pub mod lua;
 mod room_mods;
+mod scan_plan;
 mod snapshot;
 mod text;
 mod turn;
@@ -58,6 +59,7 @@ pub use room_mods::{
     ModInfo, ModParam, ModParams, NativeMod, NativeSetting, NativeValue, RoomConfig,
     RoomDeclaration, RoomMod, RoomMods, RoomModsError, is_mod_id,
 };
+pub use scan_plan::{SCAN_MODE_ENV, SCAN_PLAN_ENV, ScanMode, ScanPlan};
 pub use snapshot::{
     BULK_REQUEST_MAX_FRAME, BULK_RESPONSE_MAX_FRAME, BulkOpen, BulkRequest, BulkResponse,
     ChunkHash, MAX_CHUNKS_PER_REQUEST, SavedWorld, SnapshotId, WorldOffer,
@@ -102,7 +104,8 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// mods proposed for it ([`Request::NativeIndex`], [`NativeIndexPage`]);
 /// version 22 carries a full SHA-256 package identity in each native room
 /// term, while keeping ordinary mod versions limited to 32 bytes.
-pub const PROTOCOL_VERSION: u32 = 22;
+/// Version 23 negotiates the world-check scan plan before joining a room.
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

@@ -699,6 +699,8 @@ mod tests {
             simulation: true,
             features: Vec::new(),
             settings: BTreeMap::new(),
+            files_sha256: "a".repeat(64),
+            depends: Vec::new(),
             root: std::path::PathBuf::from(format!("native-mods/{id}/1.0.0")),
             plugins: Vec::new(),
             hooks,

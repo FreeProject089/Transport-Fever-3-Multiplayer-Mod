@@ -1129,7 +1129,11 @@ async fn act(
                     .map_err(|_| "that room name is too long".to_owned())?,
                 max_players,
                 password: password_text(password)?,
-                settings: config.room_settings,
+                settings: tpf3mp_proto::RoomSettings {
+                    scan_plan: tpf3mp_proto::ScanPlan::from_environment_overrides(&config.game_env)
+                        .map_err(str::to_owned)?,
+                    ..config.room_settings
+                },
                 rules,
                 // A public room starts with one company, the save's own
                 // (D21); its owner says when there are more.
@@ -2259,6 +2263,10 @@ fn begin_session(
         owned
     };
     let bridge_options = BridgeOptions {
+        scan_plan: Some(
+            tpf3mp_proto::ScanPlan::from_environment_overrides(&config.game_env)
+                .map_err(str::to_owned)?,
+        ),
         worlds: Some(config.worlds.clone()),
         status: Some(Arc::clone(&shared.status)),
         lobby: Some(shared.lobby.clone()),
@@ -3063,6 +3071,8 @@ async fn join(
     let mut joined = current
         .client
         .join_room(JoinRoom {
+            scan_plan: tpf3mp_proto::ScanPlan::from_environment_overrides(&config.game_env)
+                .map_err(str::to_owned)?,
             invite,
             password: password.clone(),
             resume: None,
@@ -3134,6 +3144,8 @@ async fn join(
             joined = current
                 .client
                 .join_room(JoinRoom {
+                    scan_plan: tpf3mp_proto::ScanPlan::from_environment_overrides(&config.game_env)
+                        .map_err(str::to_owned)?,
                     invite,
                     password: password.clone(),
                     resume: None,

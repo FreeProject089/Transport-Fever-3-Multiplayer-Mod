@@ -200,6 +200,7 @@ async fn eight_bots_agree_over_a_lossy_high_latency_link() {
     .await
     .unwrap();
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 100,
         input_delay_ms: 250,
         checkpoint_interval: 50,
@@ -240,6 +241,7 @@ async fn paced_players_feel_their_round_trip_plus_a_small_buffer() {
     .unwrap();
     // A long input delay, so that feeling it could not pass for noise.
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 20,
         input_delay_ms: 1000,
         checkpoint_interval: 20,
@@ -274,6 +276,7 @@ async fn paced_players_feel_their_round_trip_plus_a_small_buffer() {
 async fn games_behind_the_bridge_and_gate_agree() {
     let server = TestServer::start().await;
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 100,
         input_delay_ms: 60,
         checkpoint_interval: 20,
@@ -332,6 +335,7 @@ async fn games_ride_out_a_server_restart() {
     .await;
     let address = first.address;
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 50,
         input_delay_ms: 60,
         checkpoint_interval: 25,
@@ -385,6 +389,7 @@ async fn games_ride_out_a_server_restart() {
 async fn a_drifting_replica_is_singled_out() {
     let server = TestServer::start().await;
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 100,
         input_delay_ms: 60,
         checkpoint_interval: 50,
@@ -434,6 +439,7 @@ async fn a_drifting_replica_is_singled_out() {
 async fn the_server_refuses_what_a_company_cannot_afford() {
     let server = TestServer::start().await;
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 50,
         input_delay_ms: 60,
         checkpoint_interval: 25,
@@ -509,6 +515,7 @@ async fn a_player_joins_a_running_game_from_the_rooms_world() {
     )
     .await;
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 100,
         input_delay_ms: 60,
         checkpoint_interval: 20,
@@ -562,6 +569,7 @@ async fn a_player_behind_a_udp_block_joins_late_through_the_tunnel() {
     )
     .await;
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 100,
         input_delay_ms: 60,
         checkpoint_interval: 20,
@@ -614,6 +622,7 @@ async fn every_player_starts_from_the_owners_world() {
     )
     .await;
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 100,
         input_delay_ms: 60,
         checkpoint_interval: 20,
@@ -664,6 +673,7 @@ async fn every_game_starts_from_the_save_the_owner_named_at_once() {
     )
     .await;
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 100,
         input_delay_ms: 60,
         checkpoint_interval: 20,
@@ -721,6 +731,7 @@ async fn a_diverged_replica_is_rebased_onto_the_agreed_world() {
     )
     .await;
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 100,
         input_delay_ms: 60,
         checkpoint_interval: 50,
@@ -774,6 +785,7 @@ async fn a_restored_room_still_hands_on_its_world() {
     .await;
     let address = first.address;
     let settings = RoomSettings {
+        scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
         steps_per_second: 50,
         input_delay_ms: 60,
         checkpoint_interval: 25,

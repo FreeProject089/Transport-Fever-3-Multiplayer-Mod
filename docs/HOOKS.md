@@ -3835,17 +3835,30 @@ and the part (`parts|kind|k/N`). As with the tiles, a sweep samples objects
 when their part is read: an object moved between parts within a sweep is
 read once, twice or not at all in that sweep.
 
-**Plan agreement and work limits.** These switches are process-local and
-are not yet negotiated by the room. Until the room supplies a shared plan,
-use `off` in multiplayer outside a controlled test where every game has the
-same mode and `N x S`; mixed settings are not a supported configuration. A
-saved rolling-v2 history is refused before its next hash if this game's mode
-or part plan changed. The rolling-v1 history used when mode is `off` also
-saves and checks the mode, part count and stride. A rolling-v1 save from
-before these fields existed is adopted only when all three are absent and
-the current mode is `off`; partial metadata and native-mode resumes fail
-closed. These checks are local and do not identify a different plan on
-another game.
+**Plan agreement and work limits.** The ordinary launcher and CLI create,
+join and reconnect paths parse `TPF3MP_HOOK_NATIVE_LANES` and
+`TPF3MP_HOOK_PARTS` through the shared protocol contract, including
+`--game-env` overrides given to the launcher. The bridge caches that effective
+plan for room updates and reconnects. Malformed mode or
+plan values refuse multiplayer. Off mode always advertises rolling-v1,
+`10x1`; a valid prototype part setting has no effect in off mode. Native
+modes allow 1..1024 parts and strides 1..1000. The room fixes and persists
+that exact mode/parts/stride at creation; joins and reconnects must match
+before they replace a connection or change membership. The agent waits for
+both the room view and mod declaration before processing a turn stream,
+including on reconnect, and forwards the room plan in bridge-29 `Begin`.
+The hook uses one cached parsed configuration for its native mode and plan,
+and holds a mismatched or malformed configuration before loading a world or
+running room steps. Default-off behavior is unchanged; `on` and `compare`
+remain experimental opt-ins.
+
+A saved rolling-v2 history is refused before its next hash if this game's
+mode or part plan changed. The rolling-v1 history used when mode is `off`
+also saves and checks the mode, part count and stride. A rolling-v1 save
+from before these fields existed is adopted only when all three are absent
+and the current mode is `off`; partial metadata and native-mode resumes fail
+closed. A room recovered from format-8/9 logs uses the default rolling-v1
+plan; format 10 retains its exact configured plan.
 
 Each native part scans every entity slot's component bits before it selects
 rows, including when its cell is empty or one cell contains all rows. The
