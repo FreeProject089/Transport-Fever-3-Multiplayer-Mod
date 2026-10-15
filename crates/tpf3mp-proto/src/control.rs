@@ -224,6 +224,57 @@ pub enum Request {
         invite: Invite,
         password: Option<Text<64>>,
     },
+    /// One page of the native mods this server offers (docs/NATIVE_MODS.md,
+    /// "A server's own index"): its index, or with `proposed` the mods open
+    /// pull requests to its registry would add. Pages count from 0; a
+    /// client asks for each until it has `pages`, all of one `serial`.
+    /// `Response::NativeIndex(None)` from a server that offers none.
+    NativeIndex {
+        proposed: bool,
+        page: u16,
+    },
+}
+
+/// Bytes of the native-mods index one page carries.
+pub const NATIVE_INDEX_PAGE: usize = 48 * 1024;
+/// Most pages of one native-mods index.
+pub const MAX_NATIVE_INDEX_PAGES: u16 = 32;
+
+/// One page of a server's native-mods index, as JSON bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeIndexPage {
+    /// The index's serial: every page of one index has the same.
+    pub serial: u64,
+    pub page: u16,
+    pub pages: u16,
+    pub bytes: BoundedVec<u8, NATIVE_INDEX_PAGE>,
+}
+
+impl NativeIndexPage {
+    /// The pages of `json`, an index with `serial`; none when it needs more
+    /// than [`MAX_NATIVE_INDEX_PAGES`].
+    pub fn split(serial: u64, json: &[u8]) -> Option<Vec<Self>> {
+        let chunks: Vec<&[u8]> = if json.is_empty() {
+            vec![&[]]
+        } else {
+            json.chunks(NATIVE_INDEX_PAGE).collect()
+        };
+        let pages = u16::try_from(chunks.len())
+            .ok()
+            .filter(|n| *n <= MAX_NATIVE_INDEX_PAGES)?;
+        Some(
+            chunks
+                .into_iter()
+                .zip(0..)
+                .map(|(chunk, page)| Self {
+                    serial,
+                    page,
+                    pages,
+                    bytes: BoundedVec::new(chunk.to_vec()).unwrap_or_else(|_| BoundedVec::empty()),
+                })
+                .collect(),
+        )
+    }
 }
 
 /// A player's picture: one of [`BANNERS`] or [`PORTRAITS`], by id. Long
@@ -422,6 +473,9 @@ pub enum Response {
     Rooms(RoomPage),
     /// The invite and optional password match an open room on this server.
     InviteMatch,
+    /// A page of the native mods this server offers, or none
+    /// ([`Request::NativeIndex`]).
+    NativeIndex(Option<NativeIndexPage>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

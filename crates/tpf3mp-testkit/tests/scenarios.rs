@@ -6,7 +6,10 @@
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
-use tokio::{sync::oneshot, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, oneshot},
+    task::JoinHandle,
+};
 use tpf3mp_net::tunnel::TunnelUrl;
 use tpf3mp_net::{ServerIdentity, ServerTrust};
 use tpf3mp_proto::{RoomSettings, Speed};
@@ -14,9 +17,11 @@ use tpf3mp_server::{Server, ServerConfig, ServerError, ServerStats, SnapshotConf
 use tpf3mp_snapshot::StoreError;
 use tpf3mp_testkit::{
     bot::{BotConfig, BotReport},
+    fake_hook::HookNotice,
     netem::{Impairment, Netem},
     scenario::{
-        BridgedPlan, BridgedPlayer, RoomPlan, latency_summary, play_bridged_room, play_room,
+        BridgedControl, BridgedPlan, BridgedPlayer, RoomPlan, latency_summary, play_bridged_room,
+        play_bridged_room_controlled, play_room,
     },
     toy::{ToyWorld, lane, toy_rules_menu},
 };
@@ -458,6 +463,25 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
+async fn wait_for_room_snapshot_pointer(directory: &std::path::Path) {
+    let saved = async {
+        loop {
+            let exists = std::fs::read_dir(directory).is_ok_and(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .any(|entry| entry.path().extension() == Some(std::ffi::OsStr::new("snapshot")))
+            });
+            if exists {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(90), saved)
+        .await
+        .expect("the room did not persist its agreed snapshot before restart");
+}
+
 fn saving_players(count: u64, target_step: u64) -> Vec<BridgedPlayer> {
     (0..count)
         .map(|index| BridgedPlayer {
@@ -785,20 +809,55 @@ async fn a_restored_room_still_hands_on_its_world() {
     // last joins after it, from the world the restored room kept.
     players[1].join_after = Some(Duration::from_secs(1));
     players[2].join_after = Some(Duration::from_secs(6));
-    let game = tokio::spawn(play_bridged_room(BridgedPlan {
-        server: address,
-        server_name: "localhost".into(),
-        trust: first.trust.clone(),
-        settings,
-        players,
-        deadline: Duration::from_secs(90),
-        worlds: Some(root.join("players")),
-        start_world: None,
-    }));
+    let (start, wait_to_start) = oneshot::channel();
+    let (late_join, wait_for_late_join) = mpsc::unbounded_channel();
+    let (notices, mut received_notices) = mpsc::unbounded_channel();
+    let test_started = tokio::time::Instant::now();
+    let game = tokio::spawn(play_bridged_room_controlled(
+        BridgedPlan {
+            server: address,
+            server_name: "localhost".into(),
+            trust: first.trust.clone(),
+            settings,
+            players,
+            deadline: Duration::from_secs(90),
+            worlds: Some(root.join("players")),
+            start_world: None,
+        },
+        BridgedControl {
+            start: wait_to_start,
+            late_joins: wait_for_late_join,
+            notices,
+        },
+    ));
 
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    // Hold initial setup past the old four-second restart point, then delay
+    // player 2 past its old six-second join point. The real sequencing below
+    // is controlled by world-load and replacement-server milestones.
+    tokio::time::sleep_until(test_started + Duration::from_secs(5)).await;
+    start.send(()).unwrap();
+    tokio::time::sleep_until(test_started + Duration::from_secs(7)).await;
+    late_join.send("game1".into()).unwrap();
+    tokio::time::timeout(Duration::from_secs(90), async {
+        loop {
+            match received_notices.recv().await {
+                Some(HookNotice::WorldLoaded { player, .. }) if player == "game1" => break,
+                Some(_) => {}
+                None => panic!("the scenario ended before game1 loaded the room's world"),
+            }
+        }
+    })
+    .await
+    .expect("game1 did not load the room's world before the restart");
+    wait_for_room_snapshot_pointer(&root.join("rooms")).await;
     first.stop().await;
     let second = TestServer::start_saving(address, identity, data, root.join("snapshots")).await;
+    assert_eq!(
+        second.stats.rooms(),
+        1,
+        "the room was restored before game2 joins"
+    );
+    late_join.send("game2".into()).unwrap();
 
     let reports = game.await.unwrap().unwrap();
     assert_worlds_agree(&reports);

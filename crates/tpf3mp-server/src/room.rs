@@ -24,7 +24,7 @@ use tpf3mp_proto::{
     Platform, PlayerId, RequestError, Resume, RoomDeclaration, RoomId, RoomListing, RoomMods,
     RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, Seal, Secret, ServerMessage,
     SnapshotId, Speed, StartSave, StartView, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart,
-    WorldOffer, decode_frame, encode_frame,
+    WorldOffer, decode_frame, encode_frame, native_term_version_is_full,
 };
 use tpf3mp_snapshot::{Manifest, ManifestId};
 use tracing::{debug, error, info, warn};
@@ -273,7 +273,9 @@ fn native_settings_match_version(native: &NativeMod) -> bool {
         .version
         .as_str()
         .rsplit_once('+')
-        .is_some_and(|(_, suffix)| suffix == expected)
+        .is_some_and(|(_, suffix)| {
+            native_term_version_is_full(native.version.as_str()) && suffix.starts_with(expected)
+        })
 }
 
 fn native_settings_are_persistable(declared: &Declared) -> bool {
@@ -949,6 +951,8 @@ pub(crate) enum RecoverError {
     Settings,
     #[error("the start record's native settings are missing or do not match its manifest")]
     NativeSettings,
+    #[error("the log's native room terms lack a full package identity")]
+    NativeIdentity,
     #[error("the room is played by rules \"{0}\", which this server no longer offers")]
     UnknownRules(String),
     #[error("the log's file name does not match its room")]
@@ -1112,6 +1116,18 @@ impl Room {
                 && !start.native_mods.is_empty())
         {
             return Err(RecoverError::NativeSettings);
+        }
+        if version == persist::FORMAT_VERSION
+            && start.manifest.as_ref().is_some_and(|stored| {
+                stored
+                    .clone()
+                    .manifest()
+                    .native
+                    .iter()
+                    .any(|term| !native_term_version_is_full(term.version.as_str()))
+            })
+        {
+            return Err(RecoverError::NativeIdentity);
         }
         // A room keeps its rules for good; the server must still have them.
         let mut ruleset = match menu.find(Some(start.rules.as_str())) {
@@ -4211,8 +4227,12 @@ mod tests {
             value: NativeValue::Int(37),
         }];
         let settings_map = BTreeMap::from([("radius".to_owned(), Setting::Int(37))]);
-        let version =
-            Text::new(format!("1.2.3+{}", &settings_digest(&settings_map)[..10])).unwrap();
+        let version = Text::new(format!(
+            "1.2.3+{}{}",
+            &settings_digest(&settings_map)[..10],
+            "a".repeat(64)
+        ))
+        .unwrap();
         let term = ModRef {
             id: Text::new("native:bigmap").unwrap(),
             version: version.clone(),
@@ -4710,7 +4730,7 @@ mod tests {
         for (ordinal, native_mods) in [
             Vec::new(),
             vec![NativeMod {
-                version: Text::new("1.2.4+0123456789").unwrap(),
+                version: Text::new(format!("1.2.4+{}{}", "0".repeat(10), "a".repeat(64))).unwrap(),
                 ..valid_native[0].clone()
             }],
             vec![NativeMod {
@@ -4739,6 +4759,41 @@ mod tests {
             ));
             assert_eq!(std::fs::read(&path).unwrap(), before);
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn format9_legacy_short_native_terms_decode_but_recovery_fails_closed() {
+        let dir =
+            std::env::temp_dir().join(format!("tpf3mp-v9-native-short-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = RoomId(FixedBytes([0x8a; 16]));
+        let (manifest, mut native_mods) = native_terms();
+        let mut legacy_manifest = manifest.clone();
+        let legacy_version = Text::new(format!(
+            "1.2.3+{}",
+            &settings_digest(&BTreeMap::from([("radius".to_owned(), Setting::Int(37))]))[..10]
+        ))
+        .unwrap();
+        legacy_manifest.native[0].version = legacy_version.clone();
+        native_mods[0].version = legacy_version;
+
+        let mut start = recovery_start(id, persist::FORMAT_VERSION);
+        start.manifest = Some(persist::StoredManifest::from(&legacy_manifest));
+        start.native_mods = native_mods;
+        let payload = postcard::to_stdvec(&start).unwrap();
+        let decoded = persist::deserialize_start(&payload, persist::FORMAT_VERSION).unwrap();
+        assert_eq!(decoded.manifest.unwrap().manifest(), legacy_manifest);
+        let path = RoomLog::path_for(&dir, &id);
+        write_record(&path, &payload, &[]);
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(matches!(
+            recover_by(&path, &dir, &recorder_menu()),
+            Err(RecoverError::NativeIdentity)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

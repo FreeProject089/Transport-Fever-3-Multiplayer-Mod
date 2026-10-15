@@ -9,9 +9,10 @@
 //! Beside its mods, a manifest names the native mods the game runs that
 //! change the simulation (docs/NATIVE_MODS.md, D29): each as a mod named
 //! [`NATIVE_PREFIX`] and the package's id, whose version is the package's
-//! version, `+`, and the start of a digest of its settings. They are
-//! compared as the mods are, so two games with different native mods, or
-//! the same ones with other settings, never share a room.
+//! version, `+`, the first ten hex digits of its settings digest, and the
+//! full SHA-256 package identity. They are compared as the mods are, so two
+//! games with different native mods, package bytes or settings never share
+//! a room.
 
 use std::{collections::HashMap, fmt};
 
@@ -23,7 +24,17 @@ use crate::{ContentFingerprint, FixedBytes, Text};
 /// The name a mod goes by, as the game lists it.
 pub type ModId = Text<96>;
 /// A mod's version, as the game or its author states it.
-pub type ModVersion = Text<32>;
+/// The extra room is for native package terms; ordinary game mods remain
+/// limited to [`MAX_MOD_VERSION`] bytes by [`ContentManifest::is_valid`].
+pub type ModVersion = Text<96>;
+/// Longest version of an ordinary game mod, as before native terms grew.
+pub const MAX_MOD_VERSION: usize = 32;
+/// Longest native package version before its digest (the native index's
+/// package-version limit).
+pub const MAX_NATIVE_PACKAGE_VERSION: usize = 20;
+/// Native term digest: ten hex digits for settings consistency, then the
+/// full 64-digit package identity SHA-256.
+pub const NATIVE_TERM_DIGEST_HEX: usize = 74;
 
 /// Most mods a manifest lists by name; [`Unlisted`] summarises the rest.
 pub const MAX_LISTED_MODS: usize = 2048;
@@ -38,7 +49,7 @@ pub const MAX_NATIVE_TERMS: usize = 16;
 pub const NATIVE_PREFIX: &str = "native:";
 /// Bytes [`ContentManifest::new`] leaves for the native mods: the most of
 /// them, each with the longest id and version, and their list's length.
-const NATIVE_RESERVE: usize = MAX_NATIVE_TERMS * (2 + 96 + 1 + 32) + 2;
+const NATIVE_RESERVE: usize = MAX_NATIVE_TERMS * (2 + 96 + 1 + 95) + 2;
 
 /// Keeps content fingerprints apart from every other SHA-256 in the
 /// project, and names their format.
@@ -141,12 +152,17 @@ impl ContentManifest {
     /// in order.
     pub fn is_valid(&self) -> bool {
         self.mods.len() <= MAX_LISTED_MODS
+            && self
+                .mods
+                .iter()
+                .all(|listed| listed.version.as_str().len() <= MAX_MOD_VERSION)
             && self.native.len() <= MAX_NATIVE_TERMS
             && self.native.iter().all(|term| {
                 term.id
                     .as_str()
                     .strip_prefix(NATIVE_PREFIX)
                     .is_some_and(|id| !id.is_empty())
+                    && native_term_version_is_full(term.version.as_str())
             })
             && self
                 .native
@@ -213,6 +229,21 @@ impl ContentManifest {
         diff.reordered = same_mods && self.mods != yours.mods;
         Some(diff)
     }
+}
+
+/// Whether a native term carries the full settings prefix and package
+/// identity. Old ten-digit terms still deserialize from room logs, but a
+/// protocol-22 declaration cannot use one to authorize package contents.
+pub fn native_term_version_is_full(version: &str) -> bool {
+    let Some((package_version, digest)) = version.rsplit_once('+') else {
+        return false;
+    };
+    !package_version.is_empty()
+        && package_version.len() <= MAX_NATIVE_PACKAGE_VERSION
+        && digest.len() == NATIVE_TERM_DIGEST_HEX
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn encoded_len<T: Serialize>(value: &T) -> usize {
@@ -387,6 +418,10 @@ mod tests {
         )
     }
 
+    fn native_version(settings: &str, identity: char) -> String {
+        format!("0.3.0+{settings}{}", identity.to_string().repeat(64))
+    }
+
     #[test]
     fn the_same_game_matches() {
         let room = game("35924", &[("trains", "1.2"), ("stations", "3")]);
@@ -556,13 +591,15 @@ mod tests {
             base.clone()
                 .with_native(vec![listed("native:bigmap", version)])
         };
-        let room = big("0.3.0+0123456789");
+        let room_version = native_version("0123456789", 'a');
+        let room = big(&room_version);
         assert!(room.is_valid());
-        assert_eq!(room.compare(&big("0.3.0+0123456789")), None);
-        assert_eq!(room.fingerprint(), big("0.3.0+0123456789").fingerprint());
+        assert_eq!(room.compare(&big(&room_version)), None);
+        assert_eq!(room.fingerprint(), big(&room_version).fingerprint());
 
-        // Other settings: another version, another fingerprint.
-        let other = big("0.3.0+abcdef0123");
+        // Other settings: another settings prefix and package identity.
+        let other_version = native_version("abcdef0123", 'b');
+        let other = big(&other_version);
         assert_ne!(room.fingerprint(), other.fingerprint());
         let diff = room.compare(&other).unwrap();
         assert_eq!(diff.changed_total, 1);
@@ -570,7 +607,7 @@ mod tests {
 
         // Without it: missing; the room without it: extra.
         let diff = room.compare(&base).unwrap();
-        assert_eq!(diff.missing, [listed("native:bigmap", "0.3.0+0123456789")]);
+        assert_eq!(diff.missing, [listed("native:bigmap", &room_version)]);
         assert!(!diff.reordered);
         let diff = base.compare(&room).unwrap();
         assert_eq!(diff.extra_total, 1);
@@ -591,9 +628,21 @@ mod tests {
         wrong.native = vec![listed("bigmap", "1.0.0+00")];
         assert!(!wrong.is_valid());
         let mut unordered = base.clone();
-        unordered.native = vec![listed("native:b", "1"), listed("native:a", "1")];
+        let identity_a = native_version("0123456789", 'a');
+        let identity_b = native_version("0123456789", 'b');
+        unordered.native = vec![
+            listed("native:b", &identity_b),
+            listed("native:a", &identity_a),
+        ];
         assert!(!unordered.is_valid());
-        assert!(base.clone().with_native(unordered.native).is_valid());
+        assert!(
+            base.clone()
+                .with_native(vec![
+                    listed("native:a", &identity_a),
+                    listed("native:b", &identity_b)
+                ])
+                .is_valid()
+        );
         let many = (0..=MAX_NATIVE_TERMS)
             .map(|n| listed(&format!("native:m{n:03}"), "1"))
             .collect();
@@ -607,11 +656,34 @@ mod tests {
                 )
             })
             .collect();
+        let longest_version = format!("{}+{}", "v".repeat(20), "1".repeat(NATIVE_TERM_DIGEST_HEX));
         let longest = (0..MAX_NATIVE_TERMS)
-            .map(|n| listed(&format!("native:{n:02}{}", "n".repeat(87)), &"v".repeat(32)))
+            .map(|n| {
+                listed(
+                    &format!("native:{n:02}{}", "n".repeat(87)),
+                    &longest_version,
+                )
+            })
             .collect();
         let full = ContentManifest::new(Text::new("40420").unwrap(), huge).with_native(longest);
         assert!(full.unlisted.is_some());
         assert!(full.is_valid());
+    }
+
+    #[test]
+    fn old_short_native_terms_and_oversized_normal_versions_fail_closed() {
+        let old = game("40420", &[]).with_native(vec![listed("native:bigmap", "0.3.0+0123456789")]);
+        assert!(
+            !old.is_valid(),
+            "ten hex digits cannot identify package bytes"
+        );
+        let too_long = game(
+            "40420",
+            &[("ordinary_mod", &"v".repeat(MAX_MOD_VERSION + 1))],
+        );
+        assert!(
+            !too_long.is_valid(),
+            "normal mod versions keep their old limit"
+        );
     }
 }
