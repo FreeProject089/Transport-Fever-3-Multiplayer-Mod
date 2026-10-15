@@ -309,6 +309,7 @@ pub(crate) enum RoomCommand {
         invite: Invite,
         password: Option<Text<64>>,
         resume: Option<Resume>,
+        scan_plan: tpf3mp_proto::ScanPlan,
         reply: Reply<RoomView>,
     },
     Leave {
@@ -1096,7 +1097,9 @@ impl Room {
         let (version, _) = postcard::take_from_bytes::<u16>(&first).map_err(RecoverError::Start)?;
         if !matches!(
             version,
-            persist::FORMAT_VERSION | persist::LEGACY_NATIVE_FREE_FORMAT_VERSION
+            persist::FORMAT_VERSION
+                | persist::LEGACY_NATIVE_FORMAT_VERSION
+                | persist::LEGACY_NATIVE_FREE_FORMAT_VERSION
         ) {
             return Err(RecoverError::Version(version));
         }
@@ -1111,13 +1114,13 @@ impl Room {
         if (version == persist::LEGACY_NATIVE_FREE_FORMAT_VERSION && has_native_terms)
             || (version == persist::LEGACY_NATIVE_FREE_FORMAT_VERSION
                 && !start.native_mods.is_empty())
-            || (version == persist::FORMAT_VERSION
+            || (version >= persist::LEGACY_NATIVE_FORMAT_VERSION
                 && start.manifest.is_none()
                 && !start.native_mods.is_empty())
         {
             return Err(RecoverError::NativeSettings);
         }
-        if version == persist::FORMAT_VERSION
+        if version >= persist::LEGACY_NATIVE_FORMAT_VERSION
             && start.manifest.as_ref().is_some_and(|stored| {
                 stored
                     .clone()
@@ -1143,7 +1146,7 @@ impl Room {
             .clone()
             .map(|stored| {
                 let manifest = stored.manifest();
-                if version == persist::FORMAT_VERSION {
+                if version >= persist::LEGACY_NATIVE_FORMAT_VERSION {
                     Declared::restored_with_native(manifest, start.native_mods.clone())
                         .map_err(|_| RecoverError::NativeSettings)
                 } else {
@@ -1542,9 +1545,10 @@ impl Room {
                 invite,
                 password,
                 resume,
+                scan_plan,
                 reply,
             } => {
-                let result = self.join(member, &invite, password.as_ref(), resume);
+                let result = self.join(member, &invite, password.as_ref(), resume, scan_plan);
                 let joined = result.is_ok();
                 let _ = reply.send(result);
                 if joined {
@@ -1744,6 +1748,7 @@ impl Room {
         invite: &Invite,
         password: Option<&Text<64>>,
         resume: Option<Resume>,
+        scan_plan: tpf3mp_proto::ScanPlan,
     ) -> Result<RoomView, RequestError> {
         let now = Instant::now();
         let content = new.content.as_ref().map(|declared| declared.fingerprint);
@@ -1758,6 +1763,9 @@ impl Room {
                 return Err(RequestError::BadInvite);
             }
             _ => return Err(RequestError::BadInvite),
+        }
+        if !scan_plan.is_valid() || scan_plan != self.settings.scan_plan {
+            return Err(RequestError::ScanPlanMismatch);
         }
         if let Some(index) = self.members.iter().position(|m| m.player == new.player) {
             // The same player again, e.g. after reconnecting: the new
@@ -4923,14 +4931,17 @@ mod tests {
             base: None,
             native_mods: native_mods.clone(),
         };
-        let mut log = RoomLog::create(&dir, &start).unwrap();
-        for frame in &frames {
-            log.append(frame).unwrap();
-        }
-        drop(log);
         let path = RoomLog::path_for(&dir, &id);
+        let legacy_frames: Vec<Vec<u8>> = frames.iter().map(|frame| frame.to_vec()).collect();
+        std::fs::create_dir_all(&dir).unwrap();
+        write_record(&path, &persist::format9_payload(&start), &legacy_frames);
+        // Recovery appends a history marker to the old log. A second
+        // recovery proves its old start and appended marker remain readable.
+        let restored = recover_room(&path, &dir);
+        assert_eq!(restored.settings.scan_plan, tpf3mp_proto::ScanPlan::DEFAULT);
+        drop(restored);
 
-        // A restored room compacts, keeping its last three turns.
+        // A restored format-9 room compacts to format 10, keeping its last three turns.
         let mut first = recover_room(&path, &dir);
         assert_native_terms(&first, &native_mods);
         assert_eq!(first.start_record(2, None).native_mods, native_mods);

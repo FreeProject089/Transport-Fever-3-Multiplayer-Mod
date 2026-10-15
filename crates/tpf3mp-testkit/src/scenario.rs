@@ -162,6 +162,7 @@ async fn seat(
     for client in others {
         client
             .join_room(JoinRoom {
+                scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
                 invite,
                 password: None,
                 resume: None,
@@ -380,6 +381,7 @@ async fn join_late(
             client.declare_content(toy_content()).await?;
             client
                 .join_room(JoinRoom {
+                    scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
                     invite: *invite,
                     password: None,
                     resume: None,

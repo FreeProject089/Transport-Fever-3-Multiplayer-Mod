@@ -552,6 +552,7 @@ impl Client {
                 invite: join.invite,
                 password: join.password,
                 resume: join.resume,
+                scan_plan: join.scan_plan,
                 reply,
             })
             .await?;

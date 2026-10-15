@@ -43,6 +43,7 @@ fn samples() -> Vec<(Check, Vec<u8>)> {
     let to_hook = [
         ToHook::Hello { version: 2 },
         ToHook::Begin {
+            scan_plan: tpf3mp_proto::ScanPlan::DEFAULT,
             rules: Text::new("native").unwrap(),
             steps_per_second: 10,
             checkpoint_interval: 50,
