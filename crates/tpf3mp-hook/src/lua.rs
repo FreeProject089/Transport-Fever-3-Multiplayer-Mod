@@ -2195,8 +2195,8 @@ unsafe fn whole_arg(api: &LuaApi, l: State, index: c_int, max: u32) -> Result<u3
 /// `nil` when [`crate::netread::ENV`] leaves it off; else `{ mode =, ms =,
 /// timing =, lights = { type, ... }, deferred = { node, ... } }`, the part
 /// kept for `partTexts` in place of any kept before, or `{ mode =, ms =,
-/// why = }` when it did not read. `part()`, without arguments, only says
-/// whether parts are read: `nil`, or `{ mode =, parts =, stride = }`, and
+/// why = }` when it did not read. `part()`, without arguments, reports the
+/// configured `{ mode =, parts =, stride = }` even when mode is `off`, and
 /// reads and replaces nothing.
 unsafe extern "C-unwind" fn native_part(l: State) -> c_int {
     let Some(api) = API.get() else {
@@ -2206,7 +2206,7 @@ unsafe extern "C-unwind" fn native_part(l: State) -> c_int {
     // SAFETY: a C function's stack has LUA_MINSTACK free slots; each push
     // below is covered by the checkstack before it.
     unsafe {
-        if mode == crate::netread::Mode::Off || (api.checkstack)(l, 8) == 0 {
+        if (api.checkstack)(l, 8) == 0 {
             (api.pushnil)(l);
             return 1;
         }
@@ -2226,6 +2226,10 @@ unsafe extern "C-unwind" fn native_part(l: State) -> c_int {
             push_str(api, l, b"stride");
             (api.pushnumber)(l, f64::from(stride));
             (api.rawset)(l, table);
+            return 1;
+        }
+        if mode == crate::netread::Mode::Off {
+            (api.pushnil)(l);
             return 1;
         }
     }
@@ -3768,6 +3772,7 @@ my_timetables";
             junctions: Vec::new(),
             deferred: Vec::new(),
             constructions: Vec::new(),
+            component_bit_entity_slots_scanned: 0,
             timing: String::new(),
         };
         let texts = "return tpf3mp_native.partTexts(5, 2, 'all', {}, {}, {})";
@@ -3806,6 +3811,30 @@ my_timetables";
                 .contains("junctions left")
         );
         crate::seeds::command_step(previous);
+    }
+
+    /// The no-argument getter exposes the exact local plan even while native
+    /// reads are off, and does not leave a part for `partTexts` to consume.
+    #[test]
+    fn native_part_getter_reports_the_configured_plan_without_reading() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        let script = Lua::new();
+        script.register();
+        let (parts, stride) = crate::netread::plan();
+        let expected = format!(
+            "{}:{parts}:{stride}:nil|nil|no part was read on this thread",
+            crate::netread::mode().name()
+        );
+        assert_eq!(
+            script.run(
+                "local p = tpf3mp_native.part() \
+                 local a, b, why = tpf3mp_native.partTexts(10, 0, 'all', {}, {}, {}) \
+                 return p.mode .. ':' .. p.parts .. ':' .. p.stride .. ':' .. \
+                   tostring(a) .. '|' .. tostring(b) .. '|' .. tostring(why)"
+            ),
+            Ok(expected)
+        );
     }
 
     /// What `dump()` hands the mod, as text.

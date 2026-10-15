@@ -618,12 +618,15 @@ impl<'m> Store<'m> {
     /// For each of `kinds`, every entity whose component bits hold it, in
     /// id order: one pass over the bits for all.
     fn with_each<const N: usize>(&self, kinds: [&Kind; N]) -> Result<[Vec<usize>; N], String> {
-        let mut lists = self.with_all(&kinds)?.into_iter();
+        let (lists, _) = self.with_all(&kinds)?;
+        let mut lists = lists.into_iter();
         Ok(std::array::from_fn(|_| lists.next().unwrap_or_default()))
     }
 
     /// [`Store::with_each`] for as many kinds as `kinds` holds.
-    fn with_all(&self, kinds: &[&Kind]) -> Result<Vec<Vec<usize>>, String> {
+    /// The count is entity slots whose component bits were examined, whether
+    /// or not any requested kind was present.
+    fn with_all(&self, kinds: &[&Kind]) -> Result<(Vec<Vec<usize>>, usize), String> {
         let at: Vec<(usize, usize)> = kinds
             .iter()
             .map(|kind| ((kind.id / 64) * 8, kind.id % 64))
@@ -631,6 +634,7 @@ impl<'m> Store<'m> {
         let mut out: Vec<Vec<usize>> = vec![Vec::new(); kinds.len()];
         let mut bits = vec![0u8; CHUNK * layout::BITS_PER_ENTITY];
         let mut first = 0;
+        let mut scanned_entity_slots = 0;
         while first < self.entities {
             let n = CHUNK.min(self.entities - first);
             let chunk = &mut bits[..n * layout::BITS_PER_ENTITY];
@@ -649,8 +653,9 @@ impl<'m> Store<'m> {
                 }
             }
             first += n;
+            scanned_entity_slots += n;
         }
-        Ok(out)
+        Ok((out, scanned_entity_slots))
     }
 }
 
@@ -965,6 +970,9 @@ pub struct Part {
     /// ([`read_junctions`]), by node entity.
     pub deferred: Vec<usize>,
     pub constructions: Vec<String>,
+    /// Entity slots whose component bits were examined to find this part's
+    /// objects. This is the whole entity table for every part read.
+    pub component_bit_entity_slots_scanned: usize,
     /// What the read found and took, for the log.
     pub timing: String,
 }
@@ -1079,7 +1087,8 @@ pub fn read_part(
     if let Some(kind) = cons.as_ref() {
         wanted.push(kind);
     }
-    let mut lists = store.with_all(&wanted)?.into_iter();
+    let (lists, component_bit_entity_slots_scanned) = store.with_all(&wanted)?;
+    let mut lists = lists.into_iter();
     let mut next = |wanted: bool| {
         if wanted {
             lists.next().unwrap_or_default()
@@ -1214,7 +1223,8 @@ pub fn read_part(
     }
     let t4 = std::time::Instant::now();
     let timing = format!(
-        "part {k}/{n}: bits {:.2} ms, {} of {} edges {:.2} ms, {}+{} of {} junctions {:.2} ms, {} of {} constructions {:.2} ms",
+        "part {k}/{n}: component bits {component_bit_entity_slots_scanned}/{} entity slots {:.2} ms, {} of {} edges {:.2} ms, {}+{} of {} junctions {:.2} ms, {} of {} constructions {:.2} ms",
+        store.entities,
         ms(t0, t1),
         edges.len(),
         edge_ids.len(),
@@ -1236,6 +1246,7 @@ pub fn read_part(
         junctions,
         deferred,
         constructions,
+        component_bit_entity_slots_scanned,
         timing,
     })
 }
@@ -2740,7 +2751,21 @@ mod tests {
     }
 
     fn junction_engine(fake: &mut Fake) -> usize {
-        let (nodes, edges, configs) = junction_world();
+        junction_engine_in(fake, 40, false, None)
+    }
+
+    fn junction_engine_in(
+        fake: &mut Fake,
+        entity_slots: usize,
+        dense_cell: bool,
+        sparse_construction: Option<usize>,
+    ) -> usize {
+        let (mut nodes, edges, configs) = junction_world();
+        if dense_cell {
+            for (i, (_, p)) in nodes.iter_mut().enumerate() {
+                *p = [10.0 + i as f32, 10.0, 0.0];
+            }
+        }
         let mut edge_elements = Vec::new();
         for (entity, n0, n1, street) in &edges {
             let mut b = vec![0u8; layout::BASE_EDGE_SIZE];
@@ -2809,6 +2834,23 @@ mod tests {
             raw[layout::CONFIG_CUSTOM_PHASES] = u8::from(c.custom);
             config_elements.push((c.node, raw));
         }
+        let mut constructions = construction_elements(fake);
+        if let Some(entity) = sparse_construction {
+            let mut raw = vec![0u8; layout::CONSTRUCTION_SIZE];
+            let first = string(fake, "");
+            let second = string(fake, "station/high_id.con");
+            raw[0..0x20].copy_from_slice(&first);
+            raw[0x20..0x40].copy_from_slice(&second);
+            put_f32(&mut raw, layout::CONSTRUCTION_X, 10.0);
+            put_f32(&mut raw, layout::CONSTRUCTION_Y, 10.0);
+            constructions.push((entity, raw));
+        }
+        if dense_cell {
+            for (_, raw) in &mut constructions {
+                put_f32(raw, layout::CONSTRUCTION_X, 10.0);
+                put_f32(raw, layout::CONSTRUCTION_Y, 10.0);
+            }
+        }
         let specs = [
             Spec {
                 vtable: layout::BASE_EDGE_POOL_VTABLE,
@@ -2832,10 +2874,10 @@ mod tests {
                 vtable: layout::CONSTRUCTION_POOL_VTABLE,
                 id: 66,
                 size: layout::CONSTRUCTION_SIZE,
-                elements: construction_elements(fake),
+                elements: constructions,
             },
         ];
-        build(fake, &specs, 40)
+        build(fake, &specs, entity_slots)
     }
 
     /// Constructions 31-35 (file and place) spread over cells.
@@ -2957,6 +2999,83 @@ mod tests {
         assert!(read_part(&fake, engine, IMAGE, 0, 0, Kinds::ALL).is_err());
         assert!(read_part(&fake, engine, IMAGE, 3, 3, Kinds::ALL).is_err());
         assert!(read_part(&fake, engine, IMAGE, MAX_PARTS + 1, 0, Kinds::ALL).is_err());
+    }
+
+    /// A full spatial cell remains a full-table component-bit scan, and even
+    /// an empty part visits the same entity slots. This count is the work
+    /// shape, not a wall-clock bound.
+    #[test]
+    fn every_part_scans_the_full_entity_table_for_dense_and_empty_cells() {
+        const ENTITY_SLOTS: usize = 4096;
+        let mut fake = Fake::new();
+        let engine = junction_engine_in(&mut fake, ENTITY_SLOTS, true, None);
+
+        // Every edge, junction and construction is in cell zero, so this is
+        // the skewed case: one part owns all rows while its neighbors are empty.
+        let dense = read_part(&fake, engine, IMAGE, 10, 0, Kinds::ALL).unwrap();
+        assert_eq!(dense.edges.len(), 4);
+        assert!(!dense.junctions.is_empty());
+        assert_eq!(dense.constructions.len(), 5);
+        assert_eq!(dense.component_bit_entity_slots_scanned, ENTITY_SLOTS);
+        assert!(
+            dense
+                .timing
+                .contains("component bits 4096/4096 entity slots")
+        );
+
+        let empty = read_part(&fake, engine, IMAGE, 10, 1, Kinds::ALL).unwrap();
+        assert!(empty.edges.is_empty());
+        assert!(empty.junctions.is_empty());
+        assert!(empty.constructions.is_empty());
+        assert_eq!(empty.component_bit_entity_slots_scanned, ENTITY_SLOTS);
+    }
+
+    /// Sparse component bits above 115k remain discoverable: the scanner
+    /// visits through the final entity slot rather than relying on a low cap.
+    #[test]
+    fn part_scans_past_115k_slots_to_find_a_sparse_high_entity() {
+        const ENTITY_SLOTS: usize = 131_073;
+        const HIGH_ID: usize = ENTITY_SLOTS - 1;
+        let mut fake = Fake::new();
+        let engine = junction_engine_in(&mut fake, ENTITY_SLOTS, false, Some(HIGH_ID));
+
+        let high = read_part(
+            &fake,
+            engine,
+            IMAGE,
+            10,
+            0,
+            Kinds {
+                edges: false,
+                junctions: false,
+                constructions: true,
+            },
+        )
+        .unwrap();
+        assert!(
+            high.constructions
+                .iter()
+                .any(|row| row.contains("/station/high_id.con@")),
+            "the construction at entity {HIGH_ID} was not found: {:?}",
+            high.constructions
+        );
+        assert_eq!(high.component_bit_entity_slots_scanned, ENTITY_SLOTS);
+
+        let empty = read_part(
+            &fake,
+            engine,
+            IMAGE,
+            10,
+            2,
+            Kinds {
+                edges: false,
+                junctions: false,
+                constructions: true,
+            },
+        )
+        .unwrap();
+        assert!(empty.constructions.is_empty());
+        assert_eq!(empty.component_bit_entity_slots_scanned, ENTITY_SLOTS);
     }
 
     /// A junction is placed by its row's millimetres, an edge starting at

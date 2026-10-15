@@ -3794,16 +3794,6 @@ Together the read took 200-275 ms there, the checkpoint's step 240-300 ms:
 still a visible stutter, about a quarter of it. Reading the network natively
 takes most of the rest (below).
 
-The mod logs, at each checkpoint, what applying the room's actions cost
-since the last one, when it applied any: the actions themselves, every
-`registry.sync` (once before the actions of an update and once after each
-action, each walking every vehicle, line, station group, town and
-industry) and reading and writing the game script's state:
-
-```
-mod: actions since the last checkpoint: 3 in 2 updates, applied in 4.0 ms (longest 2.0), registry.sync 21.0 ms over 5 calls (longest 5.0), state 3.0 ms
-```
-
 #### The network lane read natively
 
 `TPF3MP_HOOK_NATIVE_LANES` in the game's environment lets the hook read the
@@ -3845,13 +3835,40 @@ and the part (`parts|kind|k/N`). As with the tiles, a sweep samples objects
 when their part is read: an object moved between parts within a sweep is
 read once, twice or not at all in that sweep.
 
+**Plan agreement and work limits.** These switches are process-local and
+are not yet negotiated by the room. Until the room supplies a shared plan,
+use `off` in multiplayer outside a controlled test where every game has the
+same mode and `N x S`; mixed settings are not a supported configuration. A
+saved rolling-v2 history is refused before its next hash if this game's mode
+or part plan changed. The rolling-v1 history used when mode is `off` also
+saves and checks the mode, part count and stride. A rolling-v1 save from
+before these fields existed is adopted only when all three are absent and
+the current mode is `off`; partial metadata and native-mode resumes fail
+closed. These checks are local and do not identify a different plan on
+another game.
+
+Each native part scans every entity slot's component bits before it selects
+rows, including when its cell is empty or one cell contains all rows. The
+read log reports the number of component-bit entity slots scanned. The
+4,096-slot dense-cell fixture verifies the same full-table count for both a
+hot part and an empty part. A second fixture finds a sparse construction at
+entity 131,072 in a 131,073-slot table, so IDs above 115k are not refused by
+an artificial cap. These establish the scan's work shape and high-ID
+coverage, not a performance bound. `MAX_ENTITIES` (8,388,608) is an
+input-safety ceiling, not a safe per-update CPU bound; each part still scans
+the complete entity-slot table. Compare mode also runs the Lua reference
+walk for that part and has no hard per-update work bound. There is no hard
+latency bound for this prototype, and the one local measurement below does
+not establish frame-time safety on other maps or machines.
+
 **Bindings.** In the game script's `postUpdate`, `part(n, k, kind)` reads
 one batch and keeps it. `partTexts(n, k, kind, preferences, lights,
 deferred, rows)`, called in the same update, answers its lanes' texts:
 `count:hash`, as `summary` makes them, and `nil` for a lane the kind does
 not read. It answers only for the batch asked for, read at the room's
-current step, and only once. `part()` without arguments only says whether
-parts are read (`mode`, `parts`, `stride`) and reads and replaces nothing.
+current step, and only once. `part()` without arguments reports the
+configured plan (`mode`, `parts`, `stride`) even when mode is `off`, and
+reads and replaces nothing.
 
 A history of parts is held, through `scanned(false, why)`, whenever the
 game reads no parts or a part did not read. This is checked on every

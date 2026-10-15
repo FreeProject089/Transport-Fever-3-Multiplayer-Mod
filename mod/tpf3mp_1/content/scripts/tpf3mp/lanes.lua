@@ -754,16 +754,16 @@ function lanes.kindReads(kind, lane)
 	return kind == "edges" or kind == "junctions"
 end
 
--- Whether this state's hook reads parts: its part() answers at all (nil
--- where TPF3MP_HOOK_NATIVE_LANES leaves it off), with how many parts and
--- every how many updates (prototype: TPF3MP_HOOK_PARTS), else false.
+-- The hook's configured scan plan, even when its mode is off; false when
+-- this hook has no native scanner. The mode and partition are saved with
+-- either rolling history so a resumed scan cannot silently change plans.
 function lanes.nativeParts()
 	local native = tpf3mp_native
 	if not (type(native) == "table" and type(native.part) == "function"
 		and type(native.partTexts) == "function") then return false end
 	local plan = native.part()
 	if plan == nil then return false end
-	return { parts = plan.parts, stride = plan.stride }
+	return { mode = plan.mode, parts = plan.parts, stride = plan.stride }
 end
 
 -- The part's rows as this Lua makes them (the reference the hook's are
@@ -952,21 +952,46 @@ end
 -- unnoticed. Dynamic lanes are read once every five updates.
 function lanes.rolling(api, previous, step, checkpoint)
 	if type(step) ~= "number" or step < 1 or step % 1 ~= 0 then error("invalid world-check step", 0) end
+	local plan = lanes.nativeParts()
 	local scan = previous
 	if step == 1 then
-		local plan = lanes.nativeParts()
-		if plan then
-			scan = { version = 2, step = 0, first = 1, hashes = {}, counts = {},
+		if plan and plan.mode ~= "off" then
+			scan = { version = 2, mode = plan.mode, step = 0, first = 1, hashes = {}, counts = {},
 				parts = plan.parts or lanes.PARTS, stride = plan.stride or 1, sweepStart = 1, sweeps = 0 }
 		else
 			scan = { version = 1, step = 0, first = 1, hashes = {}, counts = {},
-				tile = 0, pending = {}, sweepStart = 1, sweeps = 0 }
+				tile = 0, pending = {}, sweepStart = 1, sweeps = 0,
+				mode = plan and plan.mode or nil, parts = plan and plan.parts or nil,
+				stride = plan and plan.stride or nil }
 		end
 	end
 	if type(scan) ~= "table" or (scan.version ~= 1 and scan.version ~= 2) or scan.step ~= step - 1 then
 		error("the rolling world-check history is missing or skipped an update", 0)
 	end
-	if scan.version == 2 then return rollingParts(api, scan, step, checkpoint) end
+	if scan.version == 2 then
+		if not plan or plan.mode == "off" then
+			error("saved rolling-v2 history has no native part plan or it is disabled", 0)
+		end
+		if scan.mode ~= plan.mode or scan.parts ~= (plan.parts or lanes.PARTS)
+			or scan.stride ~= (plan.stride or 1) then
+			error("saved rolling-v2 plan does not match this game's native part plan", 0)
+		end
+		return rollingParts(api, scan, step, checkpoint)
+	end
+	if plan then
+		if plan.mode ~= "off" then
+			error("saved rolling-v1 history does not match this game's native scan plan", 0)
+		end
+		if scan.mode == nil and scan.parts == nil and scan.stride == nil then
+			-- Older v1 saves predate the local plan fields. The off-mode tile
+			-- reader is unchanged, so adopt only this all-absent legacy shape.
+			scan.mode, scan.parts, scan.stride = plan.mode, plan.parts, plan.stride
+		elseif scan.mode ~= plan.mode or scan.parts ~= plan.parts or scan.stride ~= plan.stride then
+			error("saved rolling-v1 history does not match this game's native scan plan", 0)
+		end
+	elseif scan.mode ~= nil or scan.parts ~= nil or scan.stride ~= nil then
+		error("saved rolling-v1 history has no native scan plan", 0)
+	end
 	local t0 = clock()
 	lanes.cost = { lanes = {}, sort = 0, hash = 0, bytes = 0 }
 	local bounds = api.engine.terrain.getBoundingBox()

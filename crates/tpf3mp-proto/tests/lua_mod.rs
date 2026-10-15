@@ -1990,7 +1990,7 @@ api.type.enum.TrafficLightPreference = api.type.enum.TrafficLightPreference or {
 PART_CALLS, PART_TEXTS = {}, {}
 NATIVE_TEXT = 'native'
 tpf3mp_native.part = function(n, k, kind)
-    if n == nil then return { mode = PART_MODE or 'on', why = 'a part number is missing', parts = PLAN_PARTS, stride = PLAN_STRIDE } end
+    if n == nil then return { mode = PART_MODE or 'on', parts = PLAN_PARTS or 10, stride = PLAN_STRIDE or 1 } end
     PART_CALLS[#PART_CALLS + 1] = n .. '/' .. k .. '/' .. kind
     if PART_FAIL then return { mode = 'on', why = PART_FAIL } end
     return { mode = PART_MODE or 'on', ms = 1, timing = 'fake', lights = {}, deferred = {} }
@@ -2100,6 +2100,202 @@ fn rolling_checks_read_native_parts_in_turn_and_fail_closed() {
     );
     // Without parts, the rolling history of version 1.
     assert!(read(&rolling_game(), 1, 12)[0].starts_with("rolling-v1:"));
+
+    // A saved history cannot silently resume under a different local mode
+    // or partition plan; refuse before producing another checkpoint hash.
+    let changed_plan = game("ROLL_STEP(1,false) PLAN_PARTS=4 PLAN_STRIDE=1");
+    let why = changed_plan
+        .load("ROLL_STEP(2,true)")
+        .exec()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        why.contains("saved rolling-v2 plan does not match"),
+        "{why}"
+    );
+    assert_eq!(
+        changed_plan.load("return SCAN.step").eval::<u32>().unwrap(),
+        1,
+        "a mismatched partition must be refused before advancing saved history"
+    );
+    let calls: Vec<String> = changed_plan.load("return PART_CALLS").eval().unwrap();
+    assert_eq!(
+        calls.len(),
+        1,
+        "no second native part may be read: {calls:?}"
+    );
+    let reports: Vec<String> = changed_plan.load("return REPORTS").eval().unwrap();
+    assert!(
+        reports.is_empty(),
+        "no checkpoint hash may be published: {reports:?}"
+    );
+
+    let changed_stride = game("ROLL_STEP(1,false) ROLL_STEP(2,false) PLAN_STRIDE=2");
+    let why = changed_stride
+        .load("ROLL_STEP(3,true)")
+        .exec()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        why.contains("saved rolling-v2 plan does not match"),
+        "{why}"
+    );
+    assert_eq!(
+        changed_stride
+            .load("return SCAN.step")
+            .eval::<u32>()
+            .unwrap(),
+        2,
+        "a mismatched stride must be refused before advancing saved history"
+    );
+    let calls: Vec<String> = changed_stride.load("return PART_CALLS").eval().unwrap();
+    assert_eq!(
+        calls.len(),
+        2,
+        "no third native part may be read: {calls:?}"
+    );
+
+    let changed_mode = game("PART_MODE='compare' ROLL_STEP(1,false) PART_MODE='on'");
+    let why = changed_mode
+        .load("ROLL_STEP(2,true)")
+        .exec()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        why.contains("saved rolling-v2 plan does not match"),
+        "{why}"
+    );
+    assert_eq!(
+        changed_mode.load("return SCAN.step").eval::<u32>().unwrap(),
+        1,
+        "a mismatched mode must be refused before advancing saved history"
+    );
+    let calls: Vec<String> = changed_mode.load("return PART_CALLS").eval().unwrap();
+    assert_eq!(
+        calls.len(),
+        1,
+        "no second native part may be read: {calls:?}"
+    );
+
+    let native_disabled = game("ROLL_STEP(1,false) tpf3mp_native.part=nil");
+    let why = native_disabled
+        .load("ROLL_STEP(2,true)")
+        .exec()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        why.contains("saved rolling-v2 history has no native part plan"),
+        "{why}"
+    );
+    assert_eq!(
+        native_disabled
+            .load("return SCAN.step")
+            .eval::<u32>()
+            .unwrap(),
+        1,
+        "missing native plan must be refused before advancing saved history"
+    );
+
+    let native_enabled = game(
+        "PART_QUERY=tpf3mp_native.part tpf3mp_native.part=nil ROLL_STEP(1,false) \
+         tpf3mp_native.part=PART_QUERY",
+    );
+    let why = native_enabled
+        .load("ROLL_STEP(2,true)")
+        .exec()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        why.contains("saved rolling-v1 history does not match"),
+        "{why}"
+    );
+    assert_eq!(
+        native_enabled
+            .load("return SCAN.step")
+            .eval::<u32>()
+            .unwrap(),
+        1,
+        "native plan appearing after a v1 save must be refused before history advances"
+    );
+
+    // The default/off rolling-v1 path records and validates the complete
+    // configured plan too, including an off-to-off partition change.
+    let native_off = game("PART_MODE='off' PLAN_PARTS=4 PLAN_STRIDE=2 ROLL_STEP(1,false)");
+    assert_eq!(
+        native_off
+            .load(
+                "return SCAN.version .. ':' .. SCAN.mode .. ':' .. SCAN.parts .. ':' .. SCAN.stride"
+            )
+            .eval::<String>()
+            .unwrap(),
+        "1:off:4:2"
+    );
+    let calls: Vec<String> = native_off.load("return PART_CALLS").eval().unwrap();
+    assert!(calls.is_empty(), "off mode must keep rolling-v1: {calls:?}");
+    let why = native_off
+        .load("PLAN_PARTS=5 ROLL_STEP(2,true)")
+        .exec()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        why.contains("saved rolling-v1 history does not match"),
+        "{why}"
+    );
+    assert_eq!(
+        native_off.load("return SCAN.step").eval::<u32>().unwrap(),
+        1,
+        "an off-mode partition change must be refused before history advances"
+    );
+
+    let legacy_off = game(
+        "PART_MODE='off' ROLL_STEP(1,false) \
+         SCAN.mode=nil SCAN.parts=nil SCAN.stride=nil",
+    );
+    let legacy_result: bool = legacy_off
+        .load("local out=ROLL_STEP(2,true); return out[0]:sub(1,11) == 'rolling-v1:'")
+        .eval()
+        .unwrap();
+    assert!(legacy_result, "an old off-mode v1 save remains rolling-v1");
+    assert_eq!(
+        legacy_off
+            .load("return SCAN.mode .. ':' .. SCAN.parts .. ':' .. SCAN.stride")
+            .eval::<String>()
+            .unwrap(),
+        "off:10:1",
+        "the legacy save adopts the current off plan exactly once"
+    );
+
+    let partial_off = game("PART_MODE='off' ROLL_STEP(1,false) SCAN.parts=nil");
+    let why = partial_off
+        .load("ROLL_STEP(2,true)")
+        .exec()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        why.contains("saved rolling-v1 history does not match"),
+        "partial plan metadata must not be migrated: {why}"
+    );
+    assert_eq!(
+        partial_off.load("return SCAN.step").eval::<u32>().unwrap(),
+        1,
+        "partial plan metadata is refused before history advances"
+    );
+
+    let off_to_on = game("PART_MODE='off' ROLL_STEP(1,false) PART_MODE='on'");
+    let why = off_to_on
+        .load("ROLL_STEP(2,true)")
+        .exec()
+        .unwrap_err()
+        .to_string();
+    assert!(
+        why.contains("saved rolling-v1 history does not match"),
+        "{why}"
+    );
+    assert_eq!(
+        off_to_on.load("return SCAN.step").eval::<u32>().unwrap(),
+        1,
+        "enabling native mode after a v1 save must be refused before history advances"
+    );
 }
 
 #[test]
