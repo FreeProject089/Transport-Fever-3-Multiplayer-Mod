@@ -685,7 +685,9 @@ positions, the originator's decisions included:
   that is not the build's own street or track, its kind: network, road
   template and style. A piece of a street the build joins, rebuilt through
   the new junction, keeps that street's kind; so does a street a track
-  crosses;
+  crosses. A link also names where the edge itself ends, at either end,
+  when that is not its vertex (`position0`, `position1`, schema 27; see
+  "Edge ends" below);
 - `removals`: existing edges the build removes, of either network, by their
   ends: an upgrade's, a span the build passes under, the stretch the tool
   rebuilds around a new junction or crossing. A split parent is no removal;
@@ -762,6 +764,24 @@ Missing lanes or an ambiguous replacement refuse the build instead of
 resetting the player's settings. Before sending, the replay asks
 the game's verdict (`makeProposalData`) and refuses a build it calls
 critical, with its reasons.
+
+**Edge ends.** An edge's own ends (`BaseEdge.position0`, `position1`)
+need not be its nodes' positions. The track tool, laying a track onto the
+free end of a street with tram tracks, starts the track on the street's
+incoming tram lane, 2 m beside the end node (seen on build 40420 in a
+single-player game: node at (-1737.13, -611.14), track start at
+(-1737.44, -613.11)). Only there does the game join the two: the street's
+tram lane and the track then share one transport-network node, and trams
+drive from the street onto the track. A track that starts on the node's
+centre, everything else the same, gets a network node of its own and ends
+in a buffer stop. A script proposal shows the same, so it is the edge's
+end, not the native tool, that joins them. The capture therefore carries
+each link's own end where it lies a millimetre or more off its vertex
+(`position0`, `position1`, at most 32 m off on each axis), and the replay
+builds the edge to end there. Before schema 27 the replay put every end on
+its node, and such a track ended in a buffer stop in every game of the
+room (2026-10-15). A split still builds each half from the split edge's
+node positions.
 The tests `tpf3mp-proto/tests/lua_capture.rs` (a junction rebuilt around a
 new street, a level crossing, a bridge, a tunnel, an upgrade, the TF3
 proposal's shape) and `lua_mod.rs` (the replay) run it in Lua and decode
