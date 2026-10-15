@@ -1680,7 +1680,7 @@ impl<B: Backend> LauncherApp<B> {
                 ));
                 ui.add_space(10.0);
                 ui.label(theme::text(
-                    "These packages run executable code inside Transport Fever 3 with your account's rights on this PC. Nothing will be installed or enabled until you approve.",
+                    "These packages run executable code inside Transport Fever 3 with your account's rights on this PC. Approval is required before this action can fetch, install, enable, or roll back native plugin code.",
                     theme::body(13.0),
                     theme::DIFFERS_TEXT,
                 ));

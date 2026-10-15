@@ -1233,6 +1233,23 @@ pub fn match_room(
     if !room.is_empty() {
         let (index, source) =
             index_listing_with_source(&mut store, data_dir, setup, server, &wanted, false)?;
+        let mut room_settings = BTreeMap::new();
+        for native in room {
+            let package = index
+                .package(native.id.as_str(), native.package_version())
+                .filter(|package| package.runs_on(build))
+                .ok_or_else(|| {
+                    format!(
+                        "the signed index has no {} {} for your game's build",
+                        native.name,
+                        native.package_version()
+                    )
+                })?;
+            room_settings.insert(
+                package.id.clone(),
+                effective_settings_from_room(package, Some(native))?,
+            );
+        }
         for native in room {
             let (id, version) = (native.id.as_str(), native.package_version());
             let package = index
@@ -1246,11 +1263,7 @@ pub fn match_room(
                 })?;
             info!(%id, %version, "checking the room's native mod against its signed package");
             let packages = resolved_packages_for_install(&store, &index, build, id, Some(version))?;
-            let settings_override = BTreeMap::from([(
-                id.to_owned(),
-                effective_settings_from_room(package, Some(native))?,
-            )]);
-            let settings = effective_settings_by_package(&store, &packages, &settings_override);
+            let settings = effective_settings_by_package(&store, &packages, &room_settings);
             store
                 .install_exact_from(
                     resolve::Context {
@@ -1493,6 +1506,8 @@ mod tests {
         files: BTreeMap<String, Vec<u8>>,
     }
 
+    const TEST_PLUGIN_BYTES: &[u8] = b"test plugin";
+
     impl Source for Fake {
         fn index(&self) -> Result<(Vec<u8>, Vec<u8>), tpf3mp_nativemods::fetch::FetchError> {
             Ok((self.json.clone(), self.signature.clone()))
@@ -1563,24 +1578,30 @@ mod tests {
         };
         let json = serde_json::to_vec(&index).unwrap();
         let signature = pair.sign(&json).as_ref().to_vec();
+        let mut files = BTreeMap::new();
+        for (package, (url, bytes)) in &packages {
+            files.insert(url.clone(), bytes.clone());
+            for plugin in &package.plugins {
+                files.insert(plugin.url.clone(), TEST_PLUGIN_BYTES.to_vec());
+            }
+        }
         NativeSetup {
             source: Arc::new(Fake {
                 json,
                 signature,
-                files: packages.into_iter().map(|(_, file)| file).collect(),
+                files,
             }),
             keys: vec![pair.public_key().as_ref().to_vec()],
         }
     }
 
     fn with_plugin(mut package: Package) -> Package {
-        let plugin_bytes = b"test plugin";
         package.authors = vec!["Native Mod Authors".into()];
         package.plugins.push(tpf3mp_nativemods::index::Plugin {
             path: format!("plugin/{}.dll", package.id),
             url: format!("https://example.invalid/{}/plugin.dll", package.id),
-            size: plugin_bytes.len() as u64,
-            sha256: tpf3mp_nativemods::signed::sha256_hex(plugin_bytes),
+            size: TEST_PLUGIN_BYTES.len() as u64,
+            sha256: tpf3mp_nativemods::signed::sha256_hex(TEST_PLUGIN_BYTES),
             abi: tpf3mp_nativemods::index::PLUGIN_ABI,
             platform: "windows-x86_64".into(),
         });
@@ -1599,6 +1620,49 @@ mod tests {
         );
         assert!(server_source_id("bad..host:29470").is_err());
         assert!(server_source_id("example.org:+29470").is_err());
+    }
+
+    #[test]
+    fn offline_data_only_install_can_resolve_a_cached_server_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game").unwrap();
+        let build = build_of(&exe).unwrap();
+        let (package, _) = native_package("cached", "1.0.0", &build);
+        let json = serde_json::to_vec(&Index {
+            format: 1,
+            serial: 1,
+            packages: vec![package],
+            listings: Default::default(),
+        })
+        .unwrap();
+        let server = "eu.example.org:29470";
+        accept_server_index(dir.path(), server, 1, &json, false).unwrap();
+        let setup = setup(Vec::new());
+
+        assert!(
+            plugin_consent_review(
+                dir.path(),
+                &setup,
+                Some(&build),
+                Some(server),
+                &Change::Install("cached".into()),
+                false,
+            )
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            plugin_consent_review(
+                dir.path(),
+                &setup,
+                Some(&build),
+                None,
+                &Change::Install("cached".into()),
+                false,
+            )
+            .is_err()
+        );
     }
 
     /// A member joining a room gets the room's version from the signed
@@ -1815,6 +1879,137 @@ mod tests {
                 .unwrap()
                 .has_consent("project", &review[0].digest)
                 .unwrap()
+        );
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn room_plugin_dependency_uses_its_room_settings_before_earlier_root_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game").unwrap();
+        let build = build_of(&exe).unwrap();
+        let (mut root, root_file) = native_package("a_root", "1.0.0", &build);
+        root.depends.push(tpf3mp_nativemods::index::Dependency {
+            id: "z_engine".into(),
+            version: "^1.0".into(),
+        });
+        let (engine, engine_file) = native_package("z_engine", "1.0.0", &build);
+        let engine = with_plugin(engine);
+        let setup = setup(vec![(root, root_file), (engine.clone(), engine_file)]);
+
+        let owner = dir.path().join("owner");
+        apply(&owner, &setup, Some(&build), None, Change::Refresh).unwrap();
+        let mut owner_store = Store::open(owner.join(FOLDER)).unwrap();
+        let index = owner_store.cached_index(&setup.keys).unwrap();
+        let packages =
+            resolved_packages_for_install(&owner_store, &index, &build, "a_root", Some("1.0.0"))
+                .unwrap();
+        let defaults = effective_settings_by_package(&owner_store, &packages, &BTreeMap::new());
+        let default_digest = terms::package_digest(&engine, &defaults["z_engine"]);
+        owner_store
+            .record_consent("project", &default_digest)
+            .unwrap();
+        owner_store
+            .install_exact_from(
+                resolve::Context {
+                    index: &index,
+                    build: &build,
+                    registry: BUILT_IN,
+                },
+                "a_root",
+                "1.0.0",
+                "project",
+                &defaults,
+                setup.source.as_ref(),
+            )
+            .unwrap();
+        owner_store
+            .set_setting("z_engine", "depth", Setting::Int(12))
+            .unwrap();
+        let room_engine_settings = BTreeMap::from([
+            ("depth".to_owned(), Setting::Int(12)),
+            ("raster".to_owned(), Setting::Bool(true)),
+        ]);
+        let room_engine_digest = terms::package_digest(&engine, &room_engine_settings);
+        owner_store
+            .record_consent("project", &room_engine_digest)
+            .unwrap();
+        owner_store.set_enabled("a_root", true).unwrap();
+        owner_store.set_enabled("z_engine", true).unwrap();
+        drop(owner_store);
+        let room = next_terms(&owner, &exe).unwrap();
+        assert_eq!(
+            room.iter()
+                .map(|native| native.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a_root", "z_engine"],
+            "the room root is matched before its plugin dependency"
+        );
+
+        let member = dir.path().join("member");
+        apply(&member, &setup, Some(&build), None, Change::Refresh).unwrap();
+        let mut member_store = Store::open(member.join(FOLDER)).unwrap();
+        let index = member_store.cached_index(&setup.keys).unwrap();
+        let packages =
+            resolved_packages_for_install(&member_store, &index, &build, "a_root", Some("1.0.0"))
+                .unwrap();
+        let defaults = effective_settings_by_package(&member_store, &packages, &BTreeMap::new());
+        let default_digest = terms::package_digest(&engine, &defaults["z_engine"]);
+        member_store
+            .record_consent("project", &default_digest)
+            .unwrap();
+        member_store
+            .install_exact_from(
+                resolve::Context {
+                    index: &index,
+                    build: &build,
+                    registry: BUILT_IN,
+                },
+                "a_root",
+                "1.0.0",
+                "project",
+                &defaults,
+                setup.source.as_ref(),
+            )
+            .unwrap();
+        drop(member_store);
+
+        // Model an existing installation from before explicit consent was
+        // required: it has trusted provenance but no saved approval yet.
+        fs::write(
+            member.join(FOLDER).join("consents.json"),
+            br#"{"format":1,"by_source":{}}"#,
+        )
+        .unwrap();
+        let review =
+            room_plugin_consent_review(&member, &setup, &build, None, &room, false).unwrap();
+        assert_eq!(review.len(), 1);
+        assert_eq!(review[0].id, "z_engine");
+        assert_eq!(review[0].digest, room_engine_digest);
+        assert!(!review[0].approved);
+        assert!(
+            approve_plugin_consent(
+                &member,
+                &setup,
+                Some(&build),
+                None,
+                &PendingPluginOperation::MatchRoom {
+                    room: room.clone(),
+                    resume_join: false,
+                },
+                &review,
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        assert!(match_room(&member, &setup, &build, None, &room).unwrap());
+        assert_eq!(next_terms(&member, &exe).unwrap(), room);
+        let member_store = Store::open(member.join(FOLDER)).unwrap();
+        assert_eq!(
+            member_store.registry().packages["z_engine"].settings["depth"],
+            Setting::Int(12)
         );
     }
 

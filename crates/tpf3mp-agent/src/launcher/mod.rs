@@ -1807,6 +1807,14 @@ fn native_change_consent_action(change: &Change) -> String {
     }
 }
 
+fn cached_server_for_offline_install(server: Option<&str>, proposed: bool) -> Option<String> {
+    if proposed {
+        None
+    } else {
+        server.map(str::to_owned)
+    }
+}
+
 /// One change the player makes in the native mods panel, then the panel
 /// read again and, when no game runs from here, the content declared anew.
 async fn native_change(
@@ -1835,7 +1843,11 @@ async fn native_change(
     }
     let install = matches!(&change, Change::Install(_) | Change::InstallProposed(_));
     let proposed = matches!(&change, Change::InstallProposed(_));
-    let mut action_server = None;
+    let mut action_server = if install && connected.is_none() && session.is_none() {
+        cached_server_for_offline_install(server.as_deref(), proposed)
+    } else {
+        None
+    };
     let mut build = None;
     if install {
         let exe = exe
@@ -1909,6 +1921,15 @@ async fn native_change(
         Vec::new()
     };
     shared.view().native_busy = None;
+    if !review.iter().all(|package| package.approved)
+        && action_server.is_some()
+        && connected.is_none()
+        && session.is_none()
+    {
+        return Err(
+            "connect to the native-mod source before reviewing new executable plugin code".into(),
+        );
+    }
     if !review.iter().all(|package| package.approved)
         && queue_plugin_consent(
             shared,
@@ -3852,6 +3873,19 @@ fn random_token() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_installs_keep_cached_server_indexes_but_not_unreviewed_proposals() {
+        assert_eq!(
+            cached_server_for_offline_install(Some("eu.example.org:29470"), false).as_deref(),
+            Some("eu.example.org:29470")
+        );
+        assert_eq!(
+            cached_server_for_offline_install(Some("eu.example.org:29470"), true),
+            None
+        );
+        assert_eq!(cached_server_for_offline_install(None, false), None);
+    }
 
     fn local_config(worlds_dir: &Path) -> LauncherConfig {
         let (identity, _) = Identity::generate().unwrap();
