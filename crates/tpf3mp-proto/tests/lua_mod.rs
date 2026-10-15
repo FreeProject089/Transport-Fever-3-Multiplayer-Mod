@@ -2155,6 +2155,10 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
     assert_eq!(
         vehicles,
         [
+            "lane 3 step 300 vehicle-0/core state=1 stop=0 line=nil edge=3 pos=10.199999999999999 speed=5 \
+             path_count=0 path_hash=nil entity=401 row=1:0:3~10.20 v5.00",
+            "lane 3 step 300 vehicle-1/core state=2 stop=1 line=nil edge=0 pos=0 speed=0 \
+             path_count=0 path_hash=nil entity=402 row=2:1:0~0.00 v0.00",
             "lane 3 step 300 vehicle-0 state=1 stop=0 line=nil edge=3 pos=10.199999999999999 speed=5 \
              arrival=nil/nil arrival_locked=nil load=nil pending=nil free=nil \
              entity=401 row=1:0:3~10.20 v5.00",
@@ -2197,9 +2201,14 @@ fn a_lane_dump_is_the_lanes_text_entry_by_entry_keyed_and_in_the_same_order_on_e
     let dump_b = dump_at_checkpoint(&b, 350, "3");
     let differ: Vec<(&String, &String)> =
         dump_a.iter().zip(&dump_b).filter(|(x, y)| x != y).collect();
-    assert_eq!(differ.len(), 1, "{differ:#?}");
-    assert!(differ[0].0.starts_with("lane 3 step 350 vehicle-1 "));
+    assert_eq!(
+        differ.len(),
+        2,
+        "compact and verbose records both name the position"
+    );
+    assert!(differ[0].0.starts_with("lane 3 step 350 vehicle-1/core "));
     assert!(differ[0].1.contains(" pos=0.001 "), "{}", differ[0].1);
+    assert!(differ[1].0.starts_with("lane 3 step 350 vehicle-1 "));
 
     // No dump asked: nothing handed over at a checkpoint.
     a.load("HOOK.dumped = {} HOOK.checkpoint = true UPDATE({}, STATE, 0.2)")
@@ -2582,21 +2591,187 @@ fn long_vehicle_diagnostics_survive_upload_and_bound_route_reads() {
     );
     assert_eq!(
         game.load("return GEOMETRY_READS").eval::<usize>().unwrap(),
-        256
+        14
     );
     for line in &dump {
         assert!(line.len() < 1024, "{} bytes: {line}", line.len());
         assert_eq!(&tpf3mp_proto::redact(line), line);
     }
     let text = dump.join("\n");
-    assert!(text.contains("route_records=256 route_omitted=44"));
+    assert!(text.contains("route_records=14 route_omitted=286"));
     assert!(text.contains("free_part0="));
     assert!(text.contains("decision_offset=98"));
     assert!(text.contains(
-        "/path-0138 route_index=138 edge_entity=8139 lane_index=1 direction=false p0=8139,0,5"
+        "/path-0299 route_index=299 edge_entity=8300 lane_index=0 direction=false p0=8300,0,5"
     ));
     assert!(text.contains("path_hash_scope=local_ids"));
     assert!(text.contains("row=1:0:3~10.20"));
+}
+
+#[test]
+fn shifty_sized_vehicle_dumps_fit_two_checkpoints_in_the_hook_upload_budget() {
+    let game = dumping_game(false);
+    game.load(
+        r#"
+        local edges = {}
+        for i = 1, 300 do
+            edges[i] = { edgeId = { entity = 8000 + i, index = i % 3 }, dir = false }
+        end
+        WORLD[9][401].path = { edges = edges }
+        local cargo = {}
+        for i = 1, 15 do
+            cargo[i] = {}
+            for j = 1, 40 do cargo[i][j] = j end
+        end
+        WORLD[4][401].lineStop2cargo2available = cargo
+        for e = 403, 413 do
+            WORLD[4][e] = WORLD[4][401]
+            WORLD[9][e] = WORLD[9][401]
+        end
+    "#,
+    )
+    .exec()
+    .unwrap();
+    let first = dump_at_checkpoint(&game, 50, "3");
+    let second = dump_at_checkpoint(&game, 100, "3");
+    let wire_size = |dump: &[String]| -> usize { dump.iter().map(|line| line.len() + 16).sum() };
+    assert!(
+        first.len() > 100,
+        "13 vehicles still have sampled route detail"
+    );
+    assert!(
+        wire_size(&first) + wire_size(&second) <= 192 << 10,
+        "two 13-vehicle checkpoints must fit one minute of hook-log upload: {} + {} bytes",
+        wire_size(&first),
+        wire_size(&second)
+    );
+    assert_eq!(
+        first
+            .iter()
+            .filter(|line| line.contains(" state=")
+                && !line.contains("/path-")
+                && !line.contains("/core"))
+            .count(),
+        13,
+        "every vehicle keeps its base record"
+    );
+}
+
+#[test]
+fn peter_sized_vehicle_dump_keeps_both_compact_checkpoints_under_the_hook_budget() {
+    let game = dumping_game(false);
+    game.load(
+        r#"
+        local edges = {}
+        for i = 1, 300 do
+            edges[i] = { edgeId = { entity = 8000 + i, index = i % 3 }, dir = false }
+        end
+        WORLD[9][401].path = { edges = edges }
+        for e = 403, 557 do
+            WORLD[4][e] = WORLD[4][401]
+            WORLD[9][e] = WORLD[9][401]
+        end
+    "#,
+    )
+    .exec()
+    .unwrap();
+    let first = dump_at_checkpoint(&game, 50, "3");
+    let second = dump_at_checkpoint(&game, 100, "3");
+    let bytes: usize = second.iter().map(|line| line.len() + 16).sum();
+    assert_eq!(
+        second
+            .iter()
+            .filter(|line| line.contains(" state=")
+                && !line.contains("/path-")
+                && !line.contains("/core"))
+            .count(),
+        157
+    );
+    assert_eq!(
+        second.iter().filter(|line| line.contains("/core ")).count(),
+        157
+    );
+    assert!(
+        bytes <= 192 << 10,
+        "one 157-vehicle checkpoint used {bytes} bytes before other hook lines"
+    );
+    let logged = |dump: Vec<String>| -> String {
+        let mut lines = dump;
+        lines.sort_by_key(|line| {
+            let key = line.split_whitespace().nth(4).unwrap_or("");
+            match key {
+                key if key.contains("/path-") => 0,
+                "summary" | "err" => 3,
+                key if key.ends_with("/core") => 2,
+                _ => 1,
+            }
+        });
+        lines
+            .into_iter()
+            .map(|line| format!("[1759240010] {line}\n"))
+            .collect::<String>()
+    };
+    let combined = logged(first) + &logged(second);
+    let tail = &combined[combined.len().saturating_sub(192 << 10)..];
+    for step in [50, 100] {
+        let count = tail
+            .lines()
+            .filter(|line| line.contains(&format!(" step {step} ")) && line.contains("/core "))
+            .count();
+        assert_eq!(
+            count,
+            157,
+            "checkpoint {step}'s core records survived the newest 192 KiB of {} bytes",
+            combined.len()
+        );
+    }
+}
+
+#[test]
+fn an_unsampled_middle_route_change_is_visible_in_the_full_path_hash() {
+    let a = dumping_game(false);
+    let b = dumping_game(false);
+    for game in [&a, &b] {
+        game.load(
+            r#"
+            WORLD[9][401].path = { edges = {} }
+            for i = 1, 300 do
+                WORLD[9][401].path.edges[i] = {
+                    edgeId = { entity = 8000 + i, index = i % 3 }, dir = false
+                }
+            end
+        "#,
+        )
+        .exec()
+        .unwrap();
+    }
+    b.load("WORLD[9][401].path.edges[139].edgeId.entity = 9000")
+        .exec()
+        .unwrap();
+    let da = dump_at_checkpoint(&a, 50, "3");
+    let db = dump_at_checkpoint(&b, 50, "3");
+    let routes = |dump: &[String]| -> Vec<String> {
+        dump.iter()
+            .filter(|line| line.contains("/path-"))
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        routes(&da),
+        routes(&db),
+        "middle edge is deliberately unsampled"
+    );
+    let base = |dump: &[String]| -> String {
+        dump.iter()
+            .find(|line| line.contains(" path_hash="))
+            .unwrap()
+            .clone()
+    };
+    assert_ne!(
+        base(&da),
+        base(&db),
+        "the full path hash still exposes the change"
+    );
 }
 
 #[test]
@@ -6033,6 +6208,38 @@ fn the_registry_names_vehicles_in_the_order_they_came_and_never_again() {
 }
 
 #[test]
+fn an_unreadable_component_does_not_retire_a_rooms_canonical_id() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    let named: String = lua
+        .load(
+            "local registry = ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua')
+             local reg = registry.sync(nil)
+             local old = api.engine.getComponent
+             LINES = {} -- the line system temporarily omits an existing line
+             api.engine.getComponent = function(e, kind)
+                 if e == 301 and kind == api.type.ComponentType.LINE then error('component unreadable') end
+                 return old(e, kind)
+             end
+             reg = registry.sync(reg)
+             local during = tostring(registry.id(reg, 'lines', 301))
+             api.engine.getComponent = old
+             LINES = { 301 }
+             reg = registry.sync(reg)
+             local recovered = tostring(registry.id(reg, 'lines', 301))
+             LINES = {}
+             reg = registry.sync(reg)
+             return table.concat({ during, recovered, tostring(registry.id(reg, 'lines', 301)) }, ',')",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(
+        named, "0,0,nil",
+        "an unreadable entity keeps its id until absence is established"
+    );
+}
+
+#[test]
 fn the_game_script_buys_the_vehicle_and_tells_the_buyer_which() {
     let (lua, _script) = engine();
     lua.load(FAKE_FLEET).exec().unwrap();
@@ -6065,14 +6272,18 @@ fn the_game_script_buys_the_vehicle_and_tells_the_buyer_which() {
         .load("return table.concat(HOOK.logged, '\\n')")
         .eval()
         .unwrap();
-    for phase in ["before-assign", "after-assign"] {
-        assert!(
-            assignment_log.contains(&format!(
-                "vehicle-action {phase} vehicle-2 line-0 first=1 time=777000 entity=500"
-            )),
-            "missing assignment boundary: {assignment_log}"
-        );
-    }
+    assert!(
+        assignment_log.contains(
+            "assign-vehicle action_index=2 vehicle=2 native=500 line=0 native_line=301 first=1 carrier=none models=none mode=none owner=unavailable line_owner=unavailable outcome=applied"
+        ),
+        "missing assignment boundary: {assignment_log}"
+    );
+    assert!(
+        assignment_log.contains(
+            "buy-vehicle action_index=1 outcome=applied models=vehicle/bus/city.mdl native=500 canonical=2"
+        ),
+        "missing purchase boundary: {assignment_log}"
+    );
     let applied: String = lua
         .load(
             "local out = {} for _, a in ipairs(HOOK.applied) do \
@@ -9337,6 +9548,53 @@ fn a_vehicle_the_game_makes_anew_keeps_its_id() {
 }
 
 #[test]
+fn an_unreadable_replacement_result_holds_replay_without_reassigning_vehicle_id() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(FAKE_TRAINS).exec().unwrap();
+    lua.load(format!(
+        "HOOK.room = true UPDATE({{}}, STATE, 0.2) REPLACE_AS = 450 \
+         local original = api.engine.getComponent local unread = true \
+         api.engine.getComponent = function(e, kind) \
+             if unread and e == 450 and kind == api.type.ComponentType.TRANSPORT_VEHICLE then \
+                 unread = false error('replacement component unreadable') end \
+             return original(e, kind) end \
+         HOOK.replayToken = 'replace' HOOK.replayBatch = {{ {}, \
+             {{ SellVehicle = {{ vehicles = {{ 0 }} }} }} }} \
+         SCRIPT.handleEvent({{}}, STATE, '', 'tpf3mp', 'replay', 'replace')",
+        replace_train(0, LOCO, 0, COACH)
+    ))
+    .exec()
+    .unwrap();
+    let (held, reason, old_id, new_id, sent): (bool, String, Option<u32>, Option<u32>, usize) = lua
+        .load(
+            "local reg = STATE.value.registry \
+             local registry = ug_require('tpf3mp_1::/scripts/tpf3mp/registry.lua') \
+             return not HOOK.replayDone.ok, tostring(HOOK.replayDone.why), \
+                 registry.id(reg, 'vehicles', 401), registry.id(reg, 'vehicles', 450), #SENT",
+        )
+        .eval()
+        .unwrap();
+    assert!(
+        held,
+        "an uncertain post-command result must stop room replay"
+    );
+    assert!(
+        reason.contains("replacement component unreadable"),
+        "{reason}"
+    );
+    assert_eq!(
+        (old_id, new_id),
+        (Some(0), None),
+        "the saved id must not be silently rebound"
+    );
+    assert_eq!(
+        sent, 1,
+        "no later ordered command runs after the uncertain result"
+    );
+}
+
+#[test]
 fn a_replacement_that_does_not_fit_this_world_is_applied_nowhere() {
     // Keeping a part of another model, a part the vehicle does not have; a
     // model this game lacks; a vehicle with no id.
@@ -11040,12 +11298,27 @@ fn with_two_companies_each_takes_its_share_of_every_town_by_its_deliveries_and_r
     );
     assert_eq!(
         log[3],
-        "progression at game time 0: company-0 score 440.0000, experience 1500, rank 7 reached, 1 taken"
+        "progression at game time 0: company-0 score 440.0000, experience 1500, rank 7 reached, 1 taken, prior experience 1500, sample quarter 0"
     );
     assert!(
         log[4].starts_with("progression at game time 0: company-1 score 489.28")
-            && log[4].ends_with(", experience 489, rank 2 reached, 1 taken"),
+            && log[4].ends_with(
+                ", experience 489, rank 2 reached, 1 taken, prior experience 0, sample quarter 0"
+            ),
         "{log:?}"
+    );
+    let loaded: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        loaded
+            .iter()
+            .any(|line| line.starts_with("room ranks loaded: quarter=")),
+        "{loaded:?}"
+    );
+    assert!(
+        loaded
+            .iter()
+            .any(|line| line.starts_with("room ranks loaded: company-0")),
+        "{loaded:?}"
     );
     // The game's delivery statistics per line, over half a year.
     let asked: String = lua
@@ -11195,7 +11468,8 @@ fn a_sample_the_game_cannot_measure_changes_no_rank() {
     let (lua, _script) = engine();
     lua.load(FAKE_PROGRESSION).exec().unwrap();
     lua.load(
-        "GAME_MODULES['/game_mechanics/towns/town_util.tl'] = nil \
+        "SAVED_TOWN_UTIL = GAME_MODULES['/game_mechanics/towns/town_util.tl'] \
+         GAME_MODULES['/game_mechanics/towns/town_util.tl'] = nil \
          HOOK.room = true \
          HOOK.batch = { { CompanyOp = { Create = { name = 'Rival' } } } } HOOK.origins = { A } \
          UPDATE({}, STATE, 0.2) UPDATE({}, STATE, 0.2)",
@@ -11214,6 +11488,63 @@ fn a_sample_the_game_cannot_measure_changes_no_rank() {
         .eval()
         .unwrap();
     assert!(none, "nothing guessed");
+    let quarter: Option<i64> = lua
+        .load("return STATE.value.progression.quarter")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        quarter, None,
+        "a failed sample must remain due this quarter"
+    );
+    lua.load("GAME_MODULES['/game_mechanics/towns/town_util.tl'] = SAVED_TOWN_UTIL UPDATE({}, STATE, 0.2)")
+        .exec().unwrap();
+    let recovered: String = lua.load(
+        "local p = STATE.value.progression return tostring(p.quarter) .. ':' .. tostring(#p.records)"
+    ).eval().unwrap();
+    assert_eq!(
+        recovered, "0:2",
+        "the repaired module lets the same quarter earn XP"
+    );
+}
+
+#[test]
+fn a_failed_tally_keeps_saved_progression_and_retries_the_same_quarter() {
+    let lua = two_companies(false);
+    let state = "local p = STATE.value.progression \
+        return tostring(p.quarter) .. ':' .. tostring(#p.records) .. ':' .. tostring(#p.passengers) \
+            .. ':' .. tostring(p.passengers[1].value)";
+    let before: String = lua.load(state).eval().unwrap();
+    lua.load(
+        "GAME_T = 1000 \
+         SAVED_SENSITIVITY = GAME_MODULES['/game_mechanics/towns/town_util.tl'].getRatingSensitivity \
+         GAME_MODULES['/game_mechanics/towns/town_util.tl'].getRatingSensitivity = function() error('temporary town read failure') end \
+         UPDATE({}, STATE, 0.2)",
+    ).exec().unwrap();
+    let after_failure: String = lua.load(state).eval().unwrap();
+    assert_eq!(
+        after_failure, before,
+        "a partial tally must not change persisted state"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    assert!(
+        logged.iter().any(
+            |line| line.starts_with("the companies' scores were not sampled:")
+                && line.contains("temporary town read failure")
+        ),
+        "{logged:?}"
+    );
+    lua.load(
+        "GAME_MODULES['/game_mechanics/towns/town_util.tl'].getRatingSensitivity = SAVED_SENSITIVITY \
+         UPDATE({}, STATE, 0.2)",
+    ).exec().unwrap();
+    let quarter: i64 = lua
+        .load("return STATE.value.progression.quarter")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        quarter, 1,
+        "the same quarter succeeds after the read recovers"
+    );
 }
 
 #[test]
@@ -14662,9 +14993,15 @@ fn a_signal_keeps_the_settings_the_tool_built_it_with_in_every_game() {
     assert_eq!(cut, "the tool's settings were cut short");
 
     // Auto Signals' settings on the base game's signal: carried, sorted.
+    // With them Signal Distance's, a key with a dot in it
+    // (signal_distance_1, mod.script.lua: "signal_distance.local", its
+    // slider's index), refused in a room until 2026-10-11 ("a setting named
+    // signal_distance.local"): carried and built as that one key, never as
+    // a path.
     assert_eq!(
         ask(&format!(
-            "{{ {signal_c}, params = {{ oneWay = 2, auto_signals_replace = 1, auto_signals_distance = 4 }} }}"
+            "{{ {signal_c}, params = {{ oneWay = 2, auto_signals_replace = 1, auto_signals_distance = 4, \
+             ['signal_distance.local'] = 18 }} }}"
         )),
         "nil",
         "the signal tool builds through the room"
@@ -14684,7 +15021,7 @@ fn a_signal_keeps_the_settings_the_tool_built_it_with_in_every_game() {
     assert_eq!(
         handed,
         "Signal infrastructure/signal/signal_path_c.con \
-         auto_signals_distance=4,auto_signals_replace=1,oneWay=2 true"
+         auto_signals_distance=4,auto_signals_replace=1,oneWay=2,signal_distance.local=18 true"
     );
     // Every game builds it with them.
     lua.load("HOOK.batch = { HOOK.commands[#HOOK.commands] } UPDATE({}, STATE, 0.2)")
@@ -14693,11 +15030,12 @@ fn a_signal_keeps_the_settings_the_tool_built_it_with_in_every_game() {
     let built: String = lua
         .load(
             "local o = SENT[1].proposal.streetProposal.edgeObjectsToAdd[1] \
-             return o.params.auto_signals_distance .. ' ' .. o.params.auto_signals_replace .. ' ' .. o.params.oneWay",
+             return o.params.auto_signals_distance .. ' ' .. o.params.auto_signals_replace .. ' ' .. o.params.oneWay \
+                 .. ' ' .. tostring(o.params['signal_distance.local']) .. ' ' .. tostring(o.params.signal_distance)",
         )
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
-    assert_eq!(built, "4 1 2");
+    assert_eq!(built, "4 1 2 18 nil");
 }
 
 /// Auto Signals after its player's signal (D27; docs/MODS.md): the script's
@@ -14985,4 +15323,199 @@ fn a_signal_build_the_room_cannot_carry_says_why() {
         "{}",
         hook_log(&lua)
     );
+}
+
+/// Action-boundary company and assignment diagnostics name only the
+/// canonical/native entities needed to compare replicas. Unreadable optional
+/// components are markers, and a later vehicle refusal does not erase the
+/// successful earlier assignment.
+#[test]
+fn event_boundary_diagnostics_cover_company_and_partial_line_assignment() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    lua.load(
+        r#"
+        PLAYER = string.rep('a', 64)
+        HOOK.room = true
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Fixture Company' } } } }
+        HOOK.origins = { PLAYER }
+        HOOK.seals = { { scope = 'SENTINEL_SCOPE', tag = 'SENTINEL_SEAL' } }
+        UPDATE({}, STATE, 0.2)
+
+        local CT = api.type.ComponentType
+        CT.PLAYER_OWNED = 13
+        local base = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if kind == CT.PLAYER_OWNED then
+                if e == 301 or e == 401 or e == 402 then return { player = 901 } end
+                return nil
+            end
+            if kind == CT.TRANSPORT_VEHICLE then
+                if e == 401 then return { transportVehicleConfig = { vehicles = {
+                    { part = { modelId = 41 } }, { part = { modelId = 42 } } } } } end
+                if e == 402 then error('SENTINEL_COMPONENT_FAILURE') end
+            end
+            if kind == CT.LINE and e == 301 then
+                return { vehicleInfo = { transportModes = { [3] = true, [7] = true } } }
+            end
+            return base(e, kind)
+        end
+        api.res.modelRep.getName = function(id)
+            if id == 41 then return 'vehicle/bus/city.mdl' end
+            if id == 42 then return 'vehicle/bus/ferry.mdl' end
+        end
+        local send, setLineCalls = api.cmd.sendCommand, 0
+        api.cmd.sendCommand = function(command, ...)
+            if command.setLine then
+                setLineCalls = setLineCalls + 1
+                if setLineCalls == 2 then error('second vehicle refused') end
+            end
+            return send(command, ...)
+        end
+        SENT, HOOK.applied = {}, {}
+        HOOK.batch = { { AssignLine = { vehicles = { 0, 1 }, line = 0, first_stop = 1 } } }
+        HOOK.origins = { PLAYER }
+        UPDATE({}, STATE, 0.2)
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+
+    let logs: String = lua
+        .load("return table.concat(HOOK.logged, '\\n')")
+        .eval()
+        .unwrap();
+    assert!(
+        logs.contains("company-event action_index=1 op=Create actor_before=company-0/entity-25 actor_after=company-1/entity-901 local_before=company-0/entity-25 local_after=company-0/entity-25 outcome=applied"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("assign-vehicle action_index=1 vehicle=0 native=401 line=0 native_line=301 first=1 carrier=bus models=vehicle/bus/city.mdl,vehicle/bus/ferry.mdl mode=3,7 owner=company-1/entity-901 line_owner=company-1/entity-901 outcome=applied"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("assign-vehicle action_index=1 vehicle=1 native=402 line=0 native_line=301 first=1 carrier=unavailable models=unavailable mode=3,7 owner=company-1/entity-901 line_owner=company-1/entity-901 outcome=refused"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("action-event action_index=1 kind=AssignLine outcome=refused"),
+        "{logs}"
+    );
+    assert!(!logs.contains("SENTINEL_SEAL"), "{logs}");
+    assert!(!logs.contains("SENTINEL_SCOPE"), "{logs}");
+    assert!(!logs.contains("SENTINEL_COMPONENT_FAILURE"), "{logs}");
+    assert!(!logs.contains(&"a".repeat(64)), "{logs}");
+    let (sent, applied): (usize, bool) =
+        lua.load("return #SENT, HOOK.applied[1].ok").eval().unwrap();
+    assert_eq!(
+        (sent, applied),
+        (1, false),
+        "the first command remains applied"
+    );
+}
+
+/// A buy diagnostic reports ordered model resources and the entity ids after
+/// the registry binds the new vehicle. Bulldoze diagnostics reuse the
+/// construction already resolved by constructionAt, and distinguish a
+/// missing owner from a throwing owner read.
+#[test]
+fn event_boundary_diagnostics_report_buys_and_resolved_bulldozes() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_FLEET).exec().unwrap();
+    let setup = r#"
+        PLAYER = string.rep('b', 64)
+        HOOK.room = true
+        HOOK.batch = { { CompanyOp = { Create = { name = 'Fixture Company' } } } }
+        HOOK.origins = { PLAYER }
+        UPDATE({}, STATE, 0.2)
+
+        local CT = api.type.ComponentType
+        CT.PLAYER_OWNED = 13
+        local base = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if kind == CT.PLAYER_OWNED then
+                if e == 202 then return { player = 901 } end
+                return nil
+            end
+            return base(e, kind)
+        end
+        api.res.modelRep.find = function(name)
+            if name == 'vehicle/bus/city.mdl' then return 41 end
+            if name == 'vehicle/ship/ferry.mdl' then return 42 end
+            return -1
+        end
+        api.cmd.makeEntitySetColorCmd = function(entity, color) return { paint = entity } end
+        api.engine.util.proposal = {
+            createProposalRemove = function(entity) return { removes = entity } end,
+        }
+        CONSTRUCTION_SCANS = 0
+        local list = api.engine.getEntitiesWithComponent
+        api.engine.getEntitiesWithComponent = function(kind)
+            if kind == CT.CONSTRUCTION then CONSTRUCTION_SCANS = CONSTRUCTION_SCANS + 1 end
+            return list(kind)
+        end
+
+        local buy = __BUY_BUS__
+        buy.BuyVehicle.consist[2] = {
+            model = 'vehicle/ship/ferry.mdl', reversed = false,
+            loads = { { config = 0, cargo = 3 } }, color = { r = 0, g = 0, b = 1 },
+        }
+        buy.BuyVehicle.groups = { 1, 1 }
+        buy.BuyVehicle.multiple_units = { '', '' }
+        HOOK.batch, HOOK.origins = { buy }, { PLAYER }
+        UPDATE({}, STATE, 0.2)
+
+        CONSTRUCTION_SCANS = 0
+        SENT = {}
+        HOOK.batch = { { Bulldoze = { Construction = {
+            file = 'depot/bus_depot.con', at = { x = 600, y = 10, z = 2 },
+        } } } }
+        HOOK.origins = { PLAYER }
+        UPDATE({}, STATE, 0.2)
+
+        local get = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if e == 201 and kind == CT.PLAYER_OWNED then error('SENTINEL_OWNER_FAILURE') end
+            return get(e, kind)
+        end
+        REFUSE = true
+        HOOK.batch = { { Bulldoze = { Construction = {
+            file = 'depot/bus_depot.con', at = { x = 600, y = 10, z = 2 },
+        } } } }
+        HOOK.origins = { PLAYER }
+        UPDATE({}, STATE, 0.2)
+        "#
+    .replace("__BUY_BUS__", BUY_BUS);
+    lua.load(setup)
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+
+    let logs: String = lua
+        .load("return table.concat(HOOK.logged, '\\n')")
+        .eval()
+        .unwrap();
+    assert!(
+        logs.contains("buy-vehicle action_index=1 outcome=applied models=vehicle/bus/city.mdl,vehicle/ship/ferry.mdl native=500 canonical=2"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("bulldoze-construction action_index=1 ref=depot/bus_depot.con@(600.0,10.0,2.0) native=201 actual=(600.0,10.0,2.0) owner=none"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("action-event action_index=1 kind=Bulldoze outcome=applied"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("bulldoze-construction action_index=1 ref=depot/bus_depot.con@(600.0,10.0,2.0) native=201 actual=(600.0,10.0,2.0) owner=unavailable"),
+        "{logs}"
+    );
+    assert!(
+        logs.contains("action-event action_index=1 kind=Bulldoze outcome=refused"),
+        "{logs}"
+    );
+    assert!(!logs.contains("SENTINEL_OWNER_FAILURE"), "{logs}");
+    assert!(!logs.contains(&"b".repeat(64)), "{logs}");
+    let scans: usize = lua.load("return CONSTRUCTION_SCANS").eval().unwrap();
+    assert_eq!(scans, 2, "one constructionAt traversal per bulldoze action");
 }
