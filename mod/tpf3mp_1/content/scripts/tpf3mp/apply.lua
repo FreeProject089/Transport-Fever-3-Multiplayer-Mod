@@ -1258,9 +1258,8 @@ function HANDLERS.BuildRoad(road)
 end
 
 function HANDLERS.EditJunctions(edit)
-	junctions.requireEnabled()
 	local proposal = api.type.SimpleProposal.new()
-	junctions.into(proposal, edit.changes, {}, mine)
+	junctions.into(proposal, edit.changes, {}, mine, nil, junctions.requireNarrow)
 	local context = api.type.Context.new()
 	context.player = company()
 	return buildProposal(proposal, context)

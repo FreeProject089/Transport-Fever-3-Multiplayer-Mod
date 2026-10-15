@@ -1264,12 +1264,99 @@ fn junctions_scenario() -> Scenario {
         )
 }
 
+/// The junction edits a room carries before the junction acceptance: a
+/// double slip switch where two tracks cross, and a tram lane from a
+/// street's end onto a track.
+fn slip_and_tram_scenario() -> Scenario {
+    use tpf3mp_proto::action::{
+        JunctionChange, JunctionConfig, JunctionEdit, LaneConnection, NodeRef, TrafficPreference,
+    };
+    let edge = |network, a, b| EdgeRef {
+        network,
+        ends: EdgeEnds { a, b },
+    };
+    let config = |connection: LaneConnection, double_slip| JunctionConfig {
+        connections: list(vec![connection]),
+        crosswalks: list(vec![]),
+        preference: TrafficPreference::Auto,
+        light: None,
+        phases: list(vec![]),
+        double_slip,
+        custom_phases: false,
+    };
+    let (west, crossing, east) = (at(0, 0), at(1000, 0), at(2000, 0));
+    let (south, north, street_end) = (at(1000, -1000), at(1000, 1000), at(3000, -1000));
+    let slip = Action::EditJunctions(JunctionEdit {
+        changes: list(vec![JunctionChange {
+            node: NodeRef {
+                network: Network::Track,
+                at: crossing,
+            },
+            config: Some(config(
+                LaneConnection {
+                    incoming: edge(Network::Track, west, crossing),
+                    lane_in: 0,
+                    outgoing: edge(Network::Track, crossing, north),
+                    lane_out: 0,
+                    road: false,
+                    tram: false,
+                },
+                true,
+            )),
+        }]),
+    });
+    let tram = Action::EditJunctions(JunctionEdit {
+        changes: list(vec![JunctionChange {
+            node: NodeRef {
+                network: Network::Street,
+                at: east,
+            },
+            config: Some(config(
+                LaneConnection {
+                    incoming: edge(Network::Street, street_end, east),
+                    lane_in: 0,
+                    outgoing: edge(Network::Track, crossing, east),
+                    lane_out: 0,
+                    road: false,
+                    tram: true,
+                },
+                false,
+            )),
+        }]),
+    });
+    Script::default()
+        .act(
+            0,
+            track(vec![new(west), new(crossing), new(east)], &Structure::Ground),
+        )
+        .act(
+            0,
+            track(
+                vec![new(south), node(crossing, Network::Track), new(north)],
+                &Structure::Ground,
+            ),
+        )
+        .expect(Check::TrackEdges(4))
+        .act(0, road(vec![new(street_end), node(east, Network::Track)]))
+        .expect(Check::StreetEdges(1))
+        .act(0, slip)
+        .act(0, tram)
+        .expect_all([Check::Junctions(2), Check::Ignored(0)])
+        .scenario(
+            "slip_and_tram",
+            "a double slip switch where two tracks cross, a tram lane from a street's end onto a track",
+            true,
+            2,
+        )
+}
+
 /// Every scenario, the quick ones first.
 pub fn scenarios() -> Vec<Arc<Scenario>> {
     let mut all = vec![
         bus_line_scenario(),
         rail_line_scenario(),
         junctions_scenario(),
+        slip_and_tram_scenario(),
         two_companies_scenario(),
         airport_support_scenario(),
         refusals_scenario(),

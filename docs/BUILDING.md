@@ -788,7 +788,27 @@ The schema caps an edit at 64 junctions, each with 256 connections,
 Standalone edits are behind `strict_junctions` in `junctions.lua`, **off
 by default** under PLAN.md Part 3. For the acceptance test, set it true
 in matching mod copies on both test games and use the new hook/profile.
-The capture and replay both refuse edits with it off. Tests cover native
+With it off, the capture and replay both let two edits through and refuse
+the rest (`junctions.requireNarrow`), each comparing the configuration
+put in with the one its own game has at the node, entity by entity:
+
+- a double slip switch turned on or off (the junction window's
+  `createDoubleSlipSwitchProposal`), with lane connections between the
+  node's own tracks, neither road's nor tram's, that come with it: added
+  when it is turned on, taken away when it is turned off;
+- tram lane connections added or removed (tram's, not road's), or an
+  existing connection's tram given or taken (the crossing tool's tram
+  mode, which joins a tram track to a railway).
+
+Everything else at the node must stay as it is: preference, light,
+phases (compared in whole milliseconds, as the wire carries them), the
+custom-phase mark and crosswalks; no road connection may be
+added, removed or change its road. A reset, a node with no configuration
+yet, and lane changes at a junction with light phases (their locked
+indices address the lanes' order) are refused, as is an edit that
+changes neither. The refusal names what it saw, after the
+`strict_junctions` reason. Road and track builds carry their junction
+settings as before, unchecked by this. Tests cover native
 memory decoding, portable round trips into replicas with different IDs,
 curved-edge preservation, refusal cases and checkpoint differences. This
 is adapter evidence, not a completed real-game playtest. Follow the

@@ -3,11 +3,11 @@
 -- stay inside this adapter; actions use positions and resource names.
 -- PLAN.md Part 3: enable in matching acceptance-test copies on both games,
 -- then change the default only after the two-player sandbox check passes.
+-- Until then a standalone edit goes only as junctions.requireNarrow allows:
+-- a double slip switch, and tram lane connections.
 local junctions = { strict_junctions = false }
 
-function junctions.requireEnabled()
-	if not junctions.strict_junctions then error("junction tools await the two-player acceptance test (strict_junctions)",0) end
-end
+local AWAITING = "junction tools await the two-player acceptance test (strict_junctions)"
 
 local function get(v, k)
 	if v == nil then return nil end
@@ -211,8 +211,105 @@ function junctions.capture(street)
 	return changes
 end
 
+-- A node configuration's settings in this game's own terms (edge entities,
+-- the light's resource id, the preference's enum value), to compare two of
+-- them at the same node; `tracks` holds the node's track edges.
+local function plain(c, tracks)
+	local lights = c.trafficLightConfig
+	if lights == nil then error("traffic light configuration did not read", 0) end
+	local out = { turns = {}, order = {}, walks = {}, phases = {}, preference = c.trafficLightPreference,
+		light = lights.trafficLightType, double_slip = c.doubleSlipSwitch == true,
+		custom_phases = c.userModifiedTrafficLightStates == true }
+	for _, t in ipairs(list(c.laneConnections)) do
+		local key = t.segment0 .. ":" .. t.lane0 .. ">" .. t.segment1 .. ":" .. t.lane1
+		if out.turns[key] then error(AWAITING .. ": a lane connection listed twice", 0) end
+		out.turns[key] = { road = t.withRoad == true, tram = t.withTram == true,
+			track = tracks[t.segment0] == true and tracks[t.segment1] == true }
+		out.order[#out.order+1] = key .. ":" .. tostring(t.withRoad == true) .. ":" .. tostring(t.withTram == true)
+	end
+	for _, e in ipairs(list(c.crosswalks)) do out.walks[#out.walks+1] = e end
+	table.sort(out.walks)
+	-- In whole milliseconds as the wire rounds them (half away from zero),
+	-- so a phase compares alike before and after it crossed the wire.
+	local function ms(seconds)
+		local scaled = seconds * 1000
+		local whole = math.floor(scaled)
+		if scaled - whole >= 0.5 then whole = whole + 1 end
+		return string.format("%d", whole)
+	end
+	for _, p in ipairs(list(lights.states)) do
+		out.phases[#out.phases+1] = ms(p.duration) .. "/" .. ms(p.minDuration) .. "/"
+			.. tostring(p.canSkip == true) .. ":" .. table.concat(list(p.lockedLanes), ",")
+	end
+	return out
+end
+
+-- Why `new` (nil for a reset) is not an edit of `old` (nil for a node with
+-- no configuration) that a room carries with strict_junctions off, or nil
+-- when it is. Before the full acceptance (PLAN.md Part 3) two edits go:
+-- a double slip switch turned on or off (the junction window's
+-- createDoubleSlipSwitchProposal), with the changes of lane connections
+-- between the node's tracks that come with it, and tram lane connections
+-- (neither road's) added or removed, or an existing one's tram given or
+-- taken (the crossing tool's tram mode: a tram track joined to a railway).
+-- Everything else at the node must stay as it is; lanes do not change under
+-- traffic light phases, whose indices address their order.
+local function narrowWhyNot(old, new)
+	if new == nil then return "a reset of a junction's settings" end
+	if old == nil then return "a junction with no settings yet" end
+	if old.preference ~= new.preference or old.light ~= new.light or old.custom_phases ~= new.custom_phases then
+		return "a change of its traffic lights"
+	end
+	if table.concat(old.walks, ",") ~= table.concat(new.walks, ",") then return "a change of its crosswalks" end
+	if table.concat(old.phases, ";") ~= table.concat(new.phases, ";") then return "a change of its traffic light phases" end
+	local slip = old.double_slip ~= new.double_slip
+	-- A double slip switch has the turns of a single one and more: turned
+	-- on it only adds track lanes, turned off it only takes them away.
+	local function slipLane(t, added)
+		return slip and added == new.double_slip and t.track and not t.road and not t.tram
+	end
+	local function tramLane(t) return t.tram and not t.road end
+	local changed = false
+	for key, t in pairs(new.turns) do
+		local was = old.turns[key]
+		if was == nil then
+			changed = true
+			if not (tramLane(t) or slipLane(t, true)) then return "a lane connection added, neither a tram's nor a double slip switch's" end
+		elseif was.road ~= t.road then
+			return "a lane connection's road changed"
+		elseif was.tram ~= t.tram then
+			changed = true
+		end
+	end
+	for key, t in pairs(old.turns) do
+		if new.turns[key] == nil then
+			changed = true
+			if not (tramLane(t) or slipLane(t, false)) then return "a lane connection removed, neither a tram's nor a double slip switch's" end
+		end
+	end
+	if #new.phases > 0 and table.concat(old.order, ";") ~= table.concat(new.order, ";") then
+		return "a lane change under traffic light phases"
+	end
+	if not slip and not changed then return "no double slip switch or tram lane change" end
+end
+
+-- With strict_junctions off, raises unless putting `config` (a
+-- BaseNodeConfig, or nil for a reset) at `node` is an edit narrowWhyNot
+-- lets through; with it on, passes everything. Capture and replay both ask,
+-- each against the configuration its own game has at the node.
+function junctions.requireNarrow(node, config, source)
+	if junctions.strict_junctions then return end
+	local api = source or api
+	local tracks = {}
+	if node >= 0 then
+		for _, id in ipairs(list(api.engine.system.streetSystem.getNodeTrackSegments(node))) do tracks[id] = true end
+	end
+	local old = node >= 0 and component(node, "BASE_NODE_CONFIG", api) or nil
+	local why = narrowWhyNot(old and plain(old, tracks), config and plain(config, tracks))
+	if why then error(AWAITING .. ": " .. why, 0) end
+end
+
 function junctions.edit(proposal)
-	junctions.requireEnabled()
 	local street = get(proposal, "proposal")
 	if street == nil then error("a junction edit with no proposal", 0) end
 	for _, name in ipairs({ "toAdd", "toRemove" }) do
@@ -220,6 +317,14 @@ function junctions.edit(proposal)
 	end
 	for _, name in ipairs({ "addedNodes", "removedNodes", "addedSegments", "removedSegments", "nodesToAdd", "nodesToRemove", "edgesToAdd", "edgesToRemove", "edgeObjectsToAdd", "edgeObjectsToRemove" }) do
 		if #list(get(street, name)) > 0 then error("a junction edit with geometry or edge objects", 0) end
+	end
+	local added = {}
+	for _, record in ipairs(list(get(street, "nodeConfigsToAdd"))) do
+		added[record.entity] = true
+		junctions.requireNarrow(record.entity, record.comp)
+	end
+	for _, id in ipairs(list(get(street, "nodeConfigsToRemove"))) do
+		if not added[id] then junctions.requireNarrow(id, nil) end
 	end
 	local changes = junctions.capture(street)
 	if #changes == 0 then return false end
@@ -360,9 +465,11 @@ end
 -- `gone` names edges the proposal removes otherwise (an edit's old
 -- construction's own, constructionsToRemove): no setting may name them, and
 -- a preserved node at one keeps no settings; the construction and its
--- refresh give it the game's own, the same in every game. Returns the nodes
--- left so.
-function junctions.into(proposal, changes, preserve, mine, gone)
+-- refresh give it the game's own, the same in every game. `narrow`, when
+-- given, is asked about each change's node and the configuration made for
+-- it (nil for a reset) before it goes in, and raises to refuse it
+-- (junctions.requireNarrow). Returns the nodes left so.
+function junctions.into(proposal, changes, preserve, mine, gone, narrow)
 	if #(changes or {}) == 0 and #(preserve or {}) == 0 then return end
 	local s = proposal.streetProposal
 	local w = world(s)
@@ -431,7 +538,9 @@ function junctions.into(proposal, changes, preserve, mine, gone)
 			end
 		end
 		remove(node)
-		if change.config then add(node, makeConfig(change.config, resolveEdge, node)) end
+		local made = change.config and makeConfig(change.config, resolveEdge, node) or nil
+		if narrow then narrow(node, made) end
+		if made then add(node, made) end
 	end
 	-- A geometry rebuild must not throw away settings. The original turns
 	-- keep their order (and hence phase indices); their old edges are mapped
