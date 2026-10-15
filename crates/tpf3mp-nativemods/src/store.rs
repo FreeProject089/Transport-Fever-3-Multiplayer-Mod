@@ -5,6 +5,8 @@
 //! <launcher data>/native-mods/
 //!   native-mods.json, native-mods.json.sig   the last index accepted
 //!   registry.json                            every installed package and file
+//!   package-sources.json                     trusted source per installed version
+//!   consents.json                            exact plugin-identity approvals
 //!   enabled.json                             what the next game runs (crate::enabled)
 //!   <id>/<version>/…                         a package's files
 //!   <id>/.partial-<version>/                 a download in progress
@@ -47,6 +49,28 @@ pub const REGISTRY: &str = "registry.json";
 const REGISTRY_FORMAT: u32 = 2;
 const PREVIOUS_REGISTRY_FORMAT: u32 = 1;
 const PARTIAL: &str = ".partial-";
+const PACKAGE_SOURCES: &str = "package-sources.json";
+const PACKAGE_SOURCES_FORMAT: u32 = 1;
+const CONSENTS: &str = "consents.json";
+const CONSENTS_FORMAT: u32 = 1;
+
+/// Per-package effective settings supplied to a source-aware install. Each
+/// plugin-bearing package in the resolved closure must have an entry.
+pub type EffectiveSettingsByPackage = BTreeMap<String, BTreeMap<String, Setting>>;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PackageSources {
+    format: u32,
+    packages: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConsentRecords {
+    format: u32,
+    by_source: BTreeMap<String, BTreeSet<String>>,
+}
 
 /// Where packages come from.
 pub trait Source {
@@ -147,6 +171,23 @@ pub enum StoreError {
     NoIndex,
     #[error("the native-mods registry cannot be read: {0}")]
     Registry(String),
+    #[error("the native-mod consent or source records cannot be read: {0}")]
+    ConsentStore(String),
+    #[error("the native package source is not canonical: {0}")]
+    InvalidSource(String),
+    #[error("plugin package {id} {version} has no trusted source recorded")]
+    MissingSource { id: String, version: String },
+    #[error("plugin package {id} {version} needs approval from {source_id} for {digest}")]
+    ConsentRequired {
+        id: String,
+        version: String,
+        source_id: String,
+        digest: String,
+    },
+    #[error("effective settings for plugin package {0} were not supplied")]
+    MissingEffectiveSettings(String),
+    #[error("plugin package {id} cannot be loaded on this target ({platform})")]
+    UnsupportedPluginPlatform { id: String, platform: String },
     #[error("the native mod {0} is not installed")]
     NotInstalled(String),
     #[error("the native mod {0} has no earlier version to go back to")]
@@ -192,6 +233,27 @@ impl From<MakeCurrentError> for StoreError {
     fn from(error: MakeCurrentError) -> Self {
         error.source
     }
+}
+
+fn ensure_plugin_platform_supported(
+    package: &Package,
+    platform: Option<&str>,
+) -> Result<(), StoreError> {
+    if package.plugins.is_empty() {
+        return Ok(());
+    }
+    let plugins = platform
+        .map(|platform| package.plugins_for(platform))
+        .unwrap_or_default();
+    if plugins.is_empty() || plugins.iter().any(|plugin| plugin.abi != index::PLUGIN_ABI) {
+        return Err(StoreError::UnsupportedPluginPlatform {
+            id: package.id.clone(),
+            platform: platform
+                .unwrap_or("unsupported operating system or architecture")
+                .to_owned(),
+        });
+    }
+    Ok(())
 }
 
 /// Every installed package.
@@ -247,6 +309,8 @@ impl Installed {
 pub struct Store {
     root: PathBuf,
     registry: Registry,
+    sources: PackageSources,
+    consents: ConsentRecords,
 }
 
 impl Store {
@@ -270,7 +334,14 @@ impl Store {
             Err(error) if error.kind() == io::ErrorKind::NotFound => Registry::default(),
             Err(error) => return Err(error.into()),
         };
-        Ok(Self { root, registry })
+        let sources = read_package_sources(&root)?;
+        let consents = read_consents(&root)?;
+        Ok(Self {
+            root,
+            registry,
+            sources,
+            consents,
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -279,6 +350,53 @@ impl Store {
 
     pub fn registry(&self) -> &Registry {
         &self.registry
+    }
+
+    /// Trusted source recorded for one installed package version. Source
+    /// IDs are `project` or a canonical lowercase `host:port` from the
+    /// authenticated room connection.
+    pub fn source_for(&self, id: &str, version: &str) -> Option<&str> {
+        if !self
+            .registry
+            .packages
+            .get(id)
+            .is_some_and(|installed| installed.versions.contains_key(version))
+        {
+            return None;
+        }
+        self.sources
+            .packages
+            .get(id)?
+            .get(version)
+            .map(String::as_str)
+    }
+
+    /// Whether this trusted source approved the exact canonical package
+    /// identity. The digest includes declared metadata, all platform plugin
+    /// descriptors, hooks and effective settings.
+    pub fn has_consent(&self, source_id: &str, digest: &str) -> Result<bool, StoreError> {
+        validate_source_id(source_id)?;
+        validate_digest(digest)?;
+        Ok(self
+            .consents
+            .by_source
+            .get(source_id)
+            .is_some_and(|digests| digests.contains(digest)))
+    }
+
+    /// Records approval for one exact source and canonical package
+    /// identity. Callers must invoke this only after the player approves.
+    pub fn record_consent(&mut self, source_id: &str, digest: &str) -> Result<(), StoreError> {
+        validate_source_id(source_id)?;
+        validate_digest(digest)?;
+        let mut next = self.consents.clone();
+        next.by_source
+            .entry(source_id.to_owned())
+            .or_default()
+            .insert(digest.to_owned());
+        self.save_consents(&next)?;
+        self.consents = next;
+        Ok(())
     }
 
     /// The folder of `id` in `version`.
@@ -441,7 +559,7 @@ impl Store {
         id: &str,
         source: &dyn Source,
     ) -> Result<Vec<String>, StoreError> {
-        self.install_resolved(context, id, None, source)
+        self.install_resolved(context, id, None, None, source)
     }
 
     /// Installs `id` in exactly `version` (a room's) and what it needs, or
@@ -453,7 +571,46 @@ impl Store {
         version: &str,
         source: &dyn Source,
     ) -> Result<Vec<String>, StoreError> {
-        self.install_resolved(context, id, Some(version), source)
+        self.install_resolved(context, id, Some(version), None, source)
+    }
+
+    /// Source-aware install. Plugin-bearing packages in the entire resolved
+    /// closure must have an approval for their full content identity and
+    /// effective settings before any package is installed or made current.
+    pub fn install_from(
+        &mut self,
+        context: resolve::Context<'_>,
+        id: &str,
+        source_id: &str,
+        effective_settings_by_package: &EffectiveSettingsByPackage,
+        source: &dyn Source,
+    ) -> Result<Vec<String>, StoreError> {
+        self.install_resolved(
+            context,
+            id,
+            None,
+            Some((source_id, effective_settings_by_package)),
+            source,
+        )
+    }
+
+    /// Source-aware exact-version install; see [`Self::install_from`].
+    pub fn install_exact_from(
+        &mut self,
+        context: resolve::Context<'_>,
+        id: &str,
+        version: &str,
+        source_id: &str,
+        effective_settings_by_package: &EffectiveSettingsByPackage,
+        source: &dyn Source,
+    ) -> Result<Vec<String>, StoreError> {
+        self.install_resolved(
+            context,
+            id,
+            Some(version),
+            Some((source_id, effective_settings_by_package)),
+            source,
+        )
     }
 
     fn install_resolved(
@@ -461,23 +618,70 @@ impl Store {
         context: resolve::Context<'_>,
         id: &str,
         version: Option<&str>,
+        source_context: Option<(&str, &EffectiveSettingsByPackage)>,
         source: &dyn Source,
     ) -> Result<Vec<String>, StoreError> {
+        if let Some((source_id, _)) = source_context {
+            validate_source_id(source_id)?;
+        }
         let installed: Vec<&Package> = self
             .registry
             .packages
             .values()
             .filter_map(Installed::package)
             .collect();
-        let order = match version {
-            Some(version) => resolve::resolve_exact(context, id, version, &installed),
-            None => resolve::resolve(context, &[id], &installed),
+        let resolution = match version {
+            Some(version) => resolve::resolve_exact_plan(context, id, version, &installed),
+            None => resolve::resolve_plan(context, &[id], &installed),
         };
-        let order: Vec<Package> = order?.into_iter().cloned().collect();
+        let resolution = resolution?;
+        let mut selected_sources = BTreeMap::new();
+        for package in &resolution.closure {
+            let current_index_package = context.index.package(&package.id, &package.version);
+            match source_context {
+                Some((source_id, settings_by_package)) => {
+                    let source = if current_index_package.is_some() {
+                        Some(source_id)
+                    } else {
+                        self.source_for(&package.id, &package.version)
+                    };
+                    let settings = settings_by_package.get(&package.id);
+                    self.require_plugin_consent(package, source, settings)?;
+                    if current_index_package.is_some() {
+                        selected_sources.insert(
+                            (package.id.clone(), package.version.clone()),
+                            source_id.to_owned(),
+                        );
+                    }
+                }
+                None => {
+                    if !package.plugins.is_empty() {
+                        return Err(StoreError::MissingSource {
+                            id: package.id.clone(),
+                            version: package.version.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        let order: Vec<Package> = resolution.install.into_iter().cloned().collect();
         let mut done = Vec::new();
         for package in &order {
             self.install_one(package, source)?;
             done.push(format!("{} {}", package.id, package.version));
+        }
+        let mut next_sources = self.sources.clone();
+        for ((id, version), source_id) in selected_sources {
+            next_sources
+                .packages
+                .entry(id)
+                .or_default()
+                .insert(version, source_id);
+        }
+        if source_context.is_some() && !next_sources.packages.is_empty() {
+            self.save_sources(&next_sources)?;
+            self.sources = next_sources;
         }
         Ok(done)
     }
@@ -645,6 +849,12 @@ impl Store {
             entry.versions.remove(&package.version);
         }
         self.save()?;
+        if let Err(source) = self.prune_sources() {
+            return Err(MakeCurrentError {
+                source,
+                saved: true,
+            });
+        }
         for package in old {
             if let Err(source) = remove_registered(
                 &self.root,
@@ -703,6 +913,12 @@ impl Store {
         }
         self.registry.packages.remove(id);
         self.save()?;
+        let mut next_sources = self.sources.clone();
+        next_sources.packages.remove(id);
+        if !next_sources.packages.is_empty() || self.root.join(PACKAGE_SOURCES).exists() {
+            self.save_sources(&next_sources)?;
+            self.sources = next_sources;
+        }
         for package in &versions {
             remove_registered(&self.root, &self.folder(id, &package.version), package)?;
         }
@@ -727,6 +943,13 @@ impl Store {
             .and_then(|v| installed.versions.get(v))
             .ok_or_else(|| StoreError::NoPrevious(id.to_owned()))?
             .clone();
+        let settings = effective_settings(&previous, &installed.settings);
+        ensure_plugin_platform_supported(&previous, index::current_platform())?;
+        self.require_plugin_consent(
+            &previous,
+            self.source_for(id, &previous.version),
+            Some(&settings),
+        )?;
         self.verify_package(&self.folder(id, &previous.version), &previous)?;
         self.make_current(&previous).map_err(StoreError::from)
     }
@@ -756,11 +979,28 @@ impl Store {
         id: &str,
         on: bool,
     ) -> Result<(), StoreError> {
-        if on && let Some(why) = self.clash(registry, id) {
-            return Err(StoreError::Clash {
-                id: id.to_owned(),
-                why,
-            });
+        if on {
+            let installed = self
+                .registry
+                .packages
+                .get(id)
+                .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?;
+            let package = installed
+                .package()
+                .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?;
+            let settings = effective_settings(package, &installed.settings);
+            ensure_plugin_platform_supported(package, index::current_platform())?;
+            self.require_plugin_consent(
+                package,
+                self.source_for(id, &package.version),
+                Some(&settings),
+            )?;
+            if let Some(why) = self.clash(registry, id) {
+                return Err(StoreError::Clash {
+                    id: id.to_owned(),
+                    why,
+                });
+            }
         }
         self.registry
             .packages
@@ -876,6 +1116,14 @@ impl Store {
 
     /// Puts `id`'s settings back to its package's defaults.
     pub fn reset_settings(&mut self, id: &str) -> Result<(), StoreError> {
+        let installed = self
+            .registry
+            .packages
+            .get(id)
+            .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?;
+        installed
+            .package()
+            .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?;
         self.registry
             .packages
             .get_mut(id)
@@ -890,15 +1138,21 @@ impl Store {
         let installed = self
             .registry
             .packages
-            .get_mut(id)
+            .get(id)
             .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?;
         let package = installed
             .versions
             .get(&installed.current)
-            .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?;
+            .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?
+            .clone();
         match package.settings.get(key) {
             Some(default) if default.same_type(&value) => {
-                installed.settings.insert(key.to_owned(), value);
+                self.registry
+                    .packages
+                    .get_mut(id)
+                    .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?
+                    .settings
+                    .insert(key.to_owned(), value);
                 self.save()
             }
             Some(_) => Err(StoreError::Setting(format!(
@@ -939,9 +1193,15 @@ impl Store {
                 left_out.push(id.clone());
                 continue;
             }
+            let settings = effective_settings(package, &installed.settings);
+            ensure_plugin_platform_supported(package, index::current_platform())?;
+            self.require_plugin_consent(
+                package,
+                self.source_for(id, &package.version),
+                Some(&settings),
+            )?;
             self.verify_package(&self.folder(id, &package.version), package)?;
-            let mut settings = package.settings.clone();
-            settings.extend(installed.settings.clone());
+            let identity_sha256 = crate::terms::package_digest(package, &settings);
             packages.push(EnabledPackage {
                 id: id.clone(),
                 version: package.version.clone(),
@@ -949,6 +1209,7 @@ impl Store {
                 features: package.features.clone(),
                 settings,
                 files_sha256: crate::terms::files_digest(&package.files),
+                identity_sha256,
                 depends: package.depends.clone(),
                 root: self.folder(id, &package.version),
                 plugins: crate::index::current_platform()
@@ -1012,6 +1273,80 @@ impl Store {
             return Err(StoreError::Occupied(folder.to_owned()));
         }
         Ok(())
+    }
+
+    fn save_sources(&self, sources: &PackageSources) -> Result<(), StoreError> {
+        ensure_no_symlink_path(&self.root, &self.root)?;
+        fs::create_dir_all(&self.root)?;
+        let json = serde_json::to_vec_pretty(sources)
+            .map_err(|error| StoreError::ConsentStore(error.to_string()))?;
+        write_atomic(&self.root, &self.root.join(PACKAGE_SOURCES), &json)
+    }
+
+    fn save_consents(&self, consents: &ConsentRecords) -> Result<(), StoreError> {
+        ensure_no_symlink_path(&self.root, &self.root)?;
+        fs::create_dir_all(&self.root)?;
+        let json = serde_json::to_vec_pretty(consents)
+            .map_err(|error| StoreError::ConsentStore(error.to_string()))?;
+        write_atomic(&self.root, &self.root.join(CONSENTS), &json)
+    }
+
+    fn prune_sources(&mut self) -> Result<(), StoreError> {
+        let mut next = self.sources.clone();
+        next.packages.retain(|id, versions| {
+            if let Some(installed) = self.registry.packages.get(id) {
+                versions.retain(|version, _| installed.versions.contains_key(version));
+            } else {
+                versions.clear();
+            }
+            !versions.is_empty()
+        });
+        if next.packages.is_empty() && !self.root.join(PACKAGE_SOURCES).exists() {
+            return Ok(());
+        }
+        self.save_sources(&next)?;
+        self.sources = next;
+        Ok(())
+    }
+
+    fn require_plugin_consent(
+        &self,
+        package: &Package,
+        source_id: Option<&str>,
+        settings: Option<&BTreeMap<String, Setting>>,
+    ) -> Result<(), StoreError> {
+        if package.plugins.is_empty() {
+            return Ok(());
+        }
+        let source_id = source_id.ok_or_else(|| StoreError::MissingSource {
+            id: package.id.clone(),
+            version: package.version.clone(),
+        })?;
+        let settings =
+            settings.ok_or_else(|| StoreError::MissingEffectiveSettings(package.id.clone()))?;
+        if package.settings.len() != settings.len()
+            || package.settings.iter().any(|(key, default)| {
+                settings
+                    .get(key)
+                    .is_none_or(|value| !default.same_type(value))
+            })
+        {
+            return Err(StoreError::Setting(format!(
+                "effective settings for {} do not match its signed schema",
+                package.id
+            )));
+        }
+        let digest = crate::terms::package_digest(package, settings);
+        if self.has_consent(source_id, &digest)? {
+            Ok(())
+        } else {
+            Err(StoreError::ConsentRequired {
+                id: package.id.clone(),
+                version: package.version.clone(),
+                source_id: source_id.to_owned(),
+                digest,
+            })
+        }
     }
 
     fn save(&self) -> Result<(), StoreError> {
@@ -1209,10 +1544,27 @@ fn check_package_paths(root: &Path, folder: &Path, package: &Package) -> Result<
 /// The paths a package's signed manifest names, case-folded as Windows does.
 fn package_file_set(package: &Package) -> BTreeSet<String> {
     package
-        .files
+        .local_files()
         .iter()
         .map(|file| file.path.to_ascii_lowercase())
         .collect()
+}
+
+fn effective_settings(
+    package: &Package,
+    overrides: &BTreeMap<String, Setting>,
+) -> BTreeMap<String, Setting> {
+    let mut settings = package.settings.clone();
+    for (key, value) in overrides {
+        if package
+            .settings
+            .get(key)
+            .is_some_and(|default| default.same_type(value))
+        {
+            settings.insert(key.clone(), value.clone());
+        }
+    }
+    settings
 }
 
 /// Regular files physically present in a package folder, case-folded as
@@ -1288,6 +1640,122 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, StoreError> {
     }
 }
 
+fn read_package_sources(root: &Path) -> Result<PackageSources, StoreError> {
+    let path = root.join(PACKAGE_SOURCES);
+    ensure_no_symlink_path(root, &path).map_err(consent_store_error)?;
+    let Some(bytes) = read_optional(&path).map_err(consent_store_error)? else {
+        return Ok(PackageSources {
+            format: PACKAGE_SOURCES_FORMAT,
+            packages: BTreeMap::new(),
+        });
+    };
+    let state: PackageSources = serde_json::from_slice(&bytes)
+        .map_err(|error| StoreError::ConsentStore(error.to_string()))?;
+    if state.format != PACKAGE_SOURCES_FORMAT {
+        return Err(StoreError::ConsentStore(format!(
+            "package source format {}",
+            state.format
+        )));
+    }
+    for (id, versions) in &state.packages {
+        if !index::is_id(id) {
+            return Err(StoreError::ConsentStore(format!(
+                "invalid package id {id:?}"
+            )));
+        }
+        for (version, source) in versions {
+            if semver::Version::parse(version).is_err() {
+                return Err(StoreError::ConsentStore(format!(
+                    "invalid version {id} {version:?}"
+                )));
+            }
+            validate_source_id(source).map_err(consent_store_error)?;
+        }
+    }
+    Ok(state)
+}
+
+fn read_consents(root: &Path) -> Result<ConsentRecords, StoreError> {
+    let path = root.join(CONSENTS);
+    ensure_no_symlink_path(root, &path).map_err(consent_store_error)?;
+    let Some(bytes) = read_optional(&path).map_err(consent_store_error)? else {
+        return Ok(ConsentRecords {
+            format: CONSENTS_FORMAT,
+            by_source: BTreeMap::new(),
+        });
+    };
+    let state: ConsentRecords = serde_json::from_slice(&bytes)
+        .map_err(|error| StoreError::ConsentStore(error.to_string()))?;
+    if state.format != CONSENTS_FORMAT {
+        return Err(StoreError::ConsentStore(format!(
+            "consent format {}",
+            state.format
+        )));
+    }
+    for (source, digests) in &state.by_source {
+        validate_source_id(source).map_err(consent_store_error)?;
+        for digest in digests {
+            validate_digest(digest).map_err(consent_store_error)?;
+        }
+    }
+    Ok(state)
+}
+
+fn validate_source_id(source: &str) -> Result<(), StoreError> {
+    let invalid = || StoreError::InvalidSource(source.to_owned());
+    if source == "project" {
+        return Ok(());
+    }
+    if source.is_empty() || source.len() > 255 || source != source.to_ascii_lowercase() {
+        return Err(invalid());
+    }
+    let (host, port) = if let Some(bracketed) = source.strip_prefix('[') {
+        let (address, suffix) = bracketed.split_once(']').ok_or_else(invalid)?;
+        let port = suffix.strip_prefix(':').ok_or_else(invalid)?;
+        let parsed: std::net::Ipv6Addr = address.parse().map_err(|_| invalid())?;
+        if parsed.to_string() != address {
+            return Err(invalid());
+        }
+        (None, port)
+    } else {
+        let (host, port) = source.split_once(':').ok_or_else(invalid)?;
+        if host.contains(':') || host.is_empty() {
+            return Err(invalid());
+        }
+        if !host
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-".contains(&byte))
+        {
+            return Err(invalid());
+        }
+        (Some(host), port)
+    };
+    let port_number: u16 = port.parse().map_err(|_| invalid())?;
+    if port_number == 0 || port_number.to_string() != port {
+        return Err(invalid());
+    }
+    if let Some(host) = host
+        && let Ok(address) = host.parse::<std::net::Ipv4Addr>()
+        && address.to_string() != host
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+fn validate_digest(digest: &str) -> Result<(), StoreError> {
+    if !signed::is_sha256(digest) || digest.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err(StoreError::ConsentStore(
+            "invalid package identity digest".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn consent_store_error(error: StoreError) -> StoreError {
+    StoreError::ConsentStore(error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::{cell::RefCell, collections::HashMap};
@@ -1356,6 +1824,43 @@ mod tests {
         }
     }
 
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    fn plugin_package(version: &str, path: &str, bytes: &[u8]) -> Package {
+        let mut package = package("plugged", version, &[]);
+        package.simulation = true;
+        package.plugins = vec![crate::index::Plugin {
+            path: path.into(),
+            url: url_of("plugged", version, path),
+            size: bytes.len() as u64,
+            sha256: signed::sha256_hex(bytes),
+            abi: crate::index::PLUGIN_ABI,
+            platform: "windows-x86_64".into(),
+        }];
+        package
+    }
+
+    fn approval_settings(package: &Package) -> EffectiveSettingsByPackage {
+        BTreeMap::from([(package.id.clone(), package.settings.clone())])
+    }
+
+    #[test]
+    fn plugin_enable_rejects_targets_without_a_loadable_local_plugin() {
+        let mut package = package("plugged", "1.0.0", &[]);
+        package.plugins = vec![crate::index::Plugin {
+            path: "plugin/main.dll".into(),
+            url: "https://example.invalid/plugin/main.dll".into(),
+            size: 1,
+            sha256: "0".repeat(64),
+            abi: crate::index::PLUGIN_ABI,
+            platform: "windows-x86_64".into(),
+        }];
+
+        assert!(ensure_plugin_platform_supported(&package, None).is_err());
+        assert!(ensure_plugin_platform_supported(&package, Some("linux-x86_64")).is_err());
+        assert!(ensure_plugin_platform_supported(&package, Some("macos-aarch64")).is_err());
+        assert!(ensure_plugin_platform_supported(&package, Some("windows-x86_64")).is_ok());
+    }
+
     /// Every file under `dir`, relative, sorted.
     fn tree(dir: &Path) -> Vec<String> {
         let mut out = Vec::new();
@@ -1402,6 +1907,230 @@ mod tests {
         assert_eq!(installed.current, "1.0.0");
         assert!(!installed.enabled);
         assert_eq!(installed.package().unwrap().files.len(), 2);
+    }
+
+    #[test]
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    fn plugin_install_needs_exact_source_approval_and_persists_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("native-mods");
+        let bytes = b"plugin v1";
+        let package = plugin_package("1.0.0", "plugin/main.dll", bytes);
+        let index = index(vec![package.clone()]);
+        let served = Served::default();
+        served.serve("plugged", "1.0.0", &[("plugin/main.dll", bytes)]);
+        let settings = approval_settings(&package);
+        let digest = crate::terms::package_digest(&package, &package.settings);
+        let mut store = Store::open(&root).unwrap();
+
+        assert!(matches!(
+            store.install_exact_from(
+                context(&index),
+                "plugged",
+                "1.0.0",
+                "project",
+                &settings,
+                &served,
+            ),
+            Err(StoreError::ConsentRequired { .. })
+        ));
+        assert!(!store.folder("plugged", "1.0.0").exists());
+
+        store.record_consent("project", &digest).unwrap();
+        store
+            .install_exact_from(
+                context(&index),
+                "plugged",
+                "1.0.0",
+                "project",
+                &settings,
+                &served,
+            )
+            .unwrap();
+        assert_eq!(store.source_for("plugged", "1.0.0"), Some("project"));
+        store.set_enabled("plugged", true).unwrap();
+        let (enabled, _) = store.enabled_for(BUILD).unwrap();
+        assert_eq!(enabled.packages[0].identity_sha256, digest);
+
+        let reopened = Store::open(&root).unwrap();
+        assert_eq!(reopened.source_for("plugged", "1.0.0"), Some("project"));
+        assert!(reopened.has_consent("project", &digest).unwrap());
+        fs::write(root.join(CONSENTS), br#"{"format":1,"by_source":{}}"#).unwrap();
+        let mut without_approval = Store::open(&root).unwrap();
+        assert!(!without_approval.has_consent("project", &digest).unwrap());
+        assert!(matches!(
+            without_approval.set_enabled("plugged", true),
+            Err(StoreError::ConsentRequired { .. })
+        ));
+        without_approval.record_consent("project", &digest).unwrap();
+        without_approval.set_enabled("plugged", true).unwrap();
+    }
+
+    #[test]
+    fn malformed_consent_records_are_not_replaced_with_an_empty_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("native-mods");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(CONSENTS), b"{ not json").unwrap();
+        assert!(matches!(
+            Store::open(&root),
+            Err(StoreError::ConsentStore(_))
+        ));
+    }
+
+    #[test]
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    fn source_aware_install_gates_plugin_dependencies_before_any_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("native-mods");
+        let plugin_bytes = b"plugin";
+        let plugin = plugin_package("1.0.0", "plugin/main.dll", plugin_bytes);
+        let addon_bytes = b"addon";
+        let mut addon = package("addon", "1.0.0", &[("addon.lua", addon_bytes)]);
+        addon.depends.push(Dependency {
+            id: "plugged".into(),
+            version: "^1".into(),
+        });
+        let index = index(vec![plugin.clone(), addon.clone()]);
+        let served = Served::default();
+        served.serve("plugged", "1.0.0", &[("plugin/main.dll", plugin_bytes)]);
+        served.serve("addon", "1.0.0", &[("addon.lua", addon_bytes)]);
+        let mut settings = approval_settings(&plugin);
+        settings.extend(approval_settings(&addon));
+        let plugin_digest = crate::terms::package_digest(&plugin, &plugin.settings);
+        let mut store = Store::open(&root).unwrap();
+        assert!(matches!(
+            store.install_from(context(&index), "addon", "project", &settings, &served),
+            Err(StoreError::ConsentRequired { id, .. }) if id == "plugged"
+        ));
+        assert!(store.registry().packages.is_empty());
+        assert!(!root.join("addon").exists());
+
+        store.record_consent("project", &plugin_digest).unwrap();
+        store
+            .install_from(context(&index), "addon", "project", &settings, &served)
+            .unwrap();
+        assert_eq!(store.source_for("plugged", "1.0.0"), Some("project"));
+        assert_eq!(store.source_for("addon", "1.0.0"), Some("project"));
+    }
+
+    #[test]
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    fn installed_plugin_bytes_are_checked_before_enabled_identity_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("native-mods");
+        let bytes = b"plugin v1";
+        let package = plugin_package("1.0.0", "plugin/main.dll", bytes);
+        let index = index(vec![package.clone()]);
+        let served = Served::default();
+        served.serve("plugged", "1.0.0", &[("plugin/main.dll", bytes)]);
+        let settings = approval_settings(&package);
+        let digest = crate::terms::package_digest(&package, &package.settings);
+        let mut store = Store::open(&root).unwrap();
+        store.record_consent("project", &digest).unwrap();
+        store
+            .install_exact_from(
+                context(&index),
+                "plugged",
+                "1.0.0",
+                "project",
+                &settings,
+                &served,
+            )
+            .unwrap();
+        store.set_enabled("plugged", true).unwrap();
+        fs::write(
+            store.folder("plugged", "1.0.0").join("plugin/main.dll"),
+            b"tampered",
+        )
+        .unwrap();
+
+        assert!(matches!(
+            store.write_enabled(BUILD),
+            Err(StoreError::Damaged { id, .. }) if id == "plugged"
+        ));
+        assert!(!root.join(enabled::FILE).exists());
+    }
+
+    #[test]
+    #[cfg(all(windows, target_arch = "x86_64"))]
+    fn same_version_plugin_rename_replaces_the_exact_installed_file_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("native-mods");
+        let old_bytes = b"old plugin";
+        let old = plugin_package("1.0.0", "plugin/old.dll", old_bytes);
+        let old_index = index(vec![old.clone()]);
+        let served = Served::default();
+        served.serve("plugged", "1.0.0", &[("plugin/old.dll", old_bytes)]);
+        let settings = approval_settings(&old);
+        let old_digest = crate::terms::package_digest(&old, &old.settings);
+        let mut store = Store::open(&root).unwrap();
+        store.record_consent("project", &old_digest).unwrap();
+        store
+            .install_exact_from(
+                context(&old_index),
+                "plugged",
+                "1.0.0",
+                "project",
+                &settings,
+                &served,
+            )
+            .unwrap();
+
+        let new_bytes = b"new plugin";
+        let new = plugin_package("1.0.0", "plugin/new.dll", new_bytes);
+        let new_index = index(vec![new.clone()]);
+        served.serve("plugged", "1.0.0", &[("plugin/new.dll", new_bytes)]);
+        let new_settings = approval_settings(&new);
+        let new_digest = crate::terms::package_digest(&new, &new.settings);
+        assert_ne!(old_digest, new_digest);
+        assert!(matches!(
+            store.install_exact_from(
+                context(&new_index),
+                "plugged",
+                "1.0.0",
+                "project",
+                &new_settings,
+                &served,
+            ),
+            Err(StoreError::ConsentRequired { .. })
+        ));
+        let folder = store.folder("plugged", "1.0.0");
+        assert!(folder.join("plugin/old.dll").exists());
+        assert!(!folder.join("plugin/new.dll").exists());
+
+        store.record_consent("project", &new_digest).unwrap();
+        store
+            .install_exact_from(
+                context(&new_index),
+                "plugged",
+                "1.0.0",
+                "project",
+                &new_settings,
+                &served,
+            )
+            .unwrap();
+        assert!(!folder.join("plugin/old.dll").exists());
+        assert_eq!(fs::read(folder.join("plugin/new.dll")).unwrap(), new_bytes);
+        store.verify("plugged").unwrap();
+    }
+
+    #[test]
+    fn data_only_packages_keep_source_less_install_and_current_terms() {
+        let dir = tempfile::tempdir().unwrap();
+        let bytes = b"simulation data";
+        let mut package = package("plain", "1.0.0", &[("data/world.lua", bytes)]);
+        package.simulation = true;
+        let index = index(vec![package]);
+        let served = Served::default();
+        served.serve("plain", "1.0.0", &[("data/world.lua", bytes)]);
+        let mut store = Store::open(dir.path().join("native-mods")).unwrap();
+        store.install(context(&index), "plain", &served).unwrap();
+        store.set_enabled("plain", true).unwrap();
+        let (enabled, _) = store.enabled_for(BUILD).unwrap();
+        assert_eq!(enabled.packages.len(), 1);
+        assert_eq!(enabled.packages[0].identity_sha256.len(), 64);
+        assert_eq!(crate::terms::terms(&enabled, BIG_MAPS).len(), 1);
     }
 
     #[test]

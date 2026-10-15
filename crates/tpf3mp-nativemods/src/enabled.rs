@@ -84,6 +84,11 @@ pub struct EnabledPackage {
     /// SHA-256 of its sorted `(path, size, sha256)` file manifest; URLs are
     /// excluded because mirrors do not change the installed contents.
     pub files_sha256: String,
+    /// Full canonical package identity, including plugins for every
+    /// platform. Empty only when reading an older enabled list; such a list
+    /// cannot declare a current protocol room term.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub identity_sha256: String,
     /// Package dependencies, which determine native-mod load order.
     pub depends: Vec<Dependency>,
     /// Its folder, `native-mods/<id>/<version>/`.
@@ -451,6 +456,7 @@ mod tests {
             features: features.iter().map(|f| (*f).to_owned()).collect(),
             settings: BTreeMap::from([("depth".into(), Setting::Int(10))]),
             files_sha256: crate::terms::files_digest(&[]),
+            identity_sha256: String::new(),
             depends: Vec::new(),
             root: PathBuf::from(format!("native-mods/{id}/1.0.0")),
             plugins: Vec::new(),
