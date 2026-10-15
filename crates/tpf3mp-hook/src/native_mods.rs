@@ -232,7 +232,7 @@ mod tests {
         let good = profile("good", "40 53");
         let missing = profile("missing", "AA BB");
         assert_eq!(
-            core_sites(&[good.clone()], &[0x40, 0x53], 0x1000, 0x2000),
+            core_sites(std::slice::from_ref(&good), &[0x40, 0x53], 0x1000, 0x2000),
             Ok(vec![0x3000])
         );
         let error = core_sites(&[good, missing], &[0x40, 0x53], 0x1000, 0x2000).unwrap_err();
