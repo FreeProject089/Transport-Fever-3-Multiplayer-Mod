@@ -19,29 +19,37 @@
 use std::collections::BTreeMap;
 
 use ring::digest::{Context, SHA256};
+use serde::Serialize;
 
 use crate::{
     enabled::Enabled,
     features::FeatureSpec,
-    index::{Index, Package, Setting},
+    index::{FileEntry, Index, Package, Setting},
     signed,
 };
 
 /// Keeps settings digests apart from every other SHA-256 in the project.
 const SETTINGS_DOMAIN: &[u8] = b"tpf3mp native settings 1\0";
+/// Keeps package file-list digests apart from every other SHA-256.
+const FILES_DOMAIN: &[u8] = b"tpf3mp native package files 1\0";
+/// Names the canonical package identity whose full digest is a room term.
+const PACKAGE_DOMAIN: &[u8] = b"tpf3mp native package identity 1\0";
 /// What a native term's mod id starts with. No mod folder can be named so:
 /// `:` is not allowed in a Windows file name.
 pub const MOD_PREFIX: &str = "native:";
-/// Hex digits of the settings digest in a term's mod version.
-const SHORT: usize = 10;
+/// Hex digits of the settings digest kept so the server can validate the
+/// settings carried beside a room term.
+const SETTINGS_PREFIX: usize = 10;
 
 /// One simulation-changing package as the room compares it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NativeTerm {
     pub id: String,
     pub version: String,
-    /// The SHA-256 of its settings, lowercase hex.
+    /// The SHA-256 of its effective settings, lowercase hex.
     pub settings: String,
+    /// The full SHA-256 of its canonical package identity, lowercase hex.
+    pub identity: String,
 }
 
 impl NativeTerm {
@@ -50,11 +58,12 @@ impl NativeTerm {
         format!("{MOD_PREFIX}{}", self.id)
     }
 
-    /// Its version as a mod in a manifest: the package's version, `+`, and
-    /// the start of the settings digest. At most 31 characters.
+    /// Its version as a mod in a manifest: the package's version, `+`, the
+    /// settings digest's first ten hex digits, and its full package identity.
+    /// The longest value is 95 bytes for a 20-byte package version.
     pub fn mod_version(&self) -> String {
-        let short = &self.settings[..SHORT.min(self.settings.len())];
-        format!("{}+{short}", self.version)
+        let short = &self.settings[..SETTINGS_PREFIX.min(self.settings.len())];
+        format!("{}+{short}{}", self.version, self.identity)
     }
 }
 
@@ -64,6 +73,60 @@ pub fn settings_digest(settings: &BTreeMap<String, Setting>) -> String {
     let mut digest = Context::new(&SHA256);
     digest.update(SETTINGS_DOMAIN);
     digest.update(&serde_json::to_vec(settings).unwrap_or_default());
+    signed::hex(digest.finish().as_ref())
+}
+
+/// The SHA-256 of the package's sorted file paths, sizes and content hashes.
+/// The download URL is omitted because mirrors do not change the contents a
+/// game runs.
+pub fn files_digest(files: &[FileEntry]) -> String {
+    let mut files: Vec<(&str, u64, &str)> = files
+        .iter()
+        .map(|file| (file.path.as_str(), file.size, file.sha256.as_str()))
+        .collect();
+    files.sort_unstable();
+    let encoded = postcard::to_allocvec(&files).expect("file identity is serializable");
+    let mut digest = Context::new(&SHA256);
+    digest.update(FILES_DOMAIN);
+    digest.update(&encoded);
+    signed::hex(digest.finish().as_ref())
+}
+
+#[derive(Serialize)]
+struct PackageIdentity<'a> {
+    id: &'a str,
+    version: &'a str,
+    simulation: bool,
+    features: Vec<&'a str>,
+    settings: &'a BTreeMap<String, Setting>,
+    files_sha256: &'a str,
+    depends: Vec<(&'a str, &'a str)>,
+}
+
+/// The full SHA-256 identity of the package fields that can affect the
+/// simulation: its declared feature order, effective settings, dependencies,
+/// and the sorted path/size/content-hash manifest of every package file.
+pub fn package_digest(package: &crate::enabled::EnabledPackage) -> String {
+    let features: Vec<&str> = package.features.iter().map(String::as_str).collect();
+    let mut depends: Vec<(&str, &str)> = package
+        .depends
+        .iter()
+        .map(|dependency| (dependency.id.as_str(), dependency.version.as_str()))
+        .collect();
+    depends.sort_unstable();
+    let identity = PackageIdentity {
+        id: &package.id,
+        version: &package.version,
+        simulation: package.simulation,
+        features,
+        settings: &package.settings,
+        files_sha256: &package.files_sha256,
+        depends,
+    };
+    let encoded = postcard::to_allocvec(&identity).expect("package identity is serializable");
+    let mut digest = Context::new(&SHA256);
+    digest.update(PACKAGE_DOMAIN);
+    digest.update(&encoded);
     signed::hex(digest.finish().as_ref())
 }
 
@@ -78,6 +141,7 @@ pub fn terms(enabled: &Enabled, registry: &[FeatureSpec]) -> Vec<NativeTerm> {
             id: package.id.clone(),
             version: package.version.clone(),
             settings: settings_digest(&package.settings),
+            identity: package_digest(package),
         })
         .collect();
     terms.sort();
@@ -165,6 +229,8 @@ mod tests {
                 .iter()
                 .map(|(k, v)| ((*k).to_owned(), v.clone()))
                 .collect(),
+            files_sha256: files_digest(&[]),
+            depends: Vec::new(),
             root: PathBuf::new(),
         }];
         if with_page_only {
@@ -174,6 +240,8 @@ mod tests {
                 simulation: false,
                 features: vec!["bigmap.page".into()],
                 settings: BTreeMap::new(),
+                files_sha256: files_digest(&[]),
+                depends: Vec::new(),
                 root: PathBuf::new(),
             });
         }
@@ -193,7 +261,12 @@ mod tests {
         assert_eq!(a.len(), 1, "the page-only package is the player's own");
         assert_eq!(a[0].mod_id(), "native:bigmap");
         assert!(a[0].mod_version().starts_with("0.3.0+"));
-        assert!(a[0].mod_version().len() <= 32);
+        assert_eq!(a[0].mod_version().len(), "0.3.0+".len() + 74);
+        assert_eq!(
+            &a[0].mod_version()["0.3.0+".len()..][..10],
+            &a[0].settings[..10]
+        );
+        assert_eq!(a[0].identity.len(), 64);
 
         let same = terms(
             &enabled(&[("octree_depth", Setting::Int(10))], false),
@@ -230,5 +303,84 @@ mod tests {
         let mut newer = room.clone();
         newer[0].version = "9.0.0".into();
         assert!(missing_from_index(&compare(&newer, &[]), &index, BUILD).is_err());
+    }
+
+    #[test]
+    fn package_files_are_sorted_and_simulation_data_changes_the_identity() {
+        let first = FileEntry {
+            path: "content/simulation.lua".into(),
+            url: "https://one.invalid/simulation.lua".into(),
+            size: 12,
+            sha256: "a".repeat(64),
+        };
+        let second = FileEntry {
+            path: "content/settings.lua".into(),
+            url: "https://one.invalid/settings.lua".into(),
+            size: 8,
+            sha256: "b".repeat(64),
+        };
+        assert_eq!(
+            files_digest(&[first.clone(), second.clone()]),
+            files_digest(&[second.clone(), first.clone()]),
+            "file order and mirrors do not change the canonical digest"
+        );
+        let mut another_mirror = first.clone();
+        another_mirror.url = "https://mirror.invalid/simulation.lua".into();
+        assert_eq!(
+            files_digest(&[first.clone(), second.clone()]),
+            files_digest(&[another_mirror, second.clone()]),
+            "download URLs do not change package contents"
+        );
+
+        let mut unchanged = enabled(&[("octree_depth", Setting::Int(10))], false)
+            .packages
+            .remove(0);
+        unchanged.files_sha256 = files_digest(&[first.clone(), second.clone()]);
+        let before = package_digest(&unchanged);
+        let before_term = terms(
+            &Enabled {
+                format: FORMAT,
+                build: BUILD.into(),
+                packages: vec![unchanged.clone()],
+            },
+            BIG_MAPS,
+        )[0]
+        .mod_version();
+
+        let changed = FileEntry {
+            sha256: "c".repeat(64),
+            ..first
+        };
+        let mut updated = unchanged;
+        updated.files_sha256 = files_digest(&[changed, second]);
+        assert_ne!(package_digest(&updated), before);
+        let mut reordered_features = updated.clone();
+        reordered_features.features = vec!["first.feature".into(), "second.feature".into()];
+        let first_order_digest = package_digest(&reordered_features);
+        reordered_features.features.reverse();
+        assert_ne!(
+            package_digest(&reordered_features),
+            first_order_digest,
+            "feature order changes the hook plan"
+        );
+        let mut with_dependency = updated.clone();
+        with_dependency.depends.push(crate::index::Dependency {
+            id: "other".into(),
+            version: "^1.0".into(),
+        });
+        assert_ne!(package_digest(&with_dependency), package_digest(&updated));
+        let after_term = terms(
+            &Enabled {
+                format: FORMAT,
+                build: BUILD.into(),
+                packages: vec![updated],
+            },
+            BIG_MAPS,
+        )[0]
+        .mod_version();
+        assert_ne!(
+            before_term, after_term,
+            "the room term changes with Lua/data bytes"
+        );
     }
 }

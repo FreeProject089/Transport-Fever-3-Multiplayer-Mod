@@ -271,8 +271,9 @@ const SERVER_PROPOSED: &str = "proposed.json";
 /// Takes in `json`, the index the server `server` serves with `serial` (or
 /// with `proposed`, the mods proposed for it), and keeps it: the server
 /// vouches for it as it vouches for its rooms (proposed D29 amendment). An
-/// index whose serial is older than the one kept is refused, so an old one
-/// cannot come back.
+/// index whose serial is older than the one kept is refused, and one whose
+/// serial matches must have byte-identical JSON, so a serial cannot name
+/// different contents.
 pub fn accept_server_index(
     data_dir: &Path,
     server: &str,
@@ -297,17 +298,34 @@ pub fn accept_server_index(
     } else {
         SERVER_INDEX
     });
-    let kept = std::fs::read(&file).ok().and_then(|bytes| {
-        if proposed {
-            Proposals::parse(&bytes).ok().map(|p| p.serial)
-        } else {
-            Index::parse(&bytes).ok().map(|index| index.serial)
+    let kept_bytes = match std::fs::read(&file) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "cannot read the saved index from {server}: {error}"
+            ));
         }
-    });
-    if kept.is_some_and(|kept| kept > serial) {
-        return Err(format!(
-            "{server} served an older index of native mods than before"
-        ));
+    };
+    if let Some(kept_bytes) = kept_bytes {
+        let kept = if proposed {
+            Proposals::parse(&kept_bytes).map(|p| p.serial)
+        } else {
+            Index::parse(&kept_bytes)
+                .map(|index| index.serial)
+                .map_err(|error| error.to_string())
+        }
+        .map_err(|error| format!("cannot verify the saved index from {server}: {error}"))?;
+        if kept > serial {
+            return Err(format!(
+                "{server} served an older index of native mods than before"
+            ));
+        }
+        if kept == serial && kept_bytes != json {
+            return Err(format!(
+                "{server} changed its native-mod index bytes without increasing its serial"
+            ));
+        }
     }
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let partial = dir.join(".partial");
@@ -557,13 +575,14 @@ fn index_listing(
 }
 
 /// Makes the next game on the build `build` run exactly the room's native
-/// mods `room`: each installed in the room's version from the signed index,
-/// with the room's settings, and enabled; every other simulation-changing
-/// one switched off. Ones that change only what a player sees stay the
-/// player's. Returns whether anything changed, and so whether a running
-/// game must start again to run them. Refused when the index does not list
-/// the room's version for this build, or the result does not match the
-/// room: then that player cannot join.
+/// mods `room`: each checked against the signed index (including when the
+/// id and version already match), installed if its files or metadata are
+/// stale, given the room's settings, and enabled; every other
+/// simulation-changing one is switched off. Ones that change only what a
+/// player sees stay the player's. Returns whether anything changed, and so
+/// whether a running game must start again to run them. Refused when the
+/// index does not list the room's version for this build, or the result
+/// does not match the room: then that player cannot join.
 pub fn match_room(
     data_dir: &Path,
     setup: &NativeSetup,
@@ -582,35 +601,28 @@ pub fn match_room(
         let index = index_listing(&mut store, data_dir, setup, server, &wanted)?;
         for native in room {
             let (id, version) = (native.id.as_str(), native.package_version());
-            let current = store
-                .registry()
-                .packages
-                .get(id)
-                .is_some_and(|i| i.current == version);
-            if !current {
-                let package = index
-                    .package(id, version)
-                    .filter(|p| p.runs_on(build))
-                    .ok_or_else(|| {
-                        format!(
-                            "the signed index has no {} {version} for your game's build",
-                            native.name
-                        )
-                    })?;
-                info!(%id, %version, "installing the room's native mod");
-                store
-                    .install_exact(
-                        resolve::Context {
-                            index: &index,
-                            build,
-                            registry: BUILT_IN,
-                        },
-                        &package.id,
-                        version,
-                        setup.source.as_ref(),
+            let package = index
+                .package(id, version)
+                .filter(|p| p.runs_on(build))
+                .ok_or_else(|| {
+                    format!(
+                        "the signed index has no {} {version} for your game's build",
+                        native.name
                     )
-                    .map_err(error)?;
-            }
+                })?;
+            info!(%id, %version, "checking the room's native mod against its signed package");
+            store
+                .install_exact(
+                    resolve::Context {
+                        index: &index,
+                        build,
+                        registry: BUILT_IN,
+                    },
+                    &package.id,
+                    version,
+                    setup.source.as_ref(),
+                )
+                .map_err(error)?;
             // The room's settings, all of them: a told setting overrides the
             // default, and none of this player's own stays.
             store.reset_settings(id).map_err(error)?;
@@ -947,6 +959,107 @@ mod tests {
     }
 
     #[test]
+    fn a_same_version_package_with_changed_simulation_lua_is_replaced_before_join() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game").unwrap();
+        let build = build_of(&exe).unwrap();
+        let server = "eu.example:29470";
+        let mut old = native_package("bigmap", "0.3.0", &build).0;
+        old.files[0].path = "content/simulation.lua".into();
+        let old_url = old.files[0].url.clone();
+        let old_bytes = b"return 1".to_vec();
+        old.files[0].size = old_bytes.len() as u64;
+        old.files[0].sha256 = tpf3mp_nativemods::signed::sha256_hex(&old_bytes);
+        let mut old_setup = setup(vec![(old.clone(), (old_url.clone(), old_bytes.clone()))]);
+        old_setup.keys.clear();
+
+        let old_index = Index {
+            format: 1,
+            serial: 1,
+            packages: vec![old.clone()],
+            listings: Default::default(),
+        };
+        let old_json = serde_json::to_vec(&old_index).unwrap();
+        let owner = dir.path().join("owner");
+        let member = dir.path().join("member");
+        accept_server_index(&owner, server, 1, &old_json, false).unwrap();
+        accept_server_index(&member, server, 1, &old_json, false).unwrap();
+        for player in [&owner, &member] {
+            apply(
+                player,
+                &old_setup,
+                Some(&build),
+                Some(server),
+                Change::Install("bigmap".into()),
+            )
+            .unwrap();
+            apply(
+                player,
+                &old_setup,
+                Some(&build),
+                Some(server),
+                Change::Enable("bigmap".into(), true),
+            )
+            .unwrap();
+        }
+        let old_terms = next_terms(&owner, &exe).unwrap();
+        assert_eq!(next_terms(&member, &exe).unwrap(), old_terms);
+
+        let new_bytes = b"return 2".to_vec();
+        let mut updated = old.clone();
+        updated.files[0].size = new_bytes.len() as u64;
+        updated.files[0].sha256 = tpf3mp_nativemods::signed::sha256_hex(&new_bytes);
+        let mut updated_setup = setup(vec![(
+            updated.clone(),
+            (old_url.clone(), new_bytes.clone()),
+        )]);
+        updated_setup.keys.clear();
+        let updated_index = Index {
+            format: 1,
+            serial: 2,
+            packages: vec![updated],
+            listings: Default::default(),
+        };
+        let updated_json = serde_json::to_vec(&updated_index).unwrap();
+        accept_server_index(&owner, server, 2, &updated_json, false).unwrap();
+        accept_server_index(&member, server, 2, &updated_json, false).unwrap();
+
+        // The owner installs the refreshed same-version package. Settings
+        // and the version stay fixed; only the simulation Lua bytes change.
+        apply(
+            &owner,
+            &updated_setup,
+            Some(&build),
+            Some(server),
+            Change::Install("bigmap".into()),
+        )
+        .unwrap();
+        let room_terms = next_terms(&owner, &exe).unwrap();
+        assert_eq!(room_terms[0].package_version(), "0.3.0");
+        assert_ne!(room_terms[0].version, old_terms[0].version);
+        assert_eq!(
+            &room_terms[0].version.as_str().rsplit_once('+').unwrap().1[..10],
+            &old_terms[0].version.as_str().rsplit_once('+').unwrap().1[..10],
+            "the settings digest remains the same"
+        );
+
+        assert!(match_room(&member, &updated_setup, &build, Some(server), &room_terms,).unwrap());
+        assert_eq!(next_terms(&member, &exe).unwrap(), room_terms);
+        assert_eq!(
+            fs::read(
+                member
+                    .join(FOLDER)
+                    .join("bigmap")
+                    .join("0.3.0")
+                    .join("content/simulation.lua")
+            )
+            .unwrap(),
+            new_bytes
+        );
+    }
+
+    #[test]
     fn settings_travel_as_the_room_tells_them() {
         for setting in [
             Setting::Bool(true),
@@ -1007,6 +1120,19 @@ mod tests {
         let player = dir.path().join("player");
         assert!(!view(&player, Some(&keyless), Some(&build), Some(server), false).available);
         accept_server_index(&player, server, 5, &json, false).unwrap();
+        accept_server_index(&player, server, 5, &json, false).unwrap();
+        let mut same_serial_changed = index.clone();
+        same_serial_changed.packages[0].description = "different bytes".into();
+        assert!(
+            accept_server_index(
+                &player,
+                server,
+                5,
+                &serde_json::to_vec(&same_serial_changed).unwrap(),
+                false,
+            )
+            .is_err()
+        );
         // Another serial than it says, or an older index: refused.
         assert!(accept_server_index(&player, server, 6, &json, false).is_err());
         let older = Index {
@@ -1111,6 +1237,22 @@ mod tests {
             true,
         )
         .unwrap();
+        let mut same_serial_proposals_changed = proposals.clone();
+        same_serial_proposals_changed
+            .pulls
+            .get_mut("trees")
+            .unwrap()
+            .title = "Different title".into();
+        assert!(
+            accept_server_index(
+                &player,
+                server,
+                5,
+                &serde_json::to_vec(&same_serial_proposals_changed).unwrap(),
+                true,
+            )
+            .is_err()
+        );
         let hidden = view(&player, Some(&keyless), Some(&build), Some(server), false);
         assert!(hidden.packages.iter().all(|row| row.id != "trees"));
         let shown = view(&player, Some(&keyless), Some(&build), Some(server), true);

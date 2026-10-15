@@ -2,7 +2,7 @@
 
 *Owner-approved policy* ([DECISIONS.md](DECISIONS.md), D29, approved
 2026-10-08). The launcher's Native mods group, the room's native terms on
-the wire (protocol 20) and getting the room's native mods on joining are
+the wire (protocol 22) and getting the room's native mods on joining are
 built; there is no production trust key or index, nor a built-in native
 feature yet, so players cannot use a native mod yet. The implemented and
 open parts are listed at the end.
@@ -333,16 +333,22 @@ player sees is that player's own, as personal mods are ([MODS.md](MODS.md),
 D25).
 
 The room's **native terms** are, for each simulation-changing package the
-game runs, its id, its version and a SHA-256 of its settings (defaults
-included), ordered by id. Since protocol 20 they travel in the content
-manifest's own list, `ContentManifest::native`
-([PROTOCOL.md](PROTOCOL.md), "Native mods"): each as a mod named
-`native:<id>` (no mod folder can be named so; `:` is not allowed in a
-Windows file name) whose version is `<version>+<the settings digest's first
-ten hex digits>`, at most 31 characters. The room compares them as it
-compares mods: a member whose terms differ cannot start or join, and is
-told which native mod is missing, which differs and which the room does not
-run.
+game runs, its id, its version and a full SHA-256 package-content identity,
+ordered by id. Since protocol 22 they travel in the content manifest's own
+list, `ContentManifest::native` ([PROTOCOL.md](PROTOCOL.md), "Native mods"):
+each as a mod named `native:<id>` (no mod folder can be named so; `:` is not
+allowed in a Windows file name) whose version is `<version>+<10 settings
+digest hex digits><64 package-identity hex digits>`, at most 95 characters.
+The first ten digits let the server check that `RoomConfig::native` carries
+the settings named by the term; they are not the content identity. The full
+identity hashes the package id and version, its simulation flag, features
+in their declared order, effective settings, sorted dependencies, and the
+package files sorted by path with each path, size and declared SHA-256. Download URLs and
+display metadata are excluded because they do not change the package's
+contents or simulation behavior. A member whose terms differ cannot start
+or join, and is told which native mod is missing, which differs and which
+the room does not run. Ordinary game mods remain limited to 32-character
+versions; protocol 22 rejects the old short native term form for new joins.
 
 What a game declares is what the launcher started it with: the terms of the
 `enabled.json` it wrote for that game (`tpf3mp-agent`'s `native_mods`), and
@@ -356,7 +362,9 @@ room's owner also tells the room every setting of each (`RoomConfig::native`,
    a join to its running game.
 2. The launcher installs each in the room's exact version from the signed
    index, for this game's build, **never from another player**
-   (`match_room`, `Store::install_exact`); sets the room's settings over the
+   (`match_room`, `Store::install_exact`). It verifies the installed files
+   against that index even when the id and package version already match,
+   replacing a stale same-version copy or refusing before join; it sets the room's settings over the
    defaults, the player's own choices left out; switches each on; and
    switches off any other simulation-changing native mod. One that changes
    only what the player sees stays as it was. A version the index does not
@@ -379,7 +387,10 @@ settings in the start record (format 9), so a new member's launcher installs
 and enables the exact room terms. Native-free format-8 logs remain
 recoverable. A format-8 log that names native mods is refused and preserved
 for diagnosis because its settings were never recorded; recovery does not
-invent defaults.
+invent defaults. Historical format-9 native terms with only the old ten
+settings-digest digits remain decodable but are refused during recovery with
+an explicit missing-package-identity error, since they cannot establish
+which package bytes the room used.
 
 Mods from Mod Hub are not native mods: players get those through their own
 game and Mod Hub account (D28).
@@ -433,7 +444,7 @@ Framework implemented (`crates/tpf3mp-nativemods`, with tests):
   signed index;
 - the launcher's updater uses the same signature and download code.
 
-Built on it (protocol 20): the room's terms on the wire with their
+Built on it (protocol 22): the room's terms on the wire with their
 settings, the launcher's Native mods group, `Store::install_exact` and
 `resolve::resolve_exact` for a room's exact version, and getting the room's
 native mods on joining, the game started again with them.

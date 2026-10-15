@@ -821,6 +821,8 @@ impl Store {
                 simulation: package.simulation,
                 features: package.features.clone(),
                 settings,
+                files_sha256: crate::terms::files_digest(&package.files),
+                depends: package.depends.clone(),
                 root: self.folder(id, &package.version),
             });
         }

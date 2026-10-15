@@ -1046,7 +1046,7 @@ mod tests {
     fn the_state_says_which_native_mods_the_game_runs_alike() {
         let native = |id: &str, version: &str| tpf3mp_proto::NativeMod {
             id: tpf3mp_proto::Text::lossy(id),
-            version: tpf3mp_proto::Text::lossy(version),
+            version: tpf3mp_proto::Text::lossy(&format!("{}{}", version, "a".repeat(64))),
             name: tpf3mp_proto::Text::lossy(id),
             settings: Vec::new(),
         };

@@ -39,7 +39,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     features::{self, Effect, FeatureSpec},
-    index::Setting,
+    index::{Dependency, Setting},
 };
 
 /// The variable naming the enabled packages' file in the game's
@@ -48,7 +48,7 @@ pub const ENV: &str = "TPF3MP_NATIVE_MODS";
 /// The file's name, in the native-mods folder.
 pub const FILE: &str = "enabled.json";
 /// The file's format.
-pub const FORMAT: u32 = 1;
+pub const FORMAT: u32 = 2;
 /// Largest file the hook reads.
 pub const MAX_BYTES: u64 = 256 * 1024;
 
@@ -81,6 +81,11 @@ pub struct EnabledPackage {
     pub features: Vec<String>,
     /// The package's defaults with the player's choices over them.
     pub settings: BTreeMap<String, Setting>,
+    /// SHA-256 of its sorted `(path, size, sha256)` file manifest; URLs are
+    /// excluded because mirrors do not change the installed contents.
+    pub files_sha256: String,
+    /// Package dependencies, which determine native-mod load order.
+    pub depends: Vec<Dependency>,
     /// Its folder, `native-mods/<id>/<version>/`.
     pub root: PathBuf,
 }
@@ -338,6 +343,8 @@ mod tests {
             simulation,
             features: features.iter().map(|f| (*f).to_owned()).collect(),
             settings: BTreeMap::from([("depth".into(), Setting::Int(10))]),
+            files_sha256: crate::terms::files_digest(&[]),
+            depends: Vec::new(),
             root: PathBuf::from(format!("native-mods/{id}/1.0.0")),
         }
     }

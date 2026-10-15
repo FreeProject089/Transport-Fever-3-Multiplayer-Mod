@@ -4555,6 +4555,7 @@ name = "tpf3mp-nativemods"
 version = "1.3.1"
 dependencies = [
  "base64 0.23.1",
+ "postcard",
  "ring",
  "semver",
  "serde",

@@ -32,8 +32,9 @@ pub use bounded::{BoundedVec, TooMany};
 pub use bytes::{FixedBytes, MAX_PAYLOAD, Payload, PayloadTooLarge};
 pub use content::{
     ContentDiff, ContentManifest, GameBuilds, MAX_DIFF_LISTED, MAX_LISTED_MODS, MAX_MANIFEST_BYTES,
-    MAX_NATIVE_TERMS, ModChange, ModId, ModRef, ModVersion, NATIVE_PREFIX, OWN_MOD, Unlisted,
-    own_mod_short,
+    MAX_MOD_VERSION, MAX_NATIVE_PACKAGE_VERSION, MAX_NATIVE_TERMS, ModChange, ModId, ModRef,
+    ModVersion, NATIVE_PREFIX, NATIVE_TERM_DIGEST_HEX, OWN_MOD, Unlisted,
+    native_term_version_is_full, own_mod_short,
 };
 pub use control::{
     AUTH_DOMAIN, AUTH_EXPORTER_LABEL, BANNERS, BannerId, ChatText, ClientMessage,
@@ -98,8 +99,10 @@ pub use turn::{Event, EventBody, Seal, Turn, TurnMessage, TurnStart};
 /// content manifest ([`ContentManifest::native`]) and the room's, with their
 /// settings, beside its mods ([`RoomConfig::native`], [`RoomMods::native`]);
 /// version 21 lets a server hand out its own index of native mods and the
-/// mods proposed for it ([`Request::NativeIndex`], [`NativeIndexPage`]).
-pub const PROTOCOL_VERSION: u32 = 21;
+/// mods proposed for it ([`Request::NativeIndex`], [`NativeIndexPage`]);
+/// version 22 carries a full SHA-256 package identity in each native room
+/// term, while keeping ordinary mod versions limited to 32 bytes.
+pub const PROTOCOL_VERSION: u32 = 22;
 
 /// Application protocol name negotiated during the TLS handshake.
 pub const ALPN: &[u8] = b"tpf3mp";

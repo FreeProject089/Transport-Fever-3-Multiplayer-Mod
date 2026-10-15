@@ -612,8 +612,12 @@ mod tests {
             value: NativeValue::Int(37),
         }];
         let settings_map = BTreeMap::from([("radius".to_owned(), Setting::Int(37))]);
-        let version =
-            Text::new(format!("1.2.3+{}", &settings_digest(&settings_map)[..10])).unwrap();
+        let version = Text::new(format!(
+            "1.2.3+{}{}",
+            &settings_digest(&settings_map)[..10],
+            "a".repeat(64)
+        ))
+        .unwrap();
         let term = ModRef {
             id: Text::new("native:bigmap").unwrap(),
             version: version.clone(),

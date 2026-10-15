@@ -207,10 +207,14 @@ impl<'a> Walk<'a> {
         self.path.pop();
         self.state.insert(id.to_owned(), Visit::Done);
         self.chosen.insert(id.to_owned(), package);
+        // An exact room install must revisit an already-installed version
+        // when the signed index changed its package manifest without a
+        // version bump. `Store::install_one` verifies the on-disk files
+        // against this package and replaces a stale same-version copy.
         if self
             .installed
             .get(id)
-            .is_none_or(|i| i.version != package.version)
+            .is_none_or(|installed| *installed != package)
         {
             self.order.push(package);
         }

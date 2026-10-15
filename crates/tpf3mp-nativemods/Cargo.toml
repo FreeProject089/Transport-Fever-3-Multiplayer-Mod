@@ -16,6 +16,7 @@ install = ["dep:ureq"]
 
 [dependencies]
 base64.workspace = true
+postcard.workspace = true
 ring.workspace = true
 semver.workspace = true
 serde.workspace = true
