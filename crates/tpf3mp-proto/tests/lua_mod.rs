@@ -5098,7 +5098,7 @@ fn a_construction_whose_own_track_the_tool_snapped_is_built_alone_then_snapped()
 /// game, "the junction no longer exists"). The platform track -10 > -11 >
 /// -12 reaches nothing that exists, so the room leaves it to the station;
 /// the setting at its switch -11, whose turns name its edges, goes with it.
-/// The setting at the snapped track's node -2 travels.
+/// The setting at the snapped track's new internal node -2 stays with the station.
 #[test]
 fn a_rail_station_leaves_its_own_tracks_junction_settings_to_it() {
     let (lua, _script) = engine();
