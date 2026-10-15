@@ -3224,9 +3224,11 @@ player starts a segment (even one let go again before the room built),
 the tool misses frames (closed), the room
 refuses or does not apply the build or applies it without such an edge,
 the game leaves the room, or 15 s pass. The direction rule is the
-game's, with one difference: the game counts the other network's edges
-that also have `BaseEdge`'s field `+0x90` clear, the hook all of them,
-and it takes a direction only where the click's end snapped to nothing.
+game's, counted in the GUI's state as the game counts it, with one
+difference: the game counts the other network's edges that also have
+`BaseEdge`'s field `+0x90` clear, the hook all of them. (Whether the
+click's end snapped to something does not matter: a track snapped to a
+street beside it, as a guide, still goes on in its direction.)
 A right-click while the click waits does not cancel it: with no start
 point, the tool's own input handler passes a right-click on
 (`UI::StreetBuilder` vf2, 0x581479..0x5814d7), so the hook sees no

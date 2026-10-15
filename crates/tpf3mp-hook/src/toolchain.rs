@@ -60,11 +60,11 @@ use std::time::{Duration, Instant};
 use crate::modules::{Memory, i32_at, u64_at};
 
 pub use crate::build_data::native::toolchain::{
-    ADD_CALL, BUSY, CAPTURE, CAPTURE_TO_ADD_CALL, DRAGGING, END_SNAP, ENTITY_EXISTS, ENTRY_EDGE,
-    ENTRY_NODE0, ENTRY_NODE1, ENTRY_POS0, ENTRY_POS1, ENTRY_SIZE, ENTRY_TAN0, ENTRY_TAN1,
-    FUNCTION_IMPL, FUNCTOR_CONTINUE, FUNCTOR_DIRECTION, FUNCTOR_END, FUNCTOR_START, FUNCTOR_TOOL,
-    HAS_START, KIND, PROVIDER, PROVIDER_ENGINE, RESULT_SCAN, RESULTS, REVISION_EXISTS_CALL,
-    SCAN_TO_SNAP, SETTINGS, SETTINGS_CONTINUE, SNAP, SNAP_CALL, START_AT, START_AT_REVISION_CALL,
+    ADD_CALL, BUSY, CAPTURE, CAPTURE_TO_ADD_CALL, DRAGGING, ENTITY_EXISTS, ENTRY_EDGE, ENTRY_NODE0,
+    ENTRY_NODE1, ENTRY_POS0, ENTRY_POS1, ENTRY_SIZE, ENTRY_TAN0, ENTRY_TAN1, FUNCTION_IMPL,
+    FUNCTOR_CONTINUE, FUNCTOR_DIRECTION, FUNCTOR_END, FUNCTOR_START, FUNCTOR_TOOL, HAS_START, KIND,
+    PROVIDER, PROVIDER_ENGINE, RESULT_SCAN, RESULTS, REVISION_EXISTS_CALL, SCAN_TO_SNAP, SETTINGS,
+    SETTINGS_CONTINUE, SNAP, SNAP_CALL, START_AT, START_AT_REVISION_CALL,
 };
 
 /// How far the room's end of the segment may lie from the clicked end:
@@ -99,8 +99,6 @@ pub struct Click {
     pub continues: bool,
     /// The settings byte that lets it take the segment's direction.
     pub direction: bool,
-    /// The click's end snapped to nothing (a new node).
-    pub end_free: bool,
     /// The tool's first parameter byte: which edges the direction counts.
     pub kind: u8,
 }
@@ -184,9 +182,6 @@ pub fn read_click(memory: &dyn Memory, callback: usize) -> Result<Click, String>
         .map(|b| u64_at(&b, 0) as usize)
         .filter(|s| *s != 0)
         .ok_or("the tool has no settings")?;
-    let end_snap = memory
-        .read(tool.wrapping_add(END_SNAP), 4)
-        .ok_or("the tool's end point does not read")?;
     let kind = memory
         .read(tool.wrapping_add(KIND), 1)
         .ok_or("the tool's parameters do not read")?;
@@ -197,7 +192,6 @@ pub fn read_click(memory: &dyn Memory, callback: usize) -> Result<Click, String>
         end: vec3_at(&captures, at(FUNCTOR_END)),
         continues: captures[at(FUNCTOR_CONTINUE)] != 0,
         direction: captures[at(FUNCTOR_DIRECTION)] != 0,
-        end_free: i32_at(&end_snap, 0) == -1,
         kind: kind[0],
     };
     if !click.start.iter().chain(&click.end).all(|v| v.is_finite()) {
@@ -274,7 +268,7 @@ pub fn find(edges: &[Edge], end: [f32; 3]) -> Option<Found> {
 /// that are no street), the edge's tangent there, pointing on, normalized.
 /// `streets` and `others` are counted in the GUI's state.
 pub fn direction(click: &Click, found: &Found, streets: u32, others: u32) -> Option<[f32; 3]> {
-    if !click.direction || !click.end_free {
+    if !click.direction {
         return None;
     }
     let count = if click.kind != 0 { streets } else { others };
@@ -996,11 +990,10 @@ mod tests {
 
     /// The tool and the click's callback as `UpdateEngine` leaves them just
     /// before `Add`: busy set, the functor inline, its captures.
-    fn clicked(memory: &Fake, end_snap: i32) {
+    fn clicked(memory: &Fake) {
         memory.put(TOOL, &[0; 0x9f0]);
         memory.put(TOOL + BUSY, &[1]);
         memory.put(TOOL + SETTINGS, &(SETTINGS_AT as u64).to_le_bytes());
-        memory.put(TOOL + END_SNAP, &end_snap.to_le_bytes());
         memory.put(TOOL + KIND, &[1]);
         memory.put(SETTINGS_AT, &[0; 0x900]);
         memory.put(SETTINGS_AT + SETTINGS_CONTINUE, &[1]);
@@ -1016,7 +1009,7 @@ mod tests {
     #[test]
     fn a_click_reads_as_update_engine_builds_it() {
         let memory = Fake::default();
-        clicked(&memory, -1);
+        clicked(&memory);
         let click = read_click(&memory, CALLBACK).unwrap();
         assert_eq!(
             click,
@@ -1027,14 +1020,8 @@ mod tests {
                 end: END,
                 continues: true,
                 direction: true,
-                end_free: true,
                 kind: 1,
             }
-        );
-        clicked(&memory, 77);
-        assert!(
-            !read_click(&memory, CALLBACK).unwrap().end_free,
-            "snapped to an edge"
         );
     }
 
@@ -1042,28 +1029,28 @@ mod tests {
     fn a_click_that_does_not_read_as_the_games_is_not_kept() {
         let memory = Fake::default();
         assert!(read_click(&memory, CALLBACK).is_err(), "nothing there");
-        clicked(&memory, -1);
+        clicked(&memory);
         memory.put(CALLBACK + FUNCTION_IMPL, &0x1234u64.to_le_bytes());
         assert!(
             read_click(&memory, CALLBACK)
                 .unwrap_err()
                 .contains("elsewhere")
         );
-        clicked(&memory, -1);
+        clicked(&memory);
         memory.put(TOOL + BUSY, &[0]);
         assert!(
             read_click(&memory, CALLBACK)
                 .unwrap_err()
                 .contains("busy byte is 0")
         );
-        clicked(&memory, -1);
+        clicked(&memory);
         memory.put(TOOL + SETTINGS, &0u64.to_le_bytes());
         assert!(
             read_click(&memory, CALLBACK)
                 .unwrap_err()
                 .contains("no settings")
         );
-        clicked(&memory, -1);
+        clicked(&memory);
         memory.f32s(CALLBACK + FUNCTOR_END, &[f32::NAN, 0.0, 0.0]);
         assert!(read_click(&memory, CALLBACK).is_err());
     }
@@ -1155,7 +1142,7 @@ mod tests {
         assert_eq!(find(&[edge(13, [1, 2], [START, far])], END), None);
     }
 
-    fn click(direction: bool, end_free: bool, kind: u8) -> Click {
+    fn click(direction: bool, kind: u8) -> Click {
         Click {
             tool: TOOL,
             settings: SETTINGS_AT,
@@ -1163,7 +1150,6 @@ mod tests {
             end: END,
             continues: true,
             direction,
-            end_free,
             kind,
         }
     }
@@ -1175,27 +1161,33 @@ mod tests {
         // A street tool, a new node with only the new street: the tangent
         // at node1 onwards, and at node0 reversed; normalized.
         assert_eq!(
-            direction(&click(true, true, 1), &at_end1, 1, 0),
+            direction(&click(true, 1), &at_end1, 1, 0),
             Some([0.0, 1.0, 0.0])
         );
         assert_eq!(
-            direction(&click(true, true, 1), &at_end0, 1, 0),
+            direction(&click(true, 1), &at_end0, 1, 0),
             Some([-0.6, -0.8, 0.0])
         );
         // A track tool counts the other edges.
         assert_eq!(
-            direction(&click(true, true, 0), &at_end1, 0, 1),
+            direction(&click(true, 0), &at_end1, 0, 1),
             Some([0.0, 1.0, 0.0])
         );
-        assert_eq!(direction(&click(true, true, 0), &at_end1, 1, 0), None);
-        // More than one edge there, the settings off, or the end snapped.
-        assert_eq!(direction(&click(true, true, 1), &at_end1, 2, 0), None);
-        assert_eq!(direction(&click(false, true, 1), &at_end1, 1, 0), None);
-        assert_eq!(direction(&click(true, false, 1), &at_end1, 1, 0), None);
+        assert_eq!(direction(&click(true, 0), &at_end1, 1, 0), None);
+        // A track whose end snapped to a street beside it, as a guide: the
+        // new node has only the track, and it goes on in its direction
+        // (seen 2026-10-15: it started at an angle).
+        assert_eq!(
+            direction(&click(true, 0), &at_end1, 0, 1),
+            Some([0.0, 1.0, 0.0])
+        );
+        // More than one edge there, or the settings off.
+        assert_eq!(direction(&click(true, 1), &at_end1, 2, 0), None);
+        assert_eq!(direction(&click(false, 1), &at_end1, 1, 0), None);
         // No tangent to normalize.
         let mut flat = at_end1;
         flat.tangent = [0.0; 3];
-        assert_eq!(direction(&click(true, true, 1), &flat, 1, 0), None);
+        assert_eq!(direction(&click(true, 1), &flat, 1, 0), None);
     }
 
     #[test]
@@ -1230,7 +1222,7 @@ mod tests {
     }
 
     fn built_at(chain: &mut Chain, now: Instant, frame: u64) {
-        chain.click(7, Some(click(true, true, 1)), now, frame);
+        chain.click(7, Some(click(true, 1)), now, frame);
         assert_eq!(chain.bind(7, Some(900)), None);
         assert_eq!(chain.ordered(), Some(900));
         assert_eq!(
@@ -1244,7 +1236,7 @@ mod tests {
         let now = Instant::now();
         let mut chain = Chain::default();
         let read = |_: usize| Some(tool_now());
-        chain.click(7, Some(click(true, true, 1)), now, 0);
+        chain.click(7, Some(click(true, 1)), now, 0);
         assert_eq!(
             chain.step(TOOL, 1, now, true, &read),
             Step::Wait,
@@ -1342,23 +1334,23 @@ mod tests {
 
         // Not handed to the room.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now, 0);
+        chain.click(7, Some(click(true, 1)), now, 0);
         assert_eq!(chain.bind(6, None), None, "another click's hand-over");
         assert!(chain.bind(7, None).is_some());
         assert_eq!(chain.ordered(), None);
 
         // Refused, or not applied.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now, 0);
+        chain.click(7, Some(click(true, 1)), now, 0);
         chain.bind(7, Some(900));
         assert_eq!(chain.refused(901), None);
         assert!(chain.refused(900).is_some());
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now, 0);
+        chain.click(7, Some(click(true, 1)), now, 0);
         chain.bind(7, Some(900));
         assert!(chain.applied(Some(900), false, Vec::new()).is_some());
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now, 0);
+        chain.click(7, Some(click(true, 1)), now, 0);
         chain.bind(7, Some(900));
         assert!(
             chain.applied(Some(900), true, Vec::new()).is_some(),
@@ -1367,7 +1359,7 @@ mod tests {
 
         // Applied without an edge ending there.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now, 0);
+        chain.click(7, Some(click(true, 1)), now, 0);
         chain.bind(7, Some(900));
         chain.applied(Some(900), true, vec![edge(5, [1, 2], [[0.0; 3], [1.0; 3]])]);
         assert!(chain.poll(now, true).1.is_some());
@@ -1462,7 +1454,7 @@ mod tests {
                 ..tool_now()
             })
         };
-        chain.click(7, Some(click(true, true, 1)), now, 0);
+        chain.click(7, Some(click(true, 1)), now, 0);
         chain.bind(7, Some(900));
         assert_eq!(chain.step(TOOL, 1, now, true, &idle), Step::Wait);
         assert_eq!(
@@ -1477,7 +1469,7 @@ mod tests {
         // Before the click's callback ran (busy), the tool's state is not
         // yet the player's.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now, 0);
+        chain.click(7, Some(click(true, 1)), now, 0);
         let busy = |_: usize| {
             Some(ToolNow {
                 busy: 1,
@@ -1517,9 +1509,9 @@ mod tests {
         // not click 8's.
         let now = Instant::now();
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, true, 1)), now, 0);
+        chain.click(7, Some(click(true, 1)), now, 0);
         chain.bind(7, Some(900));
-        chain.click(8, Some(click(true, true, 1)), now, 0);
+        chain.click(8, Some(click(true, 1)), now, 0);
         chain.bind(8, Some(901));
         assert_eq!(
             chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]),

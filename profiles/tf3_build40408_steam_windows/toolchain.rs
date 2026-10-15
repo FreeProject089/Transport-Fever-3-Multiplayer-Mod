@@ -49,8 +49,6 @@ pub const SETTINGS_CONTINUE: usize = 0x8e0;
 /// The tool's first parameter byte, which picks the network whose edges
 /// the direction rule counts (street when set).
 pub const KIND: usize = 0xd8;
-/// The tool's end point; its edge id is -1 where it snapped to nothing.
-pub const END_SNAP: usize = 0x8e8;
 /// The tool's state provider, and its engine within it.
 pub const PROVIDER: usize = 0x208;
 pub const PROVIDER_ENGINE: usize = 0x18;
