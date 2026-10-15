@@ -21,7 +21,7 @@
 //! offers no native mod at all.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
     time::SystemTime,
@@ -36,7 +36,7 @@ use tpf3mp_nativemods::{
     index::{Index, Package, Setting},
     registry::{Proposal, Proposals},
     resolve,
-    store::{Source, Store, StoreError},
+    store::{EffectiveSettingsByPackage, Source, Store, StoreError},
     terms,
 };
 use tpf3mp_proto::{NativeMod, NativeSetting, NativeValue, Text};
@@ -564,6 +564,47 @@ pub enum Change {
     Enable(String, bool),
 }
 
+/// One validated executable package in a review shown to the player.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PluginConsentPackage {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub authors: Vec<String>,
+    /// `project` or the canonical authenticated `host:port` that offered it.
+    pub source: String,
+    /// Full SHA-256 package identity, including effective settings.
+    pub digest: String,
+    /// Whether this exact source and identity already had approval.
+    pub approved: bool,
+}
+
+/// The exact executable packages a player must approve before an action can
+/// fetch, install, enable, or roll back native plugin code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PluginConsentPrompt {
+    pub request_id: String,
+    pub action: String,
+    pub packages: Vec<PluginConsentPackage>,
+}
+
+/// The operation held while the UI waits for a player decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PendingPluginOperation {
+    Change(Change),
+    MatchRoom {
+        room: Vec<NativeMod>,
+        resume_join: bool,
+    },
+}
+
+/// An untrusted UI response can only resolve the request currently held here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingPluginConsent {
+    pub prompt: PluginConsentPrompt,
+    pub operation: PendingPluginOperation,
+}
+
 /// Carries out `change`, for a game whose executable hashes to `build`.
 /// Blocking: downloads run here.
 pub fn apply(
@@ -574,8 +615,11 @@ pub fn apply(
     change: Change,
 ) -> Result<(), String> {
     let error = |error: StoreError| format!("native mods: {error}");
+    require_plugin_consent(&plugin_consent_review(
+        data_dir, setup, build, server, &change, false,
+    )?)?;
     let mut store = store(data_dir)?;
-    let proposed = matches!(change, Change::InstallProposed(_));
+    let proposed = matches!(&change, Change::InstallProposed(_));
     match change {
         // The server's index is fetched over its connection, by the caller.
         Change::Refresh if setup.keys.is_empty() => Ok(()),
@@ -586,22 +630,34 @@ pub fn apply(
         Change::Install(id) | Change::InstallProposed(id) => {
             let build =
                 build.ok_or("start the game once, or name it, so the launcher knows its build")?;
-            let index = if proposed {
-                server
-                    .and_then(|server| server_proposals(data_dir, server))
+            let (index, source) = if proposed {
+                let server = server.ok_or("connect to the server that proposed this native mod")?;
+                let index = server_proposals(data_dir, server)
                     .map(|proposals| proposals.index())
-                    .ok_or("the server proposes no such mod now")?
+                    .ok_or("the server proposes no such mod now")?;
+                (index, server_source_id(server)?)
             } else {
-                index_listing(&mut store, data_dir, setup, server, &[(&id, None)])?
+                index_listing_with_source(
+                    &mut store,
+                    data_dir,
+                    setup,
+                    server,
+                    &[(&id, None)],
+                    false,
+                )?
             };
+            let packages = resolved_packages_for_install(&store, &index, build, &id, None)?;
+            let settings = effective_settings_by_package(&store, &packages, &BTreeMap::new());
             let done = store
-                .install(
+                .install_from(
                     resolve::Context {
                         index: &index,
                         build,
                         registry: BUILT_IN,
                     },
                     &id,
+                    &source,
+                    &settings,
                     setup.source.as_ref(),
                 )
                 .map_err(error)?;
@@ -614,31 +670,538 @@ pub fn apply(
     }
 }
 
-/// The index with every one of `wanted` in it: the server's, else the
-/// signed one kept, else a signed one fetched again.
-fn index_listing(
+/// The index with every one of `wanted` in it and the source identity that
+/// authorized it: the authenticated server's, else the signed project index.
+fn index_listing_with_source(
     store: &mut Store,
     data_dir: &Path,
     setup: &NativeSetup,
     server: Option<&str>,
     wanted: &[(&str, Option<&str>)],
-) -> Result<Index, String> {
+    refresh_project: bool,
+) -> Result<(Index, String), String> {
     let lists = |index: &Index| {
         wanted.iter().all(|(id, version)| match version {
             Some(version) => index.package(id, version).is_some(),
             None => !index.versions(id).is_empty(),
         })
     };
-    let (indexes, _) = indexes(store, data_dir, Some(setup), server);
-    if let Some(index) = indexes.into_iter().find(|index| lists(index)) {
-        return Ok(index);
+    if let Some((origin, index)) = server
+        .and_then(|server| server_index(data_dir, server).map(|index| (server, index)))
+        .filter(|(_, index)| lists(index))
+    {
+        return Ok((index, server_source_id(origin)?));
     }
     if setup.keys.is_empty() {
         return Err("no index of native mods lists the room's".into());
     }
-    store
-        .refresh(setup.source.as_ref(), &setup.keys)
-        .map_err(|error| format!("native mods: {error}"))
+    let index = if refresh_project {
+        store
+            .refresh(setup.source.as_ref(), &setup.keys)
+            .map_err(|error| format!("native mods: {error}"))?
+    } else {
+        match store.cached_index(&setup.keys) {
+            Ok(index) => index,
+            Err(StoreError::NoIndex) => store
+                .refresh(setup.source.as_ref(), &setup.keys)
+                .map_err(|error| format!("native mods: {error}"))?,
+            Err(error) => return Err(format!("native mods: {error}")),
+        }
+    };
+    if !lists(&index) {
+        return Err("no current signed native-mod index lists the requested package".into());
+    }
+    Ok((index, "project".to_owned()))
+}
+
+/// Canonical source identity accepted by the persistent plugin-consent
+/// store. The address itself came from the launcher's server connection.
+fn server_source_id(server: &str) -> Result<String, String> {
+    let server = crate::launcher::server_address(server)?;
+    let (host, port) = server
+        .rsplit_once(':')
+        .ok_or_else(|| "the native-mod source has no server port".to_owned())?;
+    let port = port
+        .parse::<u16>()
+        .ok()
+        .filter(|port| *port > 0)
+        .ok_or_else(|| "the native-mod source has an invalid server port".to_owned())?;
+    let host = if let Some(ip) = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        format!(
+            "[{}]",
+            ip.parse::<std::net::Ipv6Addr>().map_err(|_| {
+                "the native-mod source has an invalid IPv6 server address".to_owned()
+            })?
+        )
+    } else if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        ip.to_string()
+    } else if !host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        host.to_ascii_lowercase()
+    } else {
+        return Err("the native-mod source has an invalid server address".into());
+    };
+    Ok(format!("{host}:{port}"))
+}
+
+fn effective_settings(
+    store: &Store,
+    package: &Package,
+    override_settings: Option<&BTreeMap<String, Setting>>,
+) -> BTreeMap<String, Setting> {
+    if let Some(settings) = override_settings {
+        return settings.clone();
+    }
+    let mut settings = package.settings.clone();
+    if let Some(installed) = store.registry().packages.get(&package.id) {
+        for (key, value) in &installed.settings {
+            if package.settings.contains_key(key) {
+                settings.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    settings
+}
+
+fn effective_settings_from_room(
+    package: &Package,
+    native: Option<&NativeMod>,
+) -> Result<BTreeMap<String, Setting>, String> {
+    let mut settings = package.settings.clone();
+    if let Some(native) = native {
+        if native.settings.len() != package.settings.len() {
+            return Err(format!(
+                "the room does not give every setting of {}",
+                package.id
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for setting in &native.settings {
+            let key = setting.key.as_str();
+            if !seen.insert(key) {
+                return Err(format!(
+                    "the room gives setting {key} of {} more than once",
+                    package.id
+                ));
+            }
+            let value = from_value(&setting.value);
+            let default = package
+                .settings
+                .get(key)
+                .ok_or_else(|| format!("the room sets unknown setting {key} on {}", package.id))?;
+            if !default.same_type(&value) {
+                return Err(format!(
+                    "the room gives setting {key} of {} another type",
+                    package.id
+                ));
+            }
+            settings.insert(key.to_owned(), value);
+        }
+    }
+    Ok(settings)
+}
+
+fn plugin_item(
+    store: &Store,
+    package: &Package,
+    source: &str,
+    settings: &BTreeMap<String, Setting>,
+) -> Result<PluginConsentPackage, String> {
+    let digest = terms::package_digest(package, settings);
+    let approved = store
+        .has_consent(source, &digest)
+        .map_err(|error| format!("native plugin consent: {error}"))?;
+    Ok(PluginConsentPackage {
+        id: package.id.clone(),
+        name: package.name.clone(),
+        version: package.version.clone(),
+        authors: package.authors.clone(),
+        source: source.to_owned(),
+        digest,
+        approved,
+    })
+}
+
+fn resolved_packages_for_install(
+    store: &Store,
+    index: &Index,
+    build: &str,
+    id: &str,
+    version: Option<&str>,
+) -> Result<Vec<Package>, String> {
+    let installed: Vec<&Package> = store
+        .registry()
+        .packages
+        .values()
+        .filter_map(|installed| installed.package())
+        .collect();
+    let context = resolve::Context {
+        index,
+        build,
+        registry: BUILT_IN,
+    };
+    let resolution = match version {
+        Some(version) => resolve::resolve_exact_plan(context, id, version, &installed),
+        None => resolve::resolve_plan(context, &[id], &installed),
+    }
+    .map_err(|error| format!("native mods: {error}"))?;
+    Ok(resolution.closure.into_iter().cloned().collect())
+}
+
+fn effective_settings_by_package(
+    store: &Store,
+    packages: &[Package],
+    overrides: &BTreeMap<String, BTreeMap<String, Setting>>,
+) -> EffectiveSettingsByPackage {
+    packages
+        .iter()
+        .map(|package| {
+            let settings = overrides
+                .get(&package.id)
+                .cloned()
+                .unwrap_or_else(|| effective_settings(store, package, None));
+            (package.id.clone(), settings)
+        })
+        .collect()
+}
+
+/// Resolves an install without fetching package files or changing the
+/// registry, and computes the full plugin closure the action would use.
+fn plugin_items_for_install(
+    store: &Store,
+    index: &Index,
+    index_source: &str,
+    build: &str,
+    id: &str,
+    version: Option<&str>,
+    room_settings: &BTreeMap<String, BTreeMap<String, Setting>>,
+) -> Result<Vec<PluginConsentPackage>, String> {
+    let packages = resolved_packages_for_install(store, index, build, id, version)?;
+    let mut found = BTreeMap::new();
+    for package in &packages {
+        if package.plugins.is_empty() {
+            continue;
+        }
+        let source = if index.package(&package.id, &package.version).is_some() {
+            index_source.to_owned()
+        } else {
+            store
+                .source_for(&package.id, &package.version)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    format!(
+                        "cannot verify where installed plugin {} {} came from; reinstall it from a trusted native-mod index before using it",
+                        package.id, package.version
+                    )
+                })?
+        };
+        let settings = room_settings
+            .get(&package.id)
+            .cloned()
+            .unwrap_or_else(|| effective_settings(store, package, None));
+        let item = plugin_item(store, package, &source, &settings)?;
+        found.insert(
+            (item.id.clone(), item.version.clone(), item.source.clone()),
+            item,
+        );
+    }
+    Ok(found.into_values().collect())
+}
+
+fn plugin_items_for_installed(
+    store: &Store,
+    id: &str,
+    version: Option<&str>,
+) -> Result<Vec<PluginConsentPackage>, String> {
+    let installed = store
+        .registry()
+        .packages
+        .get(id)
+        .ok_or_else(|| format!("native mod {id} is not installed"))?;
+    let version = version.unwrap_or(&installed.current);
+    let package = installed
+        .versions
+        .get(version)
+        .ok_or_else(|| format!("native mod {id} {version} is not installed"))?;
+    let mut closure = BTreeMap::new();
+    let mut visiting = BTreeSet::new();
+    installed_package_closure(store, package, &mut closure, &mut visiting)?;
+    closure
+        .into_values()
+        .filter(|package| !package.plugins.is_empty())
+        .map(|package| {
+            let source = store
+                .source_for(&package.id, &package.version)
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    format!(
+                        "cannot verify where installed plugin {} {} came from; reinstall it from a trusted native-mod index before using it",
+                        package.id, package.version
+                    )
+                })?;
+            let settings = effective_settings(store, &package, None);
+            plugin_item(store, &package, &source, &settings)
+        })
+        .collect()
+}
+
+fn installed_package_closure(
+    store: &Store,
+    package: &Package,
+    closure: &mut BTreeMap<String, Package>,
+    visiting: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    if closure.contains_key(&package.id) {
+        return Ok(());
+    }
+    if !visiting.insert(package.id.clone()) {
+        return Err(format!(
+            "the installed native mods depend on each other in a circle at {}",
+            package.id
+        ));
+    }
+    for dependency in &package.depends {
+        let installed = store
+            .registry()
+            .packages
+            .get(&dependency.id)
+            .ok_or_else(|| {
+                format!(
+                    "{} needs installed native mod {} {}, which is missing",
+                    package.id, dependency.id, dependency.version
+                )
+            })?;
+        let dependency_package = installed.package().ok_or_else(|| {
+            format!(
+                "{} needs installed native mod {} {}, which has no current version",
+                package.id, dependency.id, dependency.version
+            )
+        })?;
+        let requirement = semver::VersionReq::parse(&dependency.version).map_err(|_| {
+            format!(
+                "{} has an invalid version requirement for {}",
+                package.id, dependency.id
+            )
+        })?;
+        if !requirement.matches(&dependency_package.semver()) {
+            return Err(format!(
+                "{} needs native mod {} {}, but the installed version is {}",
+                package.id, dependency.id, dependency.version, dependency_package.version
+            ));
+        }
+        installed_package_closure(store, dependency_package, closure, visiting)?;
+    }
+    visiting.remove(&package.id);
+    closure.insert(package.id.clone(), package.clone());
+    Ok(())
+}
+
+/// Reviews a manual native-mod action without fetching package files or
+/// mutating the package registry. `refresh_project` refreshes the signed
+/// project index before resolving it.
+pub fn plugin_consent_review(
+    data_dir: &Path,
+    setup: &NativeSetup,
+    build: Option<&str>,
+    server: Option<&str>,
+    change: &Change,
+    refresh_project: bool,
+) -> Result<Vec<PluginConsentPackage>, String> {
+    let mut store = store(data_dir)?;
+    match change {
+        Change::Install(id) => {
+            let build =
+                build.ok_or("start the game once, or name it, so the launcher knows its build")?;
+            let wanted = [(id.as_str(), None)];
+            let (index, source) = index_listing_with_source(
+                &mut store,
+                data_dir,
+                setup,
+                server,
+                &wanted,
+                refresh_project,
+            )?;
+            plugin_items_for_install(&store, &index, &source, build, id, None, &BTreeMap::new())
+        }
+        Change::InstallProposed(id) => {
+            let build =
+                build.ok_or("start the game once, or name it, so the launcher knows its build")?;
+            let server = server.ok_or("connect to the server that proposed this native mod")?;
+            let proposals =
+                server_proposals(data_dir, server).ok_or("the server proposes no such mod now")?;
+            let index = proposals.index();
+            plugin_items_for_install(
+                &store,
+                &index,
+                &server_source_id(server)?,
+                build,
+                id,
+                None,
+                &BTreeMap::new(),
+            )
+        }
+        Change::Enable(id, true) => plugin_items_for_installed(&store, id, None),
+        Change::Rollback(id) => {
+            let previous = store
+                .registry()
+                .packages
+                .get(id)
+                .and_then(|installed| installed.previous.as_deref())
+                .ok_or_else(|| format!("native mod {id} has no earlier version to go back to"))?;
+            plugin_items_for_installed(&store, id, Some(previous))
+        }
+        Change::Refresh | Change::Uninstall(_) | Change::Enable(_, false) => Ok(Vec::new()),
+    }
+}
+
+/// Reviews the exact package versions and settings the room requires,
+/// including executable dependencies, without changing the package registry.
+pub fn room_plugin_consent_review(
+    data_dir: &Path,
+    setup: &NativeSetup,
+    build: &str,
+    server: Option<&str>,
+    room: &[NativeMod],
+    refresh_project: bool,
+) -> Result<Vec<PluginConsentPackage>, String> {
+    if room.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut store = store(data_dir)?;
+    let wanted: Vec<(&str, Option<&str>)> = room
+        .iter()
+        .map(|native| (native.id.as_str(), Some(native.package_version())))
+        .collect();
+    let (index, source) = index_listing_with_source(
+        &mut store,
+        data_dir,
+        setup,
+        server,
+        &wanted,
+        refresh_project,
+    )?;
+    let mut room_settings = BTreeMap::new();
+    for native in room {
+        let package = index
+            .package(native.id.as_str(), native.package_version())
+            .filter(|package| package.runs_on(build))
+            .ok_or_else(|| {
+                format!(
+                    "the signed index has no {} {} for your game's build",
+                    native.name,
+                    native.package_version()
+                )
+            })?;
+        if !changes_simulation(package) {
+            return Err(format!(
+                "the room lists {} as simulation-changing, but its signed package does not change the simulation",
+                native.name
+            ));
+        }
+        let settings = effective_settings_from_room(package, Some(native))?;
+        let expected = terms::NativeTerm {
+            id: package.id.clone(),
+            version: package.version.clone(),
+            settings: terms::settings_digest(&settings),
+            identity: terms::package_digest(package, &settings),
+        }
+        .mod_version();
+        if native.version.as_str() != expected {
+            return Err(format!(
+                "the room's {} package or settings no longer match its signed identity; the room must update its native-mod terms",
+                native.name
+            ));
+        }
+        room_settings.insert(package.id.clone(), settings);
+    }
+    let mut found = BTreeMap::new();
+    for native in room {
+        for item in plugin_items_for_install(
+            &store,
+            &index,
+            &source,
+            build,
+            native.id.as_str(),
+            Some(native.package_version()),
+            &room_settings,
+        )? {
+            found.insert(
+                (item.id.clone(), item.version.clone(), item.source.clone()),
+                item,
+            );
+        }
+    }
+    Ok(found.into_values().collect())
+}
+
+fn same_plugin_identities(a: &[PluginConsentPackage], b: &[PluginConsentPackage]) -> bool {
+    let identity = |items: &[PluginConsentPackage]| {
+        let mut identities: Vec<_> = items
+            .iter()
+            .map(|item| {
+                (
+                    item.id.clone(),
+                    item.name.clone(),
+                    item.version.clone(),
+                    item.authors.clone(),
+                    item.source.clone(),
+                    item.digest.clone(),
+                )
+            })
+            .collect();
+        identities.sort_unstable();
+        identities
+    };
+    identity(a) == identity(b)
+}
+
+/// Re-resolves an approved action against the current validated index and
+/// records consent only when every reviewed source, package, and effective
+/// setting is unchanged. A changed identity returns a replacement review.
+pub(crate) fn approve_plugin_consent(
+    data_dir: &Path,
+    setup: &NativeSetup,
+    build: Option<&str>,
+    server: Option<&str>,
+    operation: &PendingPluginOperation,
+    expected: &[PluginConsentPackage],
+) -> Result<Option<Vec<PluginConsentPackage>>, String> {
+    let current = match operation {
+        PendingPluginOperation::Change(change) => {
+            plugin_consent_review(data_dir, setup, build, server, change, true)?
+        }
+        PendingPluginOperation::MatchRoom { room, .. } => room_plugin_consent_review(
+            data_dir,
+            setup,
+            build.ok_or("start the game first so the launcher can verify its build")?,
+            server,
+            room,
+            true,
+        )?,
+    };
+    if !same_plugin_identities(expected, &current) {
+        return Ok(Some(current));
+    }
+    let mut store = store(data_dir)?;
+    for item in &current {
+        store
+            .record_consent(&item.source, &item.digest)
+            .map_err(|error| format!("native plugin consent: {error}"))?;
+    }
+    Ok(None)
+}
+
+fn require_plugin_consent(items: &[PluginConsentPackage]) -> Result<(), String> {
+    if items.iter().any(|item| !item.approved) {
+        return Err(
+            "native plugin code needs your explicit approval before this action can continue"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// Makes the next game on the build `build` run exactly the room's native
@@ -658,6 +1221,9 @@ pub fn match_room(
     room: &[NativeMod],
 ) -> Result<bool, String> {
     let error = |error: StoreError| format!("native mods: {error}");
+    require_plugin_consent(&room_plugin_consent_review(
+        data_dir, setup, build, server, room, false,
+    )?)?;
     let mut store = store(data_dir)?;
     let before = store.registry().clone();
     let wanted: Vec<(&str, Option<&str>)> = room
@@ -665,7 +1231,8 @@ pub fn match_room(
         .map(|m| (m.id.as_str(), Some(m.package_version())))
         .collect();
     if !room.is_empty() {
-        let index = index_listing(&mut store, data_dir, setup, server, &wanted)?;
+        let (index, source) =
+            index_listing_with_source(&mut store, data_dir, setup, server, &wanted, false)?;
         for native in room {
             let (id, version) = (native.id.as_str(), native.package_version());
             let package = index
@@ -678,8 +1245,14 @@ pub fn match_room(
                     )
                 })?;
             info!(%id, %version, "checking the room's native mod against its signed package");
+            let packages = resolved_packages_for_install(&store, &index, build, id, Some(version))?;
+            let settings_override = BTreeMap::from([(
+                id.to_owned(),
+                effective_settings_from_room(package, Some(native))?,
+            )]);
+            let settings = effective_settings_by_package(&store, &packages, &settings_override);
             store
-                .install_exact(
+                .install_exact_from(
                     resolve::Context {
                         index: &index,
                         build,
@@ -687,6 +1260,8 @@ pub fn match_room(
                     },
                     &package.id,
                     version,
+                    &source,
+                    &settings,
                     setup.source.as_ref(),
                 )
                 .map_err(error)?;
@@ -973,12 +1548,16 @@ mod tests {
     }
 
     fn setup(packages: Vec<(Package, (String, Vec<u8>))>) -> NativeSetup {
+        setup_with_serial(packages, 1)
+    }
+
+    fn setup_with_serial(packages: Vec<(Package, (String, Vec<u8>))>, serial: u64) -> NativeSetup {
         use ring::signature::{Ed25519KeyPair, KeyPair};
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
         let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
         let index = Index {
             format: 1,
-            serial: 1,
+            serial,
             packages: packages.iter().map(|(p, _)| p.clone()).collect(),
             listings: Default::default(),
         };
@@ -992,6 +1571,34 @@ mod tests {
             }),
             keys: vec![pair.public_key().as_ref().to_vec()],
         }
+    }
+
+    fn with_plugin(mut package: Package) -> Package {
+        let plugin_bytes = b"test plugin";
+        package.authors = vec!["Native Mod Authors".into()];
+        package.plugins.push(tpf3mp_nativemods::index::Plugin {
+            path: format!("plugin/{}.dll", package.id),
+            url: format!("https://example.invalid/{}/plugin.dll", package.id),
+            size: plugin_bytes.len() as u64,
+            sha256: tpf3mp_nativemods::signed::sha256_hex(plugin_bytes),
+            abi: tpf3mp_nativemods::index::PLUGIN_ABI,
+            platform: "windows-x86_64".into(),
+        });
+        package
+    }
+
+    #[test]
+    fn server_consent_source_is_a_valid_canonical_server_address() {
+        assert_eq!(
+            server_source_id(" EXAMPLE.org:29470 ").unwrap(),
+            "example.org:29470"
+        );
+        assert_eq!(
+            server_source_id("[2001:0db8::1]:29470").unwrap(),
+            "[2001:db8::1]:29470"
+        );
+        assert!(server_source_id("bad..host:29470").is_err());
+        assert!(server_source_id("example.org:+29470").is_err());
     }
 
     /// A member joining a room gets the room's version from the signed
@@ -1079,6 +1686,181 @@ mod tests {
         // A room without native mods: the member's are switched off.
         assert!(match_room(&member, &setup, &build, None, &[]).unwrap());
         assert!(next_terms(&member, &exe).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_room_with_a_changed_full_identity_is_refused_before_matching_mutates_packages() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game").unwrap();
+        let build = build_of(&exe).unwrap();
+        let setup = setup(vec![
+            native_package("bigmap", "0.3.0", &build),
+            native_package("bigmap", "0.4.0", &build),
+        ]);
+        let owner = dir.path().join("owner");
+        apply(&owner, &setup, Some(&build), None, Change::Refresh).unwrap();
+        // Install the older version as the owner's intended room package.
+        let mut owner_store = Store::open(owner.join(FOLDER)).unwrap();
+        let index = owner_store.cached_index(&setup.keys).unwrap();
+        owner_store
+            .install_exact(
+                resolve::Context {
+                    index: &index,
+                    build: &build,
+                    registry: BUILT_IN,
+                },
+                "bigmap",
+                "0.3.0",
+                setup.source.as_ref(),
+            )
+            .unwrap();
+        owner_store
+            .set_setting("bigmap", "depth", Setting::Int(12))
+            .unwrap();
+        owner_store.set_enabled("bigmap", true).unwrap();
+        drop(owner_store);
+        let mut room = next_terms(&owner, &exe).unwrap();
+        assert_eq!(room[0].package_version(), "0.3.0");
+
+        let member = dir.path().join("member");
+        apply(
+            &member,
+            &setup,
+            Some(&build),
+            None,
+            Change::Install("bigmap".into()),
+        )
+        .unwrap();
+        // The member keeps its current 0.4.0 package and customized setting.
+        let mut member_store = Store::open(member.join(FOLDER)).unwrap();
+        member_store
+            .set_setting("bigmap", "depth", Setting::Int(18))
+            .unwrap();
+        member_store.set_enabled("bigmap", true).unwrap();
+        drop(member_store);
+
+        let before = next_terms(&member, &exe).unwrap();
+        let mut changed_identity = room[0].version.as_str().to_owned();
+        let last = changed_identity.pop().unwrap();
+        changed_identity.push(if last == '0' { '1' } else { '0' });
+        room[0].version = Text::lossy(&changed_identity);
+        let error = match_room(&member, &setup, &build, None, &room).unwrap_err();
+        assert!(error.contains("signed identity"), "{error}");
+        assert_eq!(next_terms(&member, &exe).unwrap(), before);
+        let member_store = Store::open(member.join(FOLDER)).unwrap();
+        let installed = &member_store.registry().packages["bigmap"];
+        assert_eq!(installed.current, "0.4.0");
+        assert!(installed.enabled);
+        assert_eq!(installed.settings["depth"], Setting::Int(18));
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn an_unapproved_transitive_plugin_is_reviewed_and_blocks_install_before_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game").unwrap();
+        let build = build_of(&exe).unwrap();
+        let (mut root, root_file) = native_package("modroot", "1.0.0", &build);
+        root.depends.push(tpf3mp_nativemods::index::Dependency {
+            id: "engine".into(),
+            version: "^1.0".into(),
+        });
+        let (engine, engine_file) = native_package("engine", "1.2.0", &build);
+        let setup = setup(vec![(with_plugin(engine), engine_file), (root, root_file)]);
+        let player = dir.path().join("player");
+        let review = plugin_consent_review(
+            &player,
+            &setup,
+            Some(&build),
+            None,
+            &Change::Install("modroot".into()),
+            false,
+        )
+        .unwrap();
+        assert_eq!(review.len(), 1);
+        assert_eq!(review[0].id, "engine");
+        assert_eq!(review[0].source, "project");
+        assert_eq!(review[0].digest.len(), 64);
+        assert!(!review[0].approved);
+
+        let error = apply(
+            &player,
+            &setup,
+            Some(&build),
+            None,
+            Change::Install("modroot".into()),
+        )
+        .unwrap_err();
+        assert!(error.contains("explicit approval"), "{error}");
+        assert!(!player.join(FOLDER).join("modroot").exists());
+        assert!(!player.join(FOLDER).join("engine").exists());
+        let store = Store::open(player.join(FOLDER)).unwrap();
+        assert!(store.registry().packages.is_empty());
+        assert!(!store.has_consent("project", &review[0].digest).unwrap());
+
+        let changed = approve_plugin_consent(
+            &player,
+            &setup,
+            Some(&build),
+            None,
+            &PendingPluginOperation::Change(Change::Install("modroot".into())),
+            &review,
+        )
+        .unwrap();
+        assert!(changed.is_none());
+        assert!(
+            Store::open(player.join(FOLDER))
+                .unwrap()
+                .has_consent("project", &review[0].digest)
+                .unwrap()
+        );
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn changed_plugin_identity_requires_a_new_review_before_consent_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game").unwrap();
+        let build = build_of(&exe).unwrap();
+        let (package, file) = native_package("pluginmod", "1.0.0", &build);
+        let original = setup(vec![(with_plugin(package.clone()), file.clone())]);
+        let player = dir.path().join("player");
+        let review = plugin_consent_review(
+            &player,
+            &original,
+            Some(&build),
+            None,
+            &Change::Install("pluginmod".into()),
+            false,
+        )
+        .unwrap();
+        let mut changed_package = with_plugin(package);
+        changed_package.plugins[0].sha256 = "f".repeat(64);
+        let changed = setup_with_serial(vec![(changed_package, file)], 2);
+        let replacement = approve_plugin_consent(
+            &player,
+            &changed,
+            Some(&build),
+            None,
+            &PendingPluginOperation::Change(Change::Install("pluginmod".into())),
+            &review,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(replacement.len(), 1);
+        assert_ne!(replacement[0].digest, review[0].digest);
+        assert!(!replacement[0].approved);
+        let store = Store::open(player.join(FOLDER)).unwrap();
+        assert!(!store.has_consent("project", &review[0].digest).unwrap());
+        assert!(
+            !store
+                .has_consent("project", &replacement[0].digest)
+                .unwrap()
+        );
+        assert!(store.registry().packages.is_empty());
     }
 
     #[test]

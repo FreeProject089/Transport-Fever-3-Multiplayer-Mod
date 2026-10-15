@@ -21,7 +21,7 @@ use tpf3mp_agent::launcher::{
     Action, ChatLine, Connection, Differences, Game, InstalledGame, Member, MemberContent, ModHave,
     Phase, Room, RoomNativeRow, RulesChoice, ServerRow, State, World,
 };
-use tpf3mp_agent::native_mods::{NativeRow, NativeView};
+use tpf3mp_agent::native_mods::{NativeRow, NativeView, PluginConsentPackage, PluginConsentPrompt};
 use tpf3mp_launcher::{
     app::{Extras, LauncherApp, Shown},
     backend::Backend,
@@ -298,6 +298,41 @@ fn connected() -> State {
     }
 }
 
+fn native_plugin_consent() -> State {
+    let source = format!(
+        "{}native-mods.example.org:29470",
+        "regional-registry.".repeat(3)
+    );
+    let digest = "0123456789abcdef".repeat(4);
+    State {
+        native_consent: Some(PluginConsentPrompt {
+            request_id: "screenshot-review".into(),
+            action: "Join this room and match its native mods".into(),
+            packages: vec![
+                PluginConsentPackage {
+                    id: "terrain-engine".into(),
+                    name: "Terrain Engine dependency".into(),
+                    version: "2.3.1".into(),
+                    authors: vec!["Map Systems Collective".into(), "A. Developer".into()],
+                    source: source.clone(),
+                    digest: digest.clone(),
+                    approved: false,
+                },
+                PluginConsentPackage {
+                    id: "bigmap".into(),
+                    name: "Big Maps".into(),
+                    version: "0.4.0".into(),
+                    authors: vec!["Transport Fever Mod Team".into()],
+                    source,
+                    digest,
+                    approved: false,
+                },
+            ],
+        }),
+        ..connected()
+    }
+}
+
 fn member(
     id: &str,
     name: &str,
@@ -454,6 +489,7 @@ fn screens() {
         0.0,
     );
     render("3-connected", connected(), 0.0);
+    render("9e-native-plugin-consent", native_plugin_consent(), 0.0);
     render_clicking(
         "9-settings",
         connected(),
@@ -620,4 +656,10 @@ fn screens() {
         },
         0.0,
     );
+}
+
+#[test]
+#[ignore = "renders an image for review; needs a GPU or a software renderer"]
+fn native_plugin_consent_screen() {
+    render("native-plugin-consent", native_plugin_consent(), 0.0);
 }

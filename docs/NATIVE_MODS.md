@@ -461,6 +461,26 @@ inside the game with the player's rights: there is no sandbox, and a bad
 one can crash the game or worse. That is the trade-off the amendment asks
 the owner to accept.
 
+**Explicit consent.** Before downloading or installing executable plugin
+bytes, switching a plugin-bearing package on, rolling it back, or matching a
+room that needs it, the launcher resolves the full dependency closure and asks
+the player to approve every executable package. The prompt shows each package's
+name, version, authors, validated source (the project index or authenticated
+server address), and full SHA-256 package identity. That identity includes the
+package files, plugin binaries, declared settings, and the effective settings
+being approved. A dependency's plugin is shown even when the requested package
+itself has no plugin. Approval is remembered for that exact source and identity
+across reconnects; a changed source, binary, package, or effective setting gets
+a new prompt. The launcher refreshes and resolves the selection again after the
+player approves, before it installs or enables anything. Declining or failing
+that revalidation leaves the package action unapplied and blocks a room join
+that needs it.
+
+Executable plugins currently load only on Windows x86-64. Linux and macOS
+refuse plugin packages during resolve, install, enable, rollback, and launch,
+even if a signed index lists a plugin built for those platforms. Data-only
+native packages remain available where their platform support allows them.
+
 **Writing one.** Build a library for the platform (`cdylib` in Rust) that
 exports `tpf3mp_plugin_init`, an `Init` from `tpf3mp-plugin-abi`:
 
