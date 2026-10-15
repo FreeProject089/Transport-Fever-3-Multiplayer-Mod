@@ -154,6 +154,227 @@ local function mine(entity, what)
 	if not ok then error(why, 0) end
 end
 
+-- Change-time diagnostics read only a handful of components for the action
+-- being replayed. These reads are optional: a missing component is `none`,
+-- and a getter which the game cannot read is `unavailable`. Diagnostic
+-- failures never decide whether the ordered action applies.
+local function diagnosticField(value, key)
+	if value == nil then return nil, "none" end
+	local ok, result = pcall(function() return value[key] end)
+	if not ok then return nil, "unavailable" end
+	if result == nil then return nil, "none" end
+	return result, "value"
+end
+
+local function diagnosticComponent(entity, name)
+	if type(entity) ~= "number" or entity < 0 then return nil, "none" end
+	local okType, componentType = pcall(function()
+		local types = api.type and api.type.ComponentType
+		return types and types[name]
+	end)
+	if not okType or componentType == nil then return nil, "unavailable" end
+	local ok, component = pcall(function() return api.engine.getComponent(entity, componentType) end)
+	if not ok then return nil, "unavailable" end
+	if component == nil then return nil, "none" end
+	return component, "value"
+end
+
+local function diagnosticToken(value)
+	local text = type(value) == "string" and value or tostring(value)
+	return (text:gsub("[^%w_./:%-]", "?"):sub(1, 128))
+end
+
+local function diagnosticEntity(value)
+	if type(value) ~= "number" or value < 0 or value ~= value or value == math.huge or value == -math.huge then
+		return "unavailable"
+	end
+	return string.format("%.0f", value)
+end
+
+local function diagnosticCompany(roster, entity)
+	if type(entity) ~= "number" or entity < 0 then return "none" end
+	local ok, companies = pcall(require_companies)
+	if not ok or type(companies) ~= "table" or type(companies.byEntity) ~= "function" then
+		return "unavailable"
+	end
+	local read, c = pcall(companies.byEntity, roster, entity)
+	if not read then return "unavailable" end
+	if c == nil then return "unmapped/entity-" .. diagnosticEntity(entity) end
+	return "company-" .. diagnosticEntity(c.id) .. "/entity-" .. diagnosticEntity(entity)
+end
+
+local function diagnosticActor(roster, player)
+	if player == nil then return "none" end
+	local ok, companies = pcall(require_companies)
+	if not ok or type(companies) ~= "table" or type(companies.of) ~= "function" then
+		return "unavailable"
+	end
+	local read, c = pcall(companies.of, roster, player)
+	if not read then return "unavailable" end
+	if c == nil then return "none" end
+	return "company-" .. diagnosticEntity(c.id) .. "/entity-" .. diagnosticEntity(c.entity)
+end
+
+local function diagnosticLocal(roster)
+	local ok, selected = pcall(function() return api.engine.util.getPlayer() end)
+	if not ok then return "unavailable" end
+	if selected == nil or (type(selected) == "number" and selected < 0) then return "none" end
+	if type(selected) ~= "number" or selected ~= selected or selected == math.huge or selected == -math.huge then
+		return "unavailable"
+	end
+	return diagnosticCompany(roster, selected)
+end
+
+local function diagnosticOwner(entity, roster)
+	local component, status = diagnosticComponent(entity, "PLAYER_OWNED")
+	if status ~= "value" then return status end
+	local owner, ownerStatus = diagnosticField(component, "player")
+	if ownerStatus == "none" then return "none" end
+	if ownerStatus ~= "value" or type(owner) ~= "number" or owner < 0 then return "unavailable" end
+	return diagnosticCompany(roster, owner)
+end
+
+local function diagnosticActionIndex(ctx)
+	local step, status = diagnosticField(ctx, "actionIndex")
+	if status ~= "value" or type(step) ~= "number" or step < 0 or step ~= math.floor(step) then return "none" end
+	return string.format("%.0f", step)
+end
+
+local function diagnosticSignedInteger(value)
+	if type(value) ~= "number" or value ~= math.floor(value) or value ~= value
+			or value == math.huge or value == -math.huge then
+		return "unavailable"
+	end
+	return string.format("%.0f", value)
+end
+
+local function diagnosticSequenceLength(value)
+	local ok, length = pcall(function() return #value end)
+	if not ok or type(length) ~= "number" or length < 0 or length > 256 then return nil end
+	return length
+end
+
+local function diagnosticModelName(modelId)
+	if type(modelId) ~= "number" or modelId < 0 then return "none" end
+	local ok, name = pcall(function() return api.res.modelRep.getName(modelId) end)
+	if not ok then return "unavailable" end
+	if type(name) ~= "string" or name == "" then return "none" end
+	return diagnosticToken(name)
+end
+
+local function diagnosticVehicleModels(entity)
+	local vehicle, status = diagnosticComponent(entity, "TRANSPORT_VEHICLE")
+	if status ~= "value" then return status, status end
+	local config, configStatus = diagnosticField(vehicle, "transportVehicleConfig")
+	if configStatus ~= "value" then return configStatus, configStatus end
+	local parts, partsStatus = diagnosticField(config, "vehicles")
+	if partsStatus ~= "value" then return partsStatus, partsStatus end
+	local length = diagnosticSequenceLength(parts)
+	if length == nil then return "unavailable", "unavailable" end
+	if length == 0 then return "none", "none" end
+	local names, carriers, failed = {}, {}, false
+	local count = math.min(length, 8)
+	for i = 1, count do
+		local entry, entryStatus = diagnosticField(parts, i)
+		local part, partStatus = diagnosticField(entry, "part")
+		local modelId, modelStatus = diagnosticField(part, "modelId")
+		local name = "unavailable"
+		if entryStatus == "value" and partStatus == "value" and modelStatus == "value" then
+			name = diagnosticModelName(modelId)
+		elseif entryStatus == "value" and partStatus == "value" and modelStatus == "none" then
+			name = "none"
+		end
+		names[#names + 1] = name
+		if name == "unavailable" then
+			failed = true
+		else
+			local carrier = name:match("^vehicle/([%w_-]+)/")
+			if carrier then carriers[carrier] = true end
+		end
+	end
+	if length > count then names[#names + 1] = "+" .. tostring(length - count) end
+	local carrierNames = {}
+	for carrier in pairs(carriers) do carrierNames[#carrierNames + 1] = carrier end
+	table.sort(carrierNames)
+	local carrier = "none"
+	if failed then
+		carrier = "unavailable"
+	elseif #carrierNames == 1 then
+		carrier = diagnosticToken(carrierNames[1])
+	elseif #carrierNames > 1 then
+		carrier = "mixed"
+	end
+	return carrier, table.concat(names, ",")
+end
+
+local function diagnosticLineModes(entity)
+	local line, status = diagnosticComponent(entity, "LINE")
+	if status ~= "value" then return status end
+	local info, infoStatus = diagnosticField(line, "vehicleInfo")
+	if infoStatus ~= "value" then return infoStatus end
+	local modes, modesStatus = diagnosticField(info, "transportModes")
+	if modesStatus ~= "value" then return modesStatus end
+	local selected = {}
+	for mode = 0, 15 do
+		local ok, on = pcall(function() return modes[mode] end)
+		if not ok then return "unavailable" end
+		if on == true then selected[#selected + 1] = tostring(mode) end
+	end
+	return #selected > 0 and table.concat(selected, ",") or "none"
+end
+
+local function diagnosticVehicleAssignment(ctx, vehicleId, vehicle, lineId, line, first, outcome)
+	local carrier, models = "unavailable", "unavailable"
+	local read, foundCarrier, foundModels = pcall(diagnosticVehicleModels, vehicle)
+	if read then carrier, models = foundCarrier, foundModels end
+	local mode = "unavailable"
+	local modeRead, foundMode = pcall(diagnosticLineModes, line)
+	if modeRead then mode = foundMode end
+	local owner = "unavailable"
+	local ownerRead, foundOwner = pcall(diagnosticOwner, vehicle, ctx and ctx.roster)
+	if ownerRead then owner = foundOwner end
+	local lineOwner = "unavailable"
+	local lineOwnerRead, foundLineOwner = pcall(diagnosticOwner, line, ctx and ctx.roster)
+	if lineOwnerRead then lineOwner = foundLineOwner end
+	log("assign-vehicle action_index=" .. diagnosticActionIndex(ctx)
+		.. " vehicle=" .. diagnosticEntity(vehicleId) .. " native="
+		.. (vehicle == nil and "none" or diagnosticEntity(vehicle))
+		.. " line=" .. diagnosticEntity(lineId) .. " native_line="
+		.. (line == nil and "none" or diagnosticEntity(line))
+		.. " first=" .. diagnosticSignedInteger(first) .. " carrier=" .. carrier .. " models=" .. models
+		.. " mode=" .. mode .. " owner=" .. owner .. " line_owner=" .. lineOwner
+		.. " outcome=" .. outcome)
+end
+
+local function diagnosticConstruction(ref, entity, component, roster)
+	local file, fileStatus = diagnosticField(ref, "file")
+	local at, atStatus = diagnosticField(ref, "at")
+	local x, xs = diagnosticField(at, "x")
+	local y, ys = diagnosticField(at, "y")
+	local z, zs = diagnosticField(at, "z")
+	local function point(a, as, b, bs, c, cs)
+		if as ~= "value" or bs ~= "value" or cs ~= "value" or type(a) ~= "number" or type(b) ~= "number"
+				or type(c) ~= "number" or a ~= a or b ~= b or c ~= c or a == math.huge or b == math.huge
+				or c == math.huge or a == -math.huge or b == -math.huge or c == -math.huge then
+			return "unavailable"
+		end
+		return string.format("%.1f,%.1f,%.1f", a, b, c)
+	end
+	local requested = fileStatus == "value" and diagnosticToken(file) or fileStatus
+	local transf, transfStatus = diagnosticField(component, "transf")
+	local ax, axs = diagnosticField(transf, 13)
+	local ay, ays = diagnosticField(transf, 14)
+	local az, azs = diagnosticField(transf, 15)
+	local actual = transfStatus == "value" and point(ax, axs, ay, ays, az, azs) or transfStatus
+	local refPoint = atStatus == "value" and point(x, xs, y, ys, z, zs) or atStatus
+	local owner = "unavailable"
+	local ownerRead, foundOwner = pcall(diagnosticOwner, entity, roster)
+	if ownerRead then owner = foundOwner end
+	log("bulldoze-construction action_index=" .. diagnosticActionIndex(acting)
+		.. " ref=" .. requested .. "@(" .. refPoint .. ") native=" .. diagnosticEntity(entity)
+		.. " actual=(" .. actual .. ") owner=" .. owner)
+end
+
 -- The entity a command made: its data's field `field`, else the first of
 -- its result entities; nil when the game did not say.
 local function madeBy(field, data, entities)
@@ -1231,7 +1452,8 @@ function HANDLERS.Bulldoze(b)
 	local proposals = api.engine.util.proposal
 	local proposal
 	if b.Construction then
-		local con = constructionAt(b.Construction)
+		local con, construction = constructionAt(b.Construction)
+		pcall(diagnosticConstruction, b.Construction, con, construction, acting and acting.roster)
 		mine(con, "construction")
 		proposal = proposals.createProposalRemove(con, context)
 		if proposal == nil then error("the game will not remove the " .. tostring(b.Construction.file), 0) end
@@ -1970,7 +2192,13 @@ end
 local function isVehicle(e)
 	if type(e) ~= "number" or e < 0 then return false end
 	local ok, c = pcall(api.engine.getComponent, e, api.type.ComponentType.TRANSPORT_VEHICLE)
-	return ok and c ~= nil
+	if not ok then
+		-- The replacement command already ran. Treat an unreadable result
+		-- as uncertain, so replay holds before the registry could assign a
+		-- new canonical id to the vehicle.
+		error({ replayFatal = "replacement vehicle " .. tostring(e) .. " could not be read: " .. tostring(c) }, 0)
+	end
+	return c ~= nil
 end
 
 -- A vehicle's consist replaced, as the store's HandleVehicleChanges sends it
@@ -2032,42 +2260,38 @@ function HANDLERS.SellVehicle(sell, ctx)
 	return run(api.cmd.makeVehicleSellCmd(vehicles))
 end
 
--- Small before/after records at the action boundary, not a per-tick scan.
--- A new train diverged immediately after BuyVehicle/AssignLine; these show
--- whether movement already differed before the engine chose its route.
-local function vehicleActionState(entity, canonical, phase, line, first)
-	local ok, why = pcall(function()
-		local c = api.type.ComponentType
-		local v = api.engine.getComponent(entity, c.TRANSPORT_VEHICLE)
-		local p = api.engine.getComponent(entity, c.MOVE_PATH)
-		local d = p and p.dyn
-		local pos = d and d.pathPos
-		log("vehicle-action " .. phase .. " vehicle-" .. tostring(canonical)
-			.. " line-" .. tostring(line) .. " first=" .. tostring(first)
-			.. " time=" .. tostring(now()) .. " entity=" .. tostring(entity)
-			.. " state=" .. tostring(v and v.state) .. " stop=" .. tostring(v and v.stopIndex)
-			.. " edge=" .. tostring(pos and pos.edgeIndex) .. " pos=" .. tostring(pos and pos.pos)
-			.. " speed=" .. tostring(d and d.speed))
-	end)
-	if not ok then
-		log("vehicle-action " .. phase .. " vehicle-" .. tostring(canonical)
-			.. " unavailable: " .. tostring(why))
-	end
-end
-
 function HANDLERS.AssignLine(assign, ctx)
 	if assign.line == nil then
 		return false, "this version of the mod does not take vehicles off their line yet"
 	end
-	local line = ownOf(ctx, "lines", assign.line)
 	-- No first stop: the game's choice, the next stop each can reach (-1).
 	local first = assign.first_stop
 	if first == nil then first = -1 end
+	local lineOk, line = pcall(ownOf, ctx, "lines", assign.line)
+	if not lineOk then
+		local lineRead, nativeLine = pcall(entityOf, ctx, "lines", assign.line)
+		if not lineRead then nativeLine = nil end
+		for _, vehicleId in ipairs(assign.vehicles) do
+			local vehicleRead, nativeVehicle = pcall(entityOf, ctx, "vehicles", vehicleId)
+			if not vehicleRead then nativeVehicle = nil end
+			pcall(diagnosticVehicleAssignment, ctx, vehicleId, nativeVehicle, assign.line, nativeLine, first, "refused")
+		end
+		error(line, 0)
+	end
 	for _, v in ipairs(assign.vehicles) do
-		local entity = ownOf(ctx, "vehicles", v)
-		vehicleActionState(entity, v, "before-assign", assign.line, first)
-		run(api.cmd.makeVehicleSetLineCmd(entity, line, first))
-		vehicleActionState(entity, v, "after-assign", assign.line, first)
+		local vehicleOk, entity = pcall(ownOf, ctx, "vehicles", v)
+		if not vehicleOk then
+			local vehicleRead, nativeVehicle = pcall(entityOf, ctx, "vehicles", v)
+			if not vehicleRead then nativeVehicle = nil end
+			pcall(diagnosticVehicleAssignment, ctx, v, nativeVehicle, assign.line, line, first, "refused")
+			error(entity, 0)
+		end
+		local sent, result = pcall(function()
+			return run(api.cmd.makeVehicleSetLineCmd(entity, line, first))
+		end)
+		pcall(diagnosticVehicleAssignment, ctx, v, entity, assign.line, line, first,
+			sent and result == true and "applied" or "refused")
+		if not sent then error(result, 0) end
 	end
 	return true
 end
@@ -2465,13 +2689,78 @@ function HANDLERS.ApplyRank(r, ctx)
 	return run(event())
 end
 
+local COMPANY_OPERATIONS = {
+	"Create", "Join", "Rename", "Recolor", "Delete", "Lock", "Unlock", "Dismiss",
+	"ShareStations", "StationAccess",
+}
+
+local function diagnosticCompanyOperation(op)
+	for _, name in ipairs(COMPANY_OPERATIONS) do
+		local _, status = diagnosticField(op, name)
+		if status == "value" then return name end
+	end
+	return "other"
+end
+
+local function diagnosticOrderedModels(buy)
+	local consist, status = diagnosticField(buy, "consist")
+	if status ~= "value" then return status end
+	local length = diagnosticSequenceLength(consist)
+	if length == nil then return "unavailable" end
+	if length == 0 then return "none" end
+	local names = {}
+	local count = math.min(length, 8)
+	for i = 1, count do
+		local part, partStatus = diagnosticField(consist, i)
+		local model, modelStatus = diagnosticField(part, "model")
+		if partStatus ~= "value" then
+			names[#names + 1] = partStatus
+		elseif modelStatus == "value" and type(model) == "string" and model ~= "" then
+			names[#names + 1] = diagnosticToken(model)
+		else
+			names[#names + 1] = modelStatus
+		end
+	end
+	if length > count then names[#names + 1] = "+" .. tostring(length - count) end
+	return table.concat(names, ",")
+end
+
+-- Called by the simulation after the registry has seen the command result.
+-- Only the ordered resource names and native/canonical result IDs are kept;
+-- the action, consist configuration, and command result are never serialized.
+function apply.vehicleBuyDiagnostic(buy, applied, entity, canonical, canonicalStatus, actionIndex)
+	local outcome = applied == true and "applied" or "refused"
+	local native = entity == nil and "none" or diagnosticEntity(entity)
+	local canonicalText = "unavailable"
+	if canonicalStatus == "none" then
+		canonicalText = "none"
+	elseif canonicalStatus == "value" then
+		canonicalText = diagnosticEntity(canonical)
+	end
+	return "buy-vehicle action_index=" .. diagnosticEntity(actionIndex)
+		.. " outcome=" .. outcome .. " models=" .. diagnosticOrderedModels(buy)
+		.. " native=" .. native .. " canonical=" .. canonicalText
+end
+
+local function diagnosticOutcome(ok, applied)
+	if not ok and type(applied) == "table" and applied.replayFatal then return "uncertain" end
+	if ok and applied == true then return "applied" end
+	return "refused"
+end
+
+local function diagnosticLog(line)
+	pcall(log, line)
+end
+
 -- Runs one action. `ctx` is { registry = } (tpf3mp/registry.lua), for the
 -- actions that name vehicles, lines and station groups; with companies, also
 -- `roster`, `player` (who sent it) and `company` (their company's player
 -- entity), which the action is booked to, and `progression`, the companies'
 -- ranks (tpf3mp/progression.lua). Returns true, nil
 -- and the entity it made or changed (for the kinds in CREATES and KEEPS,
--- where the game said), or false and why not; never raises.
+-- where the game said), or false and why not; never raises. A fourth true
+-- marks a post-command read failure: the caller must stop ordered replay
+-- before persisting any inferred registry mapping.
 function apply.run(action, ctx)
 	if type(action) ~= "table" then return false, "an action is a table" end
 	local allowed, why = acceptance.check(action)
@@ -2484,9 +2773,36 @@ function apply.run(action, ctx)
 	if handler == nil then
 		return false, "this version of the mod does not apply " .. tostring(kind) .. " yet"
 	end
+	local actorBefore, localBefore = "unavailable", "unavailable"
+	if kind == "CompanyOp" then
+		local readActor, valueActor = pcall(diagnosticActor, ctx and ctx.roster, ctx and ctx.player)
+		local readLocal, valueLocal = pcall(diagnosticLocal, ctx and ctx.roster)
+		if readActor then actorBefore = valueActor end
+		if readLocal then localBefore = valueLocal end
+	end
 	acting = ctx
 	local ok, applied, detail = pcall(handler, body, ctx)
 	acting = nil
+	local outcome = diagnosticOutcome(ok, applied)
+	if kind == "CompanyOp" then
+		local actorAfter, localAfter = "unavailable", "unavailable"
+		local readActor, valueActor = pcall(diagnosticActor, ctx and ctx.roster, ctx and ctx.player)
+		local readLocal, valueLocal = pcall(diagnosticLocal, ctx and ctx.roster)
+		if readActor then actorAfter = valueActor end
+		if readLocal then localAfter = valueLocal end
+		local readOp, operation = pcall(diagnosticCompanyOperation, body)
+		if not readOp then operation = "other" end
+		diagnosticLog("company-event action_index=" .. diagnosticActionIndex(ctx) .. " op=" .. operation
+			.. " actor_before=" .. actorBefore .. " actor_after=" .. actorAfter
+			.. " local_before=" .. localBefore .. " local_after=" .. localAfter
+			.. " outcome=" .. outcome)
+	elseif kind == "AssignLine" or kind == "Bulldoze" then
+		diagnosticLog("action-event action_index=" .. diagnosticActionIndex(ctx) .. " kind=" .. kind
+			.. " outcome=" .. outcome)
+	end
+	if not ok and type(applied) == "table" and applied.replayFatal then
+		return false, applied.replayFatal, nil, true
+	end
 	if not ok then return false, tostring(applied) end
 	if applied == true then return true, nil, detail end
 	return false, detail

@@ -1103,6 +1103,26 @@ every game between the same two simulation steps, including while paused:
    the world (fail closed). A hold or closed world invalidates delayed
    wakes; duplicates and stale tokens take nothing.
 
+At that boundary, the mod emits compact records for company changes, line
+assignments, vehicle purchases and construction bulldozes. `company-event`
+shows the sender's company before and after the operation and the local
+game's selected company (`local_before`/`local_after`); it never logs the
+sender key, company name, password or seal. Each record's `action_index` is
+its 1-based position in that replay batch, not a room simulation step.
+`assign-vehicle` is one line per
+vehicle and carries its canonical ID, this game's native entity, the line's
+canonical/native IDs, ordered model resource names, carrier folder, line mode
+set, owner and that vehicle's applied/refused result. `buy-vehicle` carries
+only the consist's ordered model resource names and the new native and
+canonical vehicle IDs when the registry can name it. `bulldoze-construction`
+records the requested construction reference, the already-resolved native
+entity and actual origin, and its owner; `action-event` records the action's
+applied/refused result. Native entity IDs are local to a game; compare the
+canonical IDs and resource names across replicas. Optional diagnostic reads
+say `none` when a component or value is absent and `unavailable` when a read
+throws or cannot be made. They are protected reads at the action boundary,
+not per-tick scans, and never decide whether the action applies.
+
 The world still runs the game's paused path while waiting: neither room
 steps nor game time advance, and the paused-tick fix keeps `tickCount`
 unchanged. Construction costs are charged normally. Existing update and
@@ -1629,7 +1649,13 @@ reference of its own to either. Once linked, the GUI wraps every
   first update, and retires the ids of those gone; an id never comes back.
   What an action made, as the game answered its command, is bound at
   once, whatever the game's lists say, and an id is retired only when its
-  entity no longer exists, never because a list left it out.
+  entity no longer exists, never because a list left it out. If checking an
+  omitted entity's component raises an error, its binding stays until the
+  game can establish whether it still exists; this also keeps one replica's
+  transient read failure from changing later action references.
+  A vehicle replacement whose returned entity cannot be read holds ordered
+  replay before another room update runs; it cannot silently give the
+  replacement a new canonical id.
   It keeps the registry in its state, which the game saves with the world,
   so a player who joins or reloads from the room's save has it as the
   others do. The GUI reads it from the script's state
@@ -2200,22 +2226,32 @@ reaches is its potential, and the company window takes a rank reached with
   changes, to check in the game).
 
 Nothing is guessed: a sample whose statistics or game modules do not read
-is left out (`the companies' scores were not sampled: ...`), and a town
+is left out (`the companies' scores were not sampled: ...`) and remains due
+for retry in the same game quarter. Previously such a failure persisted the
+quarter before reading it, losing that sample's chance to earn XP. A town
 with no rating counts for nobody.
 
 In `hook.log`, every game of a room of two companies writes at each
 sample, at the same game time and with the same numbers:
 
 ```
+room ranks loaded: quarter=431 companies=2
+room ranks loaded: company-0 entity=25 experience=20514 potential=3 level=2
+room ranks loaded: company-1 entity=901 experience=800 potential=0 level=1
 progression at game time 5400000: 12 towns, weights cargo 1 passengers 1
 progression at game time 5400000: town-3 population 1240: company-0 share 0.5500 rating 80.0000 part 545.6000, company-1 share 0.4500 rating 64.2859 part 358.7153
-progression at game time 5400000: company-0 score 3120.4000, experience 20514, rank 3 reached, 2 taken
-progression at game time 5400000: company-1 score 812.9000, experience 812, rank 0 reached, 1 taken
+progression at game time 5400000: company-0 score 3120.4000, experience 20514, rank 3 reached, 2 taken, prior experience 20514, sample quarter 432
+progression at game time 5400000: company-1 score 812.9000, experience 812, rank 0 reached, 1 taken, prior experience 800, sample quarter 432
 ```
 
-one line per town someone carried for, then one per company. Compare the
-lines of the same game time across the games: any difference is a
-divergence.
+The `room ranks loaded` lines report the saved records on the first
+multicompany update of this game-script state, before sampling; at most 16
+companies are listed, with an explicit omitted count beyond that. Compare
+them with the last sample before a rebase and the first sample after it to
+see whether the offered world restored or lost experience. The sample logs
+one line per town someone carried for, then one per company, including the
+experience before that sample and the quarter persisted with it. Compare
+lines at the same game time across games: any difference is a divergence.
 
 ### Headquarters
 
@@ -3899,19 +3935,31 @@ and nothing more.
   index, direction, and edge endpoints/tangents where available. The old
   `path_hash` explicitly says `path_hash_scope=local_ids`: different raw
   IDs alone do not prove route divergence. Compare geometry and lane index
-  too. The dump records at most 256 route edges per vehicle, 2048 per dump,
-  with at most 1024 distinct geometry reads, cached within that dump.
+  too. It samples the first two route edges, up to twelve around the
+  vehicle's current edge, and the last two of the first 4096: at most 16
+  per vehicle and 128 per dump, with at most 1024 distinct geometry reads, cached within
+  that dump. The full path hash still covers up to 4096 edges; a changed
+  unsampled edge can change that hash without a differing sampled row.
   `route_omitted` and `geometry=budget` make these limits visible;
   `geometry=unavailable` means the native edge could not be read. Vehicle
-  summaries precede route records so optional detail cannot crowd them out
-  at the hook's line limit. These extra reads happen only during dumps,
+  base entries and compact `vehicle-N/core` entries reach the hook before
+  route records so optional detail cannot crowd them out at its line
+  limit. A core names the vehicle's state, stop, line, edge, full-precision
+  position and speed, and its path count and hash. The hook writes accepted
+  route records first, then verbose base entries, then every vehicle's
+  core and the lane summaries. Thus a newest-byte tail of an oversized
+  dump can still locate the differing vehicle even if verbose rows are lost.
+  It cannot guarantee a complete upload for a large world or busy log;
+  use `collect-logs` for the local full log if diagnostics report skipped
+  bytes. These extra reads happen only during dumps,
   not ordinary rolling checks. They describe the sampled state, not every
   earlier routing decision; a root cause can still require reproduction.
-  Line assignments also log `vehicle-action before-assign` and
-  `after-assign`, with canonical vehicle/line IDs, game time and the local
-  vehicle's state, stop, path position and speed. These bounded action-time
-  reads help distinguish an existing displacement from a departure that
-  diverges after assignment; they do not scan vehicles every tick.
+  Line assignments also log one `assign-vehicle` line per named vehicle at
+  the action boundary, with canonical/native vehicle and line IDs, the
+  vehicle's ordered model names and carrier, the line's mode set, owners and
+  the command's per-vehicle result. A refused later command stays visible
+  beside an earlier vehicle command that applied; these reads do not scan
+  vehicles every tick.
 - **A box of the network.** `TPF3MP_HOOK_LANE_DUMP_BOX=x0,y0,x1,y1` (the
   world's x and y, metres, any two opposite corners) dumps the network lane
   at every checkpoint in `TPF3MP_HOOK_LANE_DUMP_BOX_STEPS=from-to` (steps,
@@ -3939,9 +3987,11 @@ and nothing more.
   values the row was made from at full precision (`%.17g`), `row` the text
   hashed. The key is the registry's canonical id where there is one
   (`vehicle-N`, `line-N`, `town-N`, `industry-N`), else `row:<row>`
-  (edges, other constructions) or `player` and `people`. Entries are sorted
-  by key, ids first, so the same world dumps the same lines in the same
-  order whatever order the engine lists it in. Each lane ends with
+  (edges, other constructions) or `player` and `people`. The Lua entries
+  are sorted by key, ids first; the hook puts optional vehicle route rows
+  before every lane's base rows and compact cores in its log. The same world still dumps the
+  same lines in the same order whatever order the engine lists it in.
+  Each lane ends with
   `summary <text>`, the lane's text as hashed; a lane that cannot be read
   is one line `err <why>`.
 
@@ -3985,11 +4035,16 @@ python tools/lane_diff.py james=james/hook.log bob=bob/hook.log cat=cat/hook.log
 python tools/lane_diff.py --lane 3 --step 300 --max 50 --ignore entity a.log b.log
 ```
 
-For each lane and step dumped by two or more games it pairs the entries
-by key and prints the ones that differ, grouping the games that agree and
-showing only the fields that differ, and whether the lane's text itself
-differed (a difference below the lane's rounding leaves it alike). It exits
-1 when an entry differs. `python tools/test_lane_diff.py` tests it.
+For each lane and step it pairs captures by occurrence and entries by key,
+prints observed differences, and reports whether the lane's hashed summary
+agrees. Missing summaries, rows or route records, a requested lane with no
+rows, and a truncated checkpoint are marked incomplete; a missing entry then
+does not prove an absent entity.
+Repeated steps with unequal capture counts are left unpaired, since a world
+reload could put the same step in a different epoch. Exit 0 means complete
+aligned captures agree, 1 means an observed difference, and 2 means the
+comparison is incomplete or ambiguous. `python tools/test_lane_diff.py`
+tests it.
 
 #### The town street field
 
@@ -5306,6 +5361,46 @@ the room's game's step. The replicated engine is left out.
   address is `0x128` above the site's `rsp`), the code to read with
   `tpfre q <db> func <rva>`. In a sound game there are none; a room
   action is applied for its step and counts as an update.
+
+- The trace also keeps the first 96 modifications, including ones that
+  take or free no IDs, of each
+  checkpoint interval in memory, across the last 128 checkpoints. When a
+  divergent checkpoint or its room-wide lane-dump request arrives, each
+  game writes the latest 64 retained intervals up to that checkpoint to
+  `hook.log`.
+  This includes an allocator split well before the first lane mismatch,
+  without continuously filling the hook's 192 KiB/minute diagnostic upload
+  budget. Native-operation trace bursts, whether triggered by a divergence or
+  an accepted room-chat ask, are limited to one per minute and at most 128
+  KiB including logger prefixes, the header and a short suppression notice.
+  Other hook lines share the 192 KiB/minute upload tail, so this trace bound
+  does not guarantee that every diagnostic line reaches the relay; collect
+  the local full log if the upload reports skipped bytes. Further distinct
+  divergence steps in that minute
+  produce one short rate-limit line; the next burst header reports how many
+  notices were suppressed and the latest suppressed step, then includes the
+  latest retained interval through the eligible divergence. The header gives
+  the oldest and newest retained checkpoints, expired checkpoints,
+  recorded/retained operations, omitted operations, unfit counts and
+  unreadable native observations.
+  `complete=true` means none of those gaps occurred within the selected
+  incident window. Older expired checkpoints are reported separately and do
+  not make an intact recent window incomplete. The launcher's source
+  and run budgets can still skip old log
+  lines, which its own diagnostics report.
+
+  `free operations: step <checkpoint> part <n>` lines list compact records
+  in modification order, each with `step:place:taken/freed:table/queued:
+  first_freed/last_freed/freed_hash:return_rva`. `U` means a room update,
+  `S` the game's step outside an update, and `X` outside its step. `-` is
+  unavailable; `?` for taken means its count did not fit the preceding
+  observation. The IDs and hash describe the freed batch at
+  `EndModification`; taken is a count inferred between modification ends,
+  not the identities of IDs allocated by `AddEntity`. If native worker
+  modifications overlap, callback observation order need not be causal
+  modification order. A world load clears
+  this memory. Turning `TPF3MP_HOOK_FREED_ID_TRACE=0` off also disables
+  these lines, and **Send diagnostics** Off keeps hook lines local.
 
 The checks: `EndModification`'s head before the site, and the step's
 `mov rcx, [rbp+8]; ...; mov rcx, [rcx+0x18]; call ecs::Engine::Update`
