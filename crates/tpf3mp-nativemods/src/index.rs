@@ -68,13 +68,11 @@ pub const MAX_HOOKS: usize = 64;
 pub const MAX_SIGNATURE: usize = 128;
 pub const MAX_EXPECTED: usize = 64;
 
-/// The platform this TPF3-MP runs on, as plugins name it; none where no
-/// plugin can be built for it.
+/// The platform this TPF3-MP can load native plugins on, as plugins name it;
+/// none where the hook cannot load plugins.
 pub const fn current_platform() -> Option<&'static str> {
     if cfg!(all(windows, target_arch = "x86_64")) {
         Some("windows-x86_64")
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Some("linux-x86_64")
     } else {
         None
     }

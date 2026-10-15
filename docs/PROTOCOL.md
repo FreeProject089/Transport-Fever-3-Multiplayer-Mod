@@ -274,8 +274,9 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   full 64-digit SHA-256 package identity (`0.3.0+0123456789<64 hex digits>`).
   The first ten digits let the server verify the settings named in the room
   declaration; only the full identity binds package contents. It covers the
-  package's simulation flag, features, effective settings, dependencies,
-  and sorted file paths, sizes and SHA-256s. They compare as mods do:
+  package metadata, simulation flag, features, declared and effective
+  settings, dependencies, sorted file paths, sizes and SHA-256s, every
+  platform's plugin descriptors and declared hooks. They compare as mods do:
   `ContentDiff` lists a
   missing, extra or other native mod under its `native:` id, so two games
   with different native mods, package bytes or settings never share a room. The
@@ -287,8 +288,11 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   and every setting, `NativeSetting`, keyed once in order, each a
   `NativeValue`: a boolean, a whole number or text of up to 128 bytes), and
   `RoomMods::native` tells them to every member, whose launcher installs
-  that version from the project's signed index with those settings
-  (never from another player). The room refuses a declaration whose
+  that version from the room server's authenticated index or the project's
+  optional signed index with those settings (never from another player).
+  The launcher requires local consent for the same full package identity
+  and source before fetching, installing or enabling executable plugins;
+  the consent choice is not sent to the room. The room refuses a declaration whose
   native mods do not match its manifest's one for one (`InvalidContent`).
   An owner cannot start a game with native terms until its valid room
   declaration supplies their settings.

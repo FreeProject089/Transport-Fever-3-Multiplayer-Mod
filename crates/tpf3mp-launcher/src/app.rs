@@ -312,7 +312,11 @@ impl<B: Backend> LauncherApp<B> {
         self.sidebar(ui, &geometry, &state, &view, &assets);
         self.files(ui, &geometry, &state, &assets);
         self.footer(ui, &geometry, &state);
-        if self.settings || self.mods.is_some() || self.confirm.is_some() {
+        if self.settings
+            || self.mods.is_some()
+            || self.confirm.is_some()
+            || state.native_consent.is_some()
+        {
             // Behind a dialog the page is blurred, as the page's
             // `::backdrop` does: the city blurred, over it all.
             let painter =
@@ -322,6 +326,7 @@ impl<B: Backend> LauncherApp<B> {
         self.settings_dialog(&ctx, &state, &view);
         self.mods_dialog(&ctx, &state);
         self.confirm_dialog(&ctx);
+        self.plugin_consent_dialog(&ctx, &state);
         self.draw_toast(&ctx, geometry.window);
         ctx.request_repaint_after(REFRESH);
     }
@@ -1654,6 +1659,127 @@ impl<B: Backend> LauncherApp<B> {
             }
             Some(false) => self.confirm = None,
             None => {}
+        }
+    }
+
+    /// Requires a deliberate choice before native plugin code can be fetched
+    /// or enabled. The agent binds this answer to the exact displayed request.
+    fn plugin_consent_dialog(&mut self, ctx: &egui::Context, state: &State) {
+        let Some(prompt) = state.native_consent.clone() else {
+            return;
+        };
+        let modal = Modal::new(Id::new("native-plugin-consent"))
+            .frame(dialog_frame())
+            .backdrop_color(theme::rgba(4, 16, 20, 0.72))
+            .show(ctx, |ui| {
+                ui.set_width(520.0);
+                ui.label(theme::text(
+                    "Review native plugin code",
+                    theme::semibold(22.0),
+                    theme::TEXT,
+                ));
+                ui.add_space(10.0);
+                ui.label(theme::text(
+                    "These packages run executable code inside Transport Fever 3 with your account's rights on this PC. Approval is required before this action can fetch, install, enable, or roll back native plugin code.",
+                    theme::body(13.0),
+                    theme::DIFFERS_TEXT,
+                ));
+                ui.add_space(6.0);
+                ui.label(theme::text(
+                    format!("Requested action: {}", prompt.action),
+                    theme::semibold(13.0),
+                    theme::TEXT,
+                ));
+                ui.add_space(14.0);
+                egui::ScrollArea::vertical()
+                    .max_height(360.0)
+                    .show(ui, |ui| {
+                        for package in &prompt.packages {
+                            ui.separator();
+                            ui.label(theme::text(
+                                format!("{} {}", package.name, package.version),
+                                theme::semibold(15.0),
+                                theme::TEXT,
+                            ));
+                            ui.label(theme::text(
+                                format!("Package: {}", package.id),
+                                theme::body(12.0),
+                                theme::MUTED,
+                            ));
+                            let source = if package.source == "project" {
+                                "TPF3-MP project index".to_owned()
+                            } else {
+                                format!("Authenticated server {}", package.source)
+                            };
+                            ui.label(theme::text(
+                                format!("Validated source: {source}"),
+                                theme::body(12.0),
+                                theme::TEXT,
+                            ));
+                            let authors = if package.authors.is_empty() {
+                                "Not listed".to_owned()
+                            } else {
+                                package.authors.join(", ")
+                            };
+                            ui.label(theme::text(
+                                format!("Author(s): {authors}"),
+                                theme::body(12.0),
+                                theme::TEXT,
+                            ));
+                            ui.label(theme::text(
+                                "Full package identity SHA-256:",
+                                theme::body(12.0),
+                                theme::MUTED,
+                            ));
+                            // Break the digest into groups so its complete
+                            // value can wrap inside the dialog at narrow
+                            // window sizes.
+                            let digest = package
+                                .digest
+                                .as_bytes()
+                                .chunks(8)
+                                .map(|part| String::from_utf8_lossy(part).into_owned())
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            ui.monospace(digest);
+                            if package.approved {
+                                ui.label(theme::text(
+                                    "Already approved for this exact source and package identity.",
+                                    theme::body(11.0),
+                                    theme::MUTED,
+                                ));
+                            }
+                        }
+                    });
+                ui.add_space(16.0);
+                let mut answer = None;
+                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if theme::primary_small(
+                        ui,
+                        true,
+                        None,
+                        "Approve and continue",
+                        true,
+                    )
+                    .clicked()
+                    {
+                        answer = Some(true);
+                    }
+                    if theme::quiet_button(ui, true, None, "Decline", Quiet::new()).clicked() {
+                        answer = Some(false);
+                    }
+                });
+                answer
+            });
+        let answer = modal
+            .inner
+            .or_else(|| modal.should_close().then_some(false));
+        if let Some(approved) = answer {
+            self.backend.act(Action::NativeConsentDecision {
+                request_id: prompt.request_id,
+                approved,
+            });
         }
     }
 

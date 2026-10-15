@@ -1,8 +1,9 @@
 //! Native mods as a room's terms.
 //!
 //! A native package that changes the simulation must run in every game of a
-//! room in the same version with the same settings, or the worlds part. Its
-//! term is its id, its version and a digest of its settings; the room
+//! room in the same version with the same settings and package bytes, or the
+//! worlds part. Its term is its id, its version, a short settings digest and
+//! the full canonical package identity; the room
 //! compares the terms of every member as it compares their content
 //! (`ContentManifest`, docs/PROTOCOL.md), and a member missing a package,
 //! or holding another version of it, installs the room's version from the
@@ -96,18 +97,53 @@ pub fn files_digest(files: &[FileEntry]) -> String {
 struct PackageIdentity<'a> {
     id: &'a str,
     version: &'a str,
+    name: &'a str,
+    authors: &'a [String],
     simulation: bool,
+    builds: Vec<&'a str>,
     features: Vec<&'a str>,
-    settings: &'a BTreeMap<String, Setting>,
-    files_sha256: &'a str,
+    declared_settings: &'a BTreeMap<String, Setting>,
+    effective_settings: &'a BTreeMap<String, Setting>,
+    files: Vec<(&'a str, u64, &'a str)>,
+    plugins: Vec<(&'a str, &'a str, u64, &'a str, u32)>,
+    hooks: &'a [crate::index::HookDecl],
+    game_mods: Vec<&'a str>,
+    conflicts: Vec<&'a str>,
     depends: Vec<(&'a str, &'a str)>,
 }
 
-/// The full SHA-256 identity of the package fields that can affect the
-/// simulation: its declared feature order, effective settings, dependencies,
-/// and the sorted path/size/content-hash manifest of every package file.
-pub fn package_digest(package: &crate::enabled::EnabledPackage) -> String {
+/// The full SHA-256 identity used by room terms and plugin consent. It binds
+/// effective settings to every package file and every platform's plugin
+/// descriptor, along with the declarations that control how the package is
+/// loaded. Mirrors and display-only description/link fields do not affect it.
+pub fn package_digest(package: &Package, effective_settings: &BTreeMap<String, Setting>) -> String {
+    let mut files: Vec<(&str, u64, &str)> = package
+        .files
+        .iter()
+        .map(|file| (file.path.as_str(), file.size, file.sha256.as_str()))
+        .collect();
+    files.sort_unstable();
+    let mut plugins: Vec<(&str, &str, u64, &str, u32)> = package
+        .plugins
+        .iter()
+        .map(|plugin| {
+            (
+                plugin.platform.as_str(),
+                plugin.path.as_str(),
+                plugin.size,
+                plugin.sha256.as_str(),
+                plugin.abi,
+            )
+        })
+        .collect();
+    plugins.sort_unstable();
+    let mut builds: Vec<&str> = package.builds.iter().map(String::as_str).collect();
+    builds.sort_unstable();
     let features: Vec<&str> = package.features.iter().map(String::as_str).collect();
+    let mut game_mods: Vec<&str> = package.game_mods.iter().map(String::as_str).collect();
+    game_mods.sort_unstable();
+    let mut conflicts: Vec<&str> = package.conflicts.iter().map(String::as_str).collect();
+    conflicts.sort_unstable();
     let mut depends: Vec<(&str, &str)> = package
         .depends
         .iter()
@@ -117,10 +153,18 @@ pub fn package_digest(package: &crate::enabled::EnabledPackage) -> String {
     let identity = PackageIdentity {
         id: &package.id,
         version: &package.version,
+        name: &package.name,
+        authors: &package.authors,
         simulation: package.simulation,
+        builds,
         features,
-        settings: &package.settings,
-        files_sha256: &package.files_sha256,
+        declared_settings: &package.settings,
+        effective_settings,
+        files,
+        plugins,
+        hooks: &package.hooks,
+        game_mods,
+        conflicts,
         depends,
     };
     let encoded = postcard::to_allocvec(&identity).expect("package identity is serializable");
@@ -141,7 +185,7 @@ pub fn terms(enabled: &Enabled, registry: &[FeatureSpec]) -> Vec<NativeTerm> {
             id: package.id.clone(),
             version: package.version.clone(),
             settings: settings_digest(&package.settings),
-            identity: package_digest(package),
+            identity: package.identity_sha256.clone(),
         })
         .collect();
     terms.sort();
@@ -220,29 +264,34 @@ mod tests {
     };
 
     fn enabled(settings: &[(&str, Setting)], with_page_only: bool) -> Enabled {
+        let settings: BTreeMap<String, Setting> = settings
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), v.clone()))
+            .collect();
+        let bigmap_identity = package_digest(&package("bigmap", "0.3.0", &[]), &settings);
         let mut packages = vec![EnabledPackage {
             id: "bigmap".into(),
             version: "0.3.0".into(),
             simulation: true,
             features: vec!["bigmap.octree".into()],
-            settings: settings
-                .iter()
-                .map(|(k, v)| ((*k).to_owned(), v.clone()))
-                .collect(),
+            settings: settings.clone(),
             files_sha256: files_digest(&[]),
+            identity_sha256: bigmap_identity,
             depends: Vec::new(),
             root: PathBuf::new(),
             plugins: Vec::new(),
             hooks: Vec::new(),
         }];
         if with_page_only {
+            let page_settings = BTreeMap::new();
             packages.push(EnabledPackage {
                 id: "pages".into(),
                 version: "1.0.0".into(),
                 simulation: false,
                 features: vec!["bigmap.page".into()],
-                settings: BTreeMap::new(),
+                settings: page_settings.clone(),
                 files_sha256: files_digest(&[]),
+                identity_sha256: package_digest(&package("pages", "1.0.0", &[]), &page_settings),
                 depends: Vec::new(),
                 root: PathBuf::new(),
                 plugins: Vec::new(),
@@ -257,32 +306,68 @@ mod tests {
     }
 
     #[test]
-    fn a_plugins_code_is_part_of_its_term() {
-        let mut package = crate::enabled::EnabledPackage {
-            id: "pages".into(),
-            version: "1.0.0".into(),
-            simulation: true,
-            features: Vec::new(),
-            settings: BTreeMap::new(),
-            root: std::path::PathBuf::from("native-mods/pages/1.0.0"),
-            plugins: Vec::new(),
-            hooks: Vec::new(),
-        };
-        let plain = package_digest(&package);
-        assert_eq!(
-            plain,
-            settings_digest(&package.settings),
-            "no plugin: as before"
-        );
-        package.plugins.push(crate::enabled::EnabledPlugin {
-            path: "plugin/pages.dll".into(),
+    fn all_platform_plugin_descriptors_and_hooks_are_in_the_identity() {
+        let settings = BTreeMap::new();
+        let plugin = |platform: &str| crate::index::Plugin {
+            path: format!("plugin/{platform}.dll"),
+            url: format!("https://one.invalid/{platform}.dll"),
+            size: 7,
             sha256: "a".repeat(64),
-            abi: 1,
-        });
-        let one = package_digest(&package);
-        assert_ne!(one, plain);
-        package.plugins[0].sha256 = "b".repeat(64);
-        assert_ne!(package_digest(&package), one, "other bytes, another term");
+            abi: crate::index::PLUGIN_ABI,
+            platform: platform.into(),
+        };
+        let mut package = package("plugins", "1.0.0", &[]);
+        package.plugins = vec![plugin("windows-x86_64"), plugin("linux-x86_64")];
+        let baseline = package_digest(&package, &settings);
+
+        for edit in ["hash", "hook", "abi", "platform", "path", "size"] {
+            let mut changed = package.clone();
+            match edit {
+                "hash" => changed.plugins[1].sha256 = "b".repeat(64),
+                "abi" => changed.plugins[1].abi += 1,
+                "platform" => changed.plugins[1].platform = "macos-aarch64".into(),
+                "path" => changed.plugins[1].path.push_str(".new"),
+                "size" => changed.plugins[1].size += 1,
+                "hook" => changed.hooks.push(crate::index::HookDecl {
+                    target: "plugins::tick".into(),
+                    kind: crate::index::HookKind::Find,
+                    signature: "48 89".into(),
+                    offset: 0,
+                    expected: "48 89".into(),
+                    access: crate::index::HookUse::Chain,
+                    steal: None,
+                    replacement: None,
+                    slot: None,
+                }),
+                _ => unreachable!(),
+            }
+            assert_ne!(package_digest(&changed, &settings), baseline, "{edit}");
+        }
+
+        let mut reordered = package.clone();
+        reordered.plugins.reverse();
+        assert_eq!(package_digest(&reordered, &settings), baseline);
+        let mut mirror = package;
+        mirror.plugins[0].url = "https://mirror.invalid/plugin.dll".into();
+        assert_eq!(package_digest(&mirror, &settings), baseline);
+        let mut named = mirror.clone();
+        named.authors.push("A verified author".into());
+        assert_ne!(package_digest(&named, &settings), baseline);
+        named = mirror.clone();
+        named.name.push_str(" updated");
+        assert_ne!(package_digest(&named, &settings), baseline);
+        let mut declared_setting = mirror.clone();
+        declared_setting
+            .settings
+            .insert("radius".into(), Setting::Int(10));
+        assert_ne!(package_digest(&declared_setting, &settings), baseline);
+        assert_ne!(
+            package_digest(
+                &mirror,
+                &BTreeMap::from([("radius".into(), Setting::Int(11))])
+            ),
+            baseline
+        );
     }
 
     #[test]
@@ -365,11 +450,15 @@ mod tests {
             "download URLs do not change package contents"
         );
 
+        let mut package = package("bigmap", "0.3.0", &[]);
+        package.simulation = true;
+        package.files = vec![first.clone(), second.clone()];
         let mut unchanged = enabled(&[("octree_depth", Setting::Int(10))], false)
             .packages
             .remove(0);
-        unchanged.files_sha256 = files_digest(&[first.clone(), second.clone()]);
-        let before = package_digest(&unchanged);
+        unchanged.files_sha256 = files_digest(&package.files);
+        unchanged.identity_sha256 = package_digest(&package, &unchanged.settings);
+        let before = unchanged.identity_sha256.clone();
         let before_term = terms(
             &Enabled {
                 format: FORMAT,
@@ -382,26 +471,33 @@ mod tests {
 
         let changed = FileEntry {
             sha256: "c".repeat(64),
-            ..first
+            ..first.clone()
         };
-        let mut updated = unchanged;
-        updated.files_sha256 = files_digest(&[changed, second]);
-        assert_ne!(package_digest(&updated), before);
-        let mut reordered_features = updated.clone();
+        let mut updated_package = package.clone();
+        updated_package.files = vec![changed, second.clone()];
+        let updated_identity = package_digest(&updated_package, &unchanged.settings);
+        assert_ne!(updated_identity, before);
+        let mut updated = unchanged.clone();
+        updated.files_sha256 = files_digest(&updated_package.files);
+        updated.identity_sha256 = updated_identity;
+        let mut reordered_features = package.clone();
         reordered_features.features = vec!["first.feature".into(), "second.feature".into()];
-        let first_order_digest = package_digest(&reordered_features);
+        let first_order_digest = package_digest(&reordered_features, &unchanged.settings);
         reordered_features.features.reverse();
         assert_ne!(
-            package_digest(&reordered_features),
+            package_digest(&reordered_features, &unchanged.settings),
             first_order_digest,
             "feature order changes the hook plan"
         );
-        let mut with_dependency = updated.clone();
+        let mut with_dependency = updated_package.clone();
         with_dependency.depends.push(crate::index::Dependency {
             id: "other".into(),
             version: "^1.0".into(),
         });
-        assert_ne!(package_digest(&with_dependency), package_digest(&updated));
+        assert_ne!(
+            package_digest(&with_dependency, &unchanged.settings),
+            package_digest(&updated_package, &unchanged.settings)
+        );
         let after_term = terms(
             &Enabled {
                 format: FORMAT,

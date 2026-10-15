@@ -63,6 +63,32 @@ pub fn feature(id: &str) -> Option<&'static Active> {
     PLAN.get()?.feature(id)
 }
 
+/// Losing a required core target must never turn its bytes into an
+/// unprotected plugin patch site.
+#[cfg(any(test, all(windows, target_arch = "x86_64")))]
+fn core_sites(
+    profiles: &[Profile],
+    code: &[u8],
+    text_rva: u64,
+    base: usize,
+) -> Result<Vec<usize>, String> {
+    let mut sites = Vec::new();
+    for profile in profiles {
+        let resolved = tpf3mp_hookcore::profile::resolve(profile, code, text_rva)
+            .map_err(|error| format!("cannot protect core profile {}: {error:?}", profile.name))?;
+        for target in resolved.targets {
+            let address = usize::try_from(target.address)
+                .ok()
+                .and_then(|rva| base.checked_add(rva))
+                .ok_or_else(|| {
+                    format!("core target {} is outside the address space", target.name)
+                })?;
+            sites.push(address);
+        }
+    }
+    Ok(sites)
+}
+
 /// Loads the plan's plugins and patches the functions they attach to
 /// ([`crate::plugins`]), before any of the hook's own patches, whose
 /// functions (`profiles`' targets) no plugin may patch. Any failure loads
@@ -71,7 +97,7 @@ pub fn feature(id: &str) -> Option<&'static Active> {
 #[cfg(all(windows, target_arch = "x86_64"))]
 #[allow(unsafe_code)]
 pub(crate) fn load_plugins(profiles: &[Profile], log: &mut Logger) -> Result<(), String> {
-    use tpf3mp_hookcore::{pe::PeHeaders, profile};
+    use tpf3mp_hookcore::pe::PeHeaders;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 
     use crate::plugins;
@@ -93,13 +119,7 @@ pub(crate) fn load_plugins(profiles: &[Profile], log: &mut Logger) -> Result<(),
     // SAFETY: .text is mapped there for its virtual size, and only read.
     let code =
         unsafe { std::slice::from_raw_parts(start as *const u8, text.virtual_size as usize) };
-    let core: Vec<usize> = profiles
-        .iter()
-        .filter_map(|p| profile::resolve(p, code, u64::from(text.virtual_address)).ok())
-        .flat_map(|resolved| resolved.targets)
-        .filter_map(|target| usize::try_from(target.address).ok())
-        .map(|rva| base + rva)
-        .collect();
+    let core = core_sites(profiles, code, u64::from(text.virtual_address), base)?;
     // A slot's table lies in the game's data: read only where readable.
     let pointer = |at: usize| {
         crate::image::readable(at, 8).then(|| {
@@ -112,6 +132,13 @@ pub(crate) fn load_plugins(profiles: &[Profile], log: &mut Logger) -> Result<(),
         found.extend(plugins::locate(package, code, start, &pointer)?);
     }
     let sites = plugins::arrange(found.clone(), &core)?;
+    // Verify the whole plan before loading any library: loading invokes
+    // native startup code even before its explicit plugin entry is called.
+    for package in &plan.plugins {
+        for plugin in &package.plugins {
+            plugins::verify(&package.root.join(&plugin.path), &plugin.sha256)?;
+        }
+    }
     let mut started = plugins::Started::default();
     for package in &plan.plugins {
         let own: Vec<plugins::Found> = found
@@ -193,6 +220,24 @@ fn open(path: &std::path::Path) -> Result<tpf3mp_plugin_abi::Init, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_core_target_refuses_plugin_preflight() {
+        let profile = |name: &str, signature: &str| {
+            Profile::from_toml(&format!(
+                "name = '{name}'\n[build]\nsha256 = '00'\n[[target]]\nname = 'step'\nsignature = '{signature}'\nprologue = '{signature}'\n"
+            ))
+            .unwrap()
+        };
+        let good = profile("good", "40 53");
+        let missing = profile("missing", "AA BB");
+        assert_eq!(
+            core_sites(std::slice::from_ref(&good), &[0x40, 0x53], 0x1000, 0x2000),
+            Ok(vec![0x3000])
+        );
+        let error = core_sites(&[good, missing], &[0x40, 0x53], 0x1000, 0x2000).unwrap_err();
+        assert!(error.contains("cannot protect core profile missing"));
+    }
 
     #[test]
     fn a_target_counts_from_any_matching_profile() {
