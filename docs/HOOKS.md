@@ -3197,8 +3197,10 @@ point after every segment (reported 2026-10-15).
 The hook does the callback's part later, from what the room built, and
 never hands the callback a result of its own:
 1. At the click, the add's detour reads the callback as `UpdateEngine`
-   built it (busy byte 1, functor inline) and keeps that one click; any
-   later click of any tool replaces it.
+   built it (busy byte 1, functor inline) and keeps that one click; a
+   later click of the street or track tool replaces it. A script's build
+   (a mod's follow-up, `playerInitiated` too) leaves it, and picking
+   another tool closes this one.
 2. The mod's `guiUpdate` tells the hook the ticket it handed the click to
    the room with (`chainClick`), or that it handed nothing over.
 3. While the room's actions are applied, each build's edges are copied out
@@ -3218,7 +3220,8 @@ never hands the callback a result of its own:
    callback would have built.
 
 The click is dropped, and the tool left as the game left it, when the
-player starts a segment, the tool misses frames (closed), the room
+player starts a segment (even one let go again before the room built),
+the tool misses frames (closed), the room
 refuses or does not apply the build or applies it without such an edge,
 the game leaves the room, or 15 s pass. The direction rule is the
 game's, with one difference: the game counts the other network's edges

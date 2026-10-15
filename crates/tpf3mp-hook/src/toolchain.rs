@@ -21,7 +21,8 @@
 //!    the callback): the click's callback is read as `UpdateEngine` builds
 //!    it ([`read_click`]): the tool, the clicked end, the start point the
 //!    next segment takes and the two settings bytes the callback reads.
-//!    One click is kept; any later click of any tool replaces it.
+//!    One click is kept; a later click of the street or track tool
+//!    replaces it (a script's build, say a mod's follow-up, does not).
 //! 2. **At the hand-over** (the mod's GUI script hands the click's build
 //!    to the room): the click is bound to the ticket the room's answer will
 //!    carry ([`bind`]), or dropped when it was not handed over.
@@ -43,8 +44,9 @@
 //!    [`direction_bytes`]).
 //!
 //! The click is dropped, and the tool left as the game left it, when the
-//! player starts a segment, the tool is closed (it missed a frame), the
-//! room refuses the action or applies it without such an edge, the game
+//! player starts a segment (even one let go again before the room
+//! built), the tool is closed (it missed frames, as when another tool is
+//! picked), the room refuses the action or applies it without such an edge, the game
 //! leaves the room, or [`LIMIT`] passes. Nothing is built and no command is
 //! queued, so lockstep is untouched.
 
@@ -407,8 +409,8 @@ pub struct Chain {
 }
 
 impl Chain {
-    /// A player's click of any tool: `click` is the street or track tool's,
-    /// read, or `None` for any other (which drops the kept one).
+    /// A click of the street or track tool: `click` as read, or `None` when
+    /// it did not read (which drops the kept one too).
     pub fn click(&mut self, number: u64, click: Option<Click>, now: Instant) {
         self.pending = click.map(|click| Pending {
             click,
@@ -559,20 +561,9 @@ impl Chain {
             self.pending = None;
             return Step::Drop("the tool was closed");
         }
-        let Stage::Built {
-            edges,
-            seen: Some((direction, at)),
-        } = &p.stage
-        else {
-            return Step::Wait;
-        };
-        if frame.saturating_sub(*at) > FRESH {
-            return Step::Wait;
-        }
-        let Some(found) = find(edges, p.click.end) else {
-            return Step::Wait;
-        };
-        let direction = *direction;
+        // The tool's own state, from the click's callback on, whatever the
+        // room has done: a start point of the player's ends the click for
+        // good, even if the player lets it go again before the room built.
         let Some(tool) = read(this) else {
             self.pending = None;
             return Step::Drop("the tool does not read");
@@ -584,17 +575,32 @@ impl Chain {
             "the player started a segment"
         } else if tool.settings != p.click.settings {
             "the tool's settings changed"
-        } else if tool.continues == 0 || !p.click.continues {
-            "the tool's settings do not continue"
         } else {
-            return Step::Start {
-                number: p.number,
-                tool: this,
-                found,
-                start: p.click.start,
-                direction,
-                kind: p.click.kind,
+            let Stage::Built {
+                edges,
+                seen: Some((direction, at)),
+            } = &p.stage
+            else {
+                return Step::Wait;
             };
+            if frame.saturating_sub(*at) > FRESH {
+                return Step::Wait;
+            }
+            let Some(found) = find(edges, p.click.end) else {
+                return Step::Wait;
+            };
+            if tool.continues == 0 || !p.click.continues {
+                "the tool's settings do not continue"
+            } else {
+                return Step::Start {
+                    number: p.number,
+                    tool: this,
+                    found,
+                    start: p.click.start,
+                    direction: *direction,
+                    kind: p.click.kind,
+                };
+            }
         };
         self.pending = None;
         Step::Drop(why)
@@ -681,21 +687,22 @@ pub fn set_step_hooked(hooked: bool) {
 }
 
 /// Called by the add's detour for each of the player's builds in the room's
-/// game, click `number`, before `Add` takes `callback`.
+/// game, click `number`, before `Add` takes `callback`. Only a click of the
+/// street or track tool replaces the kept one: a script's build (a mod's
+/// follow-up, also the player's) leaves it, and another tool's click comes
+/// from another tool, so the street builder misses frames and drops it.
 pub fn before_add(return_address: usize, callback: usize, number: u64) {
-    let ours = enabled() && return_address == ADD_RETURN.load(Ordering::Acquire);
-    let click = if ours {
-        match read_click(&crate::modules::Process, callback) {
-            Ok(click) => Some(click),
-            Err(why) => {
-                log_once(format!(
-                    "street tool: does not continue, the click does not read as the game's: {why}"
-                ));
-                None
-            }
+    if !enabled() || return_address != ADD_RETURN.load(Ordering::Acquire) {
+        return;
+    }
+    let click = match read_click(&crate::modules::Process, callback) {
+        Ok(click) => Some(click),
+        Err(why) => {
+            log_once(format!(
+                "street tool: does not continue, the click does not read as the game's: {why}"
+            ));
+            None
         }
-    } else {
-        None
     };
     let mut chain = chain();
     chain.click(number, click, Instant::now());
@@ -1321,7 +1328,7 @@ mod tests {
         let now = Instant::now();
         let read = |_: usize| Some(tool_now());
 
-        // A newer click of any tool.
+        // A newer click of the tool that did not read.
         let mut chain = Chain::default();
         built(&mut chain, now);
         chain.click(8, None, now);
@@ -1422,6 +1429,70 @@ mod tests {
             );
             assert_eq!(chain.step(TOOL, 2, now, true, &read), Step::Nothing);
         }
+    }
+
+    #[test]
+    fn a_start_the_player_picked_and_let_go_while_the_room_built_ends_the_click() {
+        // The room is slow: the player picks another start point, drags a
+        // few frames and right-clicks it away before the click's build
+        // comes. The tool then has no start point again, but the player
+        // moved on: the old segment must not come back.
+        let now = Instant::now();
+        let mut chain = Chain::default();
+        let idle = |_: usize| Some(tool_now());
+        let started = |_: usize| {
+            Some(ToolNow {
+                has_start: 1,
+                dragging: 1,
+                ..tool_now()
+            })
+        };
+        chain.click(7, Some(click(true, true, 1)), now);
+        chain.bind(7, Some(900));
+        assert_eq!(chain.step(TOOL, 1, now, true, &idle), Step::Wait);
+        assert_eq!(
+            chain.step(TOOL, 2, now, true, &started),
+            Step::Drop("the player started a segment")
+        );
+        assert_eq!(chain.ordered(), None, "the replay reads nothing more");
+        chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]);
+        assert_eq!(chain.poll(now, true), (None, None));
+        chain.seen(11, 1, 0, 3);
+        assert_eq!(chain.step(TOOL, 3, now, true, &idle), Step::Nothing);
+        // Before the click's callback ran (busy), the tool's state is not
+        // yet the player's.
+        let mut chain = Chain::default();
+        chain.click(7, Some(click(true, true, 1)), now);
+        let busy = |_: usize| {
+            Some(ToolNow {
+                busy: 1,
+                has_start: 1,
+                ..tool_now()
+            })
+        };
+        assert_eq!(chain.step(TOOL, 1, now, true, &busy), Step::Wait);
+        assert_eq!(chain.step(TOOL, 2, now, true, &idle), Step::Wait);
+    }
+
+    #[test]
+    fn only_the_street_tools_click_replaces_the_kept_one() {
+        // A mod's follow-up build (playerInitiated too) reaches the add's
+        // detour from elsewhere: the street tool's click stays kept.
+        ADD_RETURN.store(0x1_4058_91b4, Ordering::Release);
+        STEP_HOOKED.store(true, Ordering::Release);
+        {
+            let mut chain = chain();
+            built(&mut chain, Instant::now());
+        }
+        before_add(0x1_4000_1234, CALLBACK, 8);
+        assert!(chain().take(7), "kept through the script's build");
+        // The street tool's own click replaces it, even one that does not
+        // read (nothing at the callback here).
+        built(&mut chain(), Instant::now());
+        before_add(0x1_4058_91b4, CALLBACK, 9);
+        assert!(!chain().take(7));
+        ADD_RETURN.store(0, Ordering::Release);
+        STEP_HOOKED.store(false, Ordering::Release);
     }
 
     #[test]
