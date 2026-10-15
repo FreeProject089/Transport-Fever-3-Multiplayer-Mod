@@ -416,16 +416,39 @@ impl Store {
         id: &str,
         source: &dyn Source,
     ) -> Result<Vec<String>, StoreError> {
+        self.install_resolved(context, id, None, source)
+    }
+
+    /// Installs `id` in exactly `version` (a room's) and what it needs, or
+    /// makes that version current again when it is on disk.
+    pub fn install_exact(
+        &mut self,
+        context: resolve::Context<'_>,
+        id: &str,
+        version: &str,
+        source: &dyn Source,
+    ) -> Result<Vec<String>, StoreError> {
+        self.install_resolved(context, id, Some(version), source)
+    }
+
+    fn install_resolved(
+        &mut self,
+        context: resolve::Context<'_>,
+        id: &str,
+        version: Option<&str>,
+        source: &dyn Source,
+    ) -> Result<Vec<String>, StoreError> {
         let installed: Vec<&Package> = self
             .registry
             .packages
             .values()
             .filter_map(Installed::package)
             .collect();
-        let order: Vec<Package> = resolve::resolve(context, &[id], &installed)?
-            .into_iter()
-            .cloned()
-            .collect();
+        let order = match version {
+            Some(version) => resolve::resolve_exact(context, id, version, &installed),
+            None => resolve::resolve(context, &[id], &installed),
+        };
+        let order: Vec<Package> = order?.into_iter().cloned().collect();
         let mut done = Vec::new();
         for package in &order {
             self.install_one(package, source)?;
@@ -662,6 +685,17 @@ impl Store {
             .get_mut(id)
             .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?
             .enabled = on;
+        self.save()
+    }
+
+    /// Puts `id`'s settings back to its package's defaults.
+    pub fn reset_settings(&mut self, id: &str) -> Result<(), StoreError> {
+        self.registry
+            .packages
+            .get_mut(id)
+            .ok_or_else(|| StoreError::NotInstalled(id.to_owned()))?
+            .settings
+            .clear();
         self.save()
     }
 

@@ -263,6 +263,18 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
         diagnostics.set_on(Remembered::load(file).diagnostics.unwrap_or(true));
     }
     config.diagnostics = Some(diagnostics);
+    // Native mods from the project's signed index, when this build has its
+    // key (D29, docs/NATIVE_MODS.md): none otherwise.
+    let keys = tpf3mp_nativemods::signed::trusted_keys();
+    if !keys.is_empty() {
+        config.native = Some(tpf3mp_agent::native_mods::NativeSetup {
+            source: Arc::new(tpf3mp_nativemods::store::Http::github(
+                update::REPOSITORY,
+                concat!("TPF3-MP/", env!("CARGO_PKG_VERSION")),
+            )),
+            keys,
+        });
+    }
     if args.browser {
         return in_browser(&runtime, config, serving);
     }

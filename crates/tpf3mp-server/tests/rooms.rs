@@ -679,6 +679,7 @@ async fn an_overlong_mod_list_is_refused() {
             })
             .collect(),
         unlisted: None,
+        native: Vec::new(),
     };
     assert_eq!(
         ann.client.declare_content(manifest).await,

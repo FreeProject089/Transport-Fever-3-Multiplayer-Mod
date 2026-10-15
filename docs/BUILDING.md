@@ -329,15 +329,19 @@ because the tool had configured the switches of its other platform
 tracks, whose nodes no game's build has). A configuration whose node is
 one of those left-out nodes, or whose turns or crosswalks name one of
 those edges, does not travel. The station builds those tracks and their
-switches itself.
+switches itself. It also carries fewer configurations: counted with its
+own switches, a large station's preview had 99, over the 64 an action
+holds.
 
-The configurations on the construction's own tracks that are joined to
-something existing, which every game leaves to the construction as above
-(`apply.ownJunctions`), the originator leaves out as well
-(`capture.connection`): a large rail station joined to track ends came
-to 144 configurations, mostly its own switches, over the 64 an action
-holds, and the hook refused the build ("at most 64 items", 2026-10-10).
-What every game builds is the same either way.
+Capture also applies replay's construction-owned junction rule before
+encoding a joined station. A 144-setting station encountered on 2026-10-10
+would otherwise exceed the action's 64-setting limit even though the station
+itself creates most of those switches. This only removes settings for the
+construction's own network; settings for external junctions still travel.
+Where the game's one construction proposal refuses a snap onto existing
+track, see the rejoin path below: it changes that track only after the
+game accepted the construction with it taken away, and lays it again in
+a second command, which is not atomic with the first.
 
 `lua_mod.rs` reproduces the recorded depot topology: before the fix its
 first build contains four duplicate nodes and edges; afterwards it contains

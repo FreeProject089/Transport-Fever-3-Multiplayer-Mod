@@ -1,5 +1,5 @@
-//! Native mods the player enabled (proposed D29, docs/NATIVE_MODS.md), handed
-//! to the game the launcher starts.
+//! Native mods (D29, docs/NATIVE_MODS.md): what the launcher hands the game
+//! it starts, what it declares to a room, and the player's panel of them.
 //!
 //! Before the game starts, the launcher writes the enabled packages for the
 //! game's build (the executable's SHA-256) to `native-mods/enabled.json` in
@@ -7,24 +7,101 @@
 //! (`TPF3MP_NATIVE_MODS`); the hook enables nothing else. With nothing
 //! enabled, or no native mod installed, the game gets no variable and the
 //! executable is not even hashed.
+//!
+//! The simulation-changing ones among them are the game's native terms
+//! ([`tpf3mp_nativemods::terms`]): the launcher declares them in the content
+//! manifest, with their settings for a room's owner ([`NativeMod`]), and a
+//! member who joins a room whose terms differ gets the room's versions from
+//! the signed index and the room's settings ([`match_room`]), never from
+//! another player. Mods from Mod Hub are not native: players get those
+//! through their own game (D28).
+//!
+//! Downloads need the launcher's HTTPS source ([`NativeSetup`]); this crate
+//! builds without one, and a launcher built without the native-mods key
+//! offers no native mod at all.
 
-use std::path::Path;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, PoisonError},
+    time::SystemTime,
+};
 
-use tpf3mp_nativemods::{FOLDER, enabled, fetch::sha256_of_file, store::Store};
+use serde::Serialize;
+use tpf3mp_nativemods::{
+    FOLDER, enabled,
+    enabled::Enabled,
+    features::{self, BUILT_IN, Effect},
+    fetch::sha256_of_file,
+    index::{Index, Package, Setting},
+    resolve,
+    store::{Source, Store, StoreError},
+    terms,
+};
+use tpf3mp_proto::{NativeMod, NativeSetting, NativeValue, Text};
 use tracing::{info, warn};
 
-/// The variable for the game's environment naming the native mods enabled
-/// for `exe`, with the launcher's data folder `data_dir`; `None` when none
-/// are. A registry that cannot be read stops the start: what it enables
-/// cannot be told (fail closed).
-pub fn game_env(data_dir: &Path, exe: &Path) -> Result<Option<(String, String)>, String> {
-    let root = data_dir.join(FOLDER);
-    let store = Store::open(&root).map_err(|error| format!("native mods: {error}"))?;
-    if !store.registry().packages.values().any(|i| i.enabled) {
-        return Ok(None);
+/// Where the launcher gets native mods: the project's signed index, as the
+/// launcher binary fetches it, and the keys it is signed with.
+#[derive(Clone)]
+pub struct NativeSetup {
+    pub source: Arc<dyn Source + Send + Sync>,
+    pub keys: Vec<Vec<u8>>,
+}
+
+impl std::fmt::Debug for NativeSetup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeSetup")
+            .field("keys", &self.keys.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// What the game the launcher starts gets of the native mods.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GameNative {
+    /// The variable naming the enabled list, if any is enabled.
+    pub env: Option<(String, String)>,
+    /// The simulation-changing ones, as the room compares them.
+    pub terms: Vec<NativeMod>,
+}
+
+fn store(data_dir: &Path) -> Result<Store, String> {
+    Store::open(data_dir.join(FOLDER)).map_err(|error| format!("native mods: {error}"))
+}
+
+/// The SHA-256 of the game's executable `exe`, computed once for each
+/// version of the file.
+pub fn build_of(exe: &Path) -> Result<String, String> {
+    type Seen = Option<(PathBuf, u64, Option<SystemTime>, String)>;
+    static SEEN: Mutex<Seen> = Mutex::new(None);
+    let meta = std::fs::metadata(exe)
+        .map_err(|error| format!("native mods: cannot read {}: {error}", exe.display()))?;
+    let (len, modified) = (meta.len(), meta.modified().ok());
+    let mut seen = SEEN.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((path, l, m, build)) = seen.as_ref()
+        && path == exe
+        && *l == len
+        && *m == modified
+    {
+        return Ok(build.clone());
     }
     let build = sha256_of_file(exe)
         .map_err(|error| format!("native mods: cannot hash {}: {error}", exe.display()))?;
+    *seen = Some((exe.to_owned(), len, modified, build.clone()));
+    Ok(build)
+}
+
+/// The variable for the game's environment naming the native mods enabled
+/// for `exe`, with the launcher's data folder `data_dir`, and their terms.
+/// A registry that cannot be read stops the start: what it enables cannot
+/// be told (fail closed).
+pub fn game_env(data_dir: &Path, exe: &Path) -> Result<GameNative, String> {
+    let store = store(data_dir)?;
+    if !store.registry().packages.values().any(|i| i.enabled) {
+        return Ok(GameNative::default());
+    }
+    let build = build_of(exe)?;
     let (path, left_out) = store
         .write_enabled(&build)
         .map_err(|error| format!("native mods: {error}"))?;
@@ -32,10 +109,394 @@ pub fn game_env(data_dir: &Path, exe: &Path) -> Result<Option<(String, String)>,
         warn!(%id, "the native mod is enabled but not for this build of the game; left out");
     }
     info!(file = %path.display(), "the game gets the enabled native mods");
-    Ok(Some((
-        enabled::ENV.to_owned(),
-        path.to_string_lossy().into_owned(),
-    )))
+    let list = enabled::read(&path)?;
+    Ok(GameNative {
+        env: Some((enabled::ENV.to_owned(), path.to_string_lossy().into_owned())),
+        terms: room_terms(&store, &list)?,
+    })
+}
+
+/// The terms the next game on `exe` runs with, as [`game_env`] would hand
+/// them to it, without writing anything.
+pub fn next_terms(data_dir: &Path, exe: &Path) -> Result<Vec<NativeMod>, String> {
+    let store = store(data_dir)?;
+    if !store.registry().packages.values().any(|i| i.enabled) {
+        return Ok(Vec::new());
+    }
+    let (list, _) = store
+        .enabled_for(&build_of(exe)?)
+        .map_err(|error| format!("native mods: {error}"))?;
+    room_terms(&store, &list)
+}
+
+/// The simulation-changing packages of `list` as a room's native mods.
+fn room_terms(store: &Store, list: &Enabled) -> Result<Vec<NativeMod>, String> {
+    terms::terms(list, BUILT_IN)
+        .into_iter()
+        .map(|term| {
+            let package = list
+                .packages
+                .iter()
+                .find(|p| p.id == term.id)
+                .ok_or_else(|| format!("native mods: {} is not enabled", term.id))?;
+            let name = store
+                .registry()
+                .packages
+                .get(&term.id)
+                .and_then(|i| i.package())
+                .map_or(term.id.as_str(), |p| p.name.as_str());
+            let settings = package
+                .settings
+                .iter()
+                .map(|(key, value)| {
+                    Ok(NativeSetting {
+                        key: Text::new(key)
+                            .map_err(|_| format!("the setting {key} is too long"))?,
+                        value: to_value(value)?,
+                    })
+                })
+                .collect::<Result<_, String>>()?;
+            Ok(NativeMod {
+                id: Text::new(&term.id).map_err(|_| format!("the id {} is too long", term.id))?,
+                version: Text::new(term.mod_version())
+                    .map_err(|_| format!("the version of {} is too long", term.id))?,
+                name: Text::lossy(name),
+                settings,
+            })
+        })
+        .collect()
+}
+
+/// A setting as a room tells it.
+pub fn to_value(setting: &Setting) -> Result<NativeValue, String> {
+    Ok(match setting {
+        Setting::Bool(on) => NativeValue::Bool(*on),
+        Setting::Int(n) => NativeValue::Int(*n),
+        Setting::Text(text) => NativeValue::Text(
+            Text::new(text).map_err(|_| "a native mod's text setting is too long".to_owned())?,
+        ),
+    })
+}
+
+/// A setting a room told, as the store keeps it.
+pub fn from_value(value: &NativeValue) -> Setting {
+    match value {
+        NativeValue::Bool(on) => Setting::Bool(*on),
+        NativeValue::Int(n) => Setting::Int(*n),
+        NativeValue::Text(text) => Setting::Text(text.as_str().to_owned()),
+    }
+}
+
+/// The native mods panel: every package of the last signed index for this
+/// game's build, and every one installed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct NativeView {
+    /// Whether this launcher was built with the native-mods key: without
+    /// it, it offers none.
+    pub available: bool,
+    /// The serial of the index shown, once one was accepted.
+    pub serial: Option<u64>,
+    pub packages: Vec<NativeRow>,
+    /// Why the panel could not be read, if it could not.
+    pub problem: Option<String>,
+}
+
+/// One native mod in the panel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeRow {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// The mod's own project page, to open in the browser.
+    pub homepage: Option<String>,
+    /// Whether every game of a room must run it alike.
+    pub simulation: bool,
+    /// The newest version the index has for this game's build.
+    pub available: Option<String>,
+    pub installed: Option<String>,
+    /// The version a rollback goes back to.
+    pub previous: Option<String>,
+    pub enabled: bool,
+    /// Whether the index still lists it.
+    pub listed: bool,
+    pub settings: Vec<NativeSettingRow>,
+}
+
+/// One setting of an installed native mod: the player's value, else the
+/// default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeSettingRow {
+    pub key: String,
+    pub value: Setting,
+    pub default: Setting,
+}
+
+/// Whether `package` changes the simulation: it says so, or a feature it
+/// names does (an unknown one counts, fail closed).
+fn changes_simulation(package: &Package) -> bool {
+    package.simulation
+        || package
+            .features
+            .iter()
+            .any(|id| features::find(BUILT_IN, id).is_none_or(|f| f.effect == Effect::Simulation))
+}
+
+/// The panel for a game whose executable hashes to `build`, if known.
+pub fn view(data_dir: &Path, setup: Option<&NativeSetup>, build: Option<&str>) -> NativeView {
+    let Some(setup) = setup.filter(|setup| !setup.keys.is_empty()) else {
+        return NativeView::default();
+    };
+    let mut view = NativeView {
+        available: true,
+        ..NativeView::default()
+    };
+    let mut store = match store(data_dir) {
+        Ok(store) => store,
+        Err(error) => {
+            view.problem = Some(error);
+            return view;
+        }
+    };
+    let index = match store.cached_index(&setup.keys) {
+        Ok(index) => Some(index),
+        Err(StoreError::NoIndex) => None,
+        Err(error) => {
+            view.problem = Some(format!("native mods: {error}"));
+            None
+        }
+    };
+    view.serial = index.as_ref().map(|index| index.serial);
+    let mut ids: Vec<&str> = store
+        .registry()
+        .packages
+        .keys()
+        .map(String::as_str)
+        .collect();
+    if let Some(index) = &index {
+        ids.extend(index.packages.iter().map(|p| p.id.as_str()));
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    view.packages = ids
+        .into_iter()
+        .filter_map(|id| row(&store, index.as_ref(), id, build))
+        .collect();
+    view
+}
+
+fn row(store: &Store, index: Option<&Index>, id: &str, build: Option<&str>) -> Option<NativeRow> {
+    let installed = store.registry().packages.get(id);
+    let versions = index.map(|index| index.versions(id)).unwrap_or_default();
+    let available = versions
+        .iter()
+        .find(|p| build.is_none_or(|build| p.runs_on(build)))
+        .copied();
+    let shown = installed.and_then(|i| i.package()).or(available)?;
+    let settings = installed
+        .and_then(|i| i.package().map(|p| (i, p)))
+        .map(|(i, package)| {
+            package
+                .settings
+                .iter()
+                .map(|(key, default)| NativeSettingRow {
+                    key: key.clone(),
+                    value: i.settings.get(key).unwrap_or(default).clone(),
+                    default: default.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(NativeRow {
+        id: id.to_owned(),
+        name: shown.name.clone(),
+        description: shown.description.clone(),
+        homepage: shown.homepage.clone(),
+        simulation: changes_simulation(shown),
+        available: available.map(|p| p.version.clone()),
+        installed: installed.map(|i| i.current.clone()),
+        previous: installed.and_then(|i| i.previous.clone()),
+        enabled: installed.is_some_and(|i| i.enabled),
+        listed: !versions.is_empty(),
+        settings,
+    })
+}
+
+/// What the player does with a native mod in the panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    /// Fetch the signed index again.
+    Refresh,
+    /// Install the newest version for this build, or upgrade to it.
+    Install(String),
+    Uninstall(String),
+    Rollback(String),
+    Enable(String, bool),
+    Set(String, String, Setting),
+    Reset(String),
+}
+
+/// Carries out `change`, for a game whose executable hashes to `build`.
+/// Blocking: downloads run here.
+pub fn apply(
+    data_dir: &Path,
+    setup: &NativeSetup,
+    build: Option<&str>,
+    change: Change,
+) -> Result<(), String> {
+    let error = |error: StoreError| format!("native mods: {error}");
+    let mut store = store(data_dir)?;
+    match change {
+        Change::Refresh => store
+            .refresh(setup.source.as_ref(), &setup.keys)
+            .map(drop)
+            .map_err(error),
+        Change::Install(id) => {
+            let build =
+                build.ok_or("start the game once, or name it, so the launcher knows its build")?;
+            let index = index_listing(&mut store, setup, &[(&id, None)])?;
+            let done = store
+                .install(
+                    resolve::Context {
+                        index: &index,
+                        build,
+                        registry: BUILT_IN,
+                    },
+                    &id,
+                    setup.source.as_ref(),
+                )
+                .map_err(error)?;
+            info!(installed = ?done, "installed native mods");
+            Ok(())
+        }
+        Change::Uninstall(id) => store.uninstall(&id).map_err(error),
+        Change::Rollback(id) => store.rollback(&id).map_err(error),
+        Change::Enable(id, on) => store.set_enabled(&id, on).map_err(error),
+        Change::Set(id, key, value) => store.set_setting(&id, &key, value).map_err(error),
+        Change::Reset(id) => store.reset_settings(&id).map_err(error),
+    }
+}
+
+/// The index with every one of `wanted` in it: the cached one, else a
+/// fresh one from the source.
+fn index_listing(
+    store: &mut Store,
+    setup: &NativeSetup,
+    wanted: &[(&str, Option<&str>)],
+) -> Result<Index, String> {
+    let lists = |index: &Index| {
+        wanted.iter().all(|(id, version)| match version {
+            Some(version) => index.package(id, version).is_some(),
+            None => !index.versions(id).is_empty(),
+        })
+    };
+    if let Ok(index) = store.cached_index(&setup.keys)
+        && lists(&index)
+    {
+        return Ok(index);
+    }
+    store
+        .refresh(setup.source.as_ref(), &setup.keys)
+        .map_err(|error| format!("native mods: {error}"))
+}
+
+/// Makes the next game on the build `build` run exactly the room's native
+/// mods `room`: each installed in the room's version from the signed index,
+/// with the room's settings, and enabled; every other simulation-changing
+/// one switched off. Ones that change only what a player sees stay the
+/// player's. Returns whether anything changed, and so whether a running
+/// game must start again to run them. Refused when the index does not list
+/// the room's version for this build, or the result does not match the
+/// room: then that player cannot join.
+pub fn match_room(
+    data_dir: &Path,
+    setup: &NativeSetup,
+    build: &str,
+    room: &[NativeMod],
+) -> Result<bool, String> {
+    let error = |error: StoreError| format!("native mods: {error}");
+    let mut store = store(data_dir)?;
+    let before = store.registry().clone();
+    let wanted: Vec<(&str, Option<&str>)> = room
+        .iter()
+        .map(|m| (m.id.as_str(), Some(m.package_version())))
+        .collect();
+    if !room.is_empty() {
+        let index = index_listing(&mut store, setup, &wanted)?;
+        for native in room {
+            let (id, version) = (native.id.as_str(), native.package_version());
+            let current = store
+                .registry()
+                .packages
+                .get(id)
+                .is_some_and(|i| i.current == version);
+            if !current {
+                let package = index
+                    .package(id, version)
+                    .filter(|p| p.runs_on(build))
+                    .ok_or_else(|| {
+                        format!(
+                            "the signed index has no {} {version} for your game's build",
+                            native.name
+                        )
+                    })?;
+                info!(%id, %version, "installing the room's native mod");
+                store
+                    .install_exact(
+                        resolve::Context {
+                            index: &index,
+                            build,
+                            registry: BUILT_IN,
+                        },
+                        &package.id,
+                        version,
+                        setup.source.as_ref(),
+                    )
+                    .map_err(error)?;
+            }
+            // The room's settings, all of them: a told setting overrides the
+            // default, and none of this player's own stays.
+            store.reset_settings(id).map_err(error)?;
+            for setting in &native.settings {
+                store
+                    .set_setting(id, setting.key.as_str(), from_value(&setting.value))
+                    .map_err(error)?;
+            }
+            store.set_enabled(id, true).map_err(error)?;
+        }
+    }
+    // Another simulation-changing mod would part this game from the room.
+    let others: Vec<String> = store
+        .registry()
+        .packages
+        .iter()
+        .filter(|(id, installed)| {
+            installed.enabled
+                && !room.iter().any(|m| m.id.as_str() == id.as_str())
+                && installed.package().is_some_and(changes_simulation)
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in others {
+        info!(%id, "switching off a native mod the room does not run");
+        store.set_enabled(&id, false).map_err(error)?;
+    }
+    let (list, _) = store.enabled_for(build).map_err(error)?;
+    let ours = room_terms(&store, &list)?;
+    let theirs: BTreeMap<&str, &str> = room
+        .iter()
+        .map(|m| (m.id.as_str(), m.version.as_str()))
+        .collect();
+    let mine: BTreeMap<&str, &str> = ours
+        .iter()
+        .map(|m| (m.id.as_str(), m.version.as_str()))
+        .collect();
+    if theirs != mine {
+        return Err(
+            "your native mods still differ from the room's after installing them: the room's settings could not be matched"
+                .into(),
+        );
+    }
+    Ok(store.registry() != &before)
 }
 
 #[cfg(test)]
@@ -50,7 +511,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("game.exe");
         fs::write(&exe, b"not really a game").unwrap();
-        assert_eq!(game_env(dir.path(), &exe).unwrap(), None);
+        assert_eq!(game_env(dir.path(), &exe).unwrap(), GameNative::default());
 
         // Installed, not enabled.
         let root = dir.path().join(FOLDER);
@@ -60,7 +521,7 @@ mod tests {
             br#"{"format":1,"serial":3,"packages":{}}"#,
         )
         .unwrap();
-        assert_eq!(game_env(dir.path(), &exe).unwrap(), None);
+        assert_eq!(game_env(dir.path(), &exe).unwrap(), GameNative::default());
 
         // Enabled for this build: the game is told where the list is.
         let package = tpf3mp_nativemods::index::Package {
@@ -68,6 +529,7 @@ mod tests {
             version: "1.0.0".into(),
             name: "Pages".into(),
             description: String::new(),
+            homepage: None,
             simulation: false,
             builds: vec![sha256_of_file(&exe).unwrap()],
             features: Vec::new(),
@@ -94,14 +556,14 @@ mod tests {
             .into(),
         };
         fs::write(root.join(REGISTRY), serde_json::to_vec(&registry).unwrap()).unwrap();
-        let (name, path) = game_env(dir.path(), &exe).unwrap().unwrap();
+        let (name, path) = game_env(dir.path(), &exe).unwrap().env.unwrap();
         assert_eq!(name, enabled::ENV);
         let list = enabled::read(Path::new(&path)).unwrap();
         assert_eq!(list.packages[0].id, "pages");
 
         // Another build of the game: the list is empty.
         fs::write(&exe, b"another build").unwrap();
-        let (_, path) = game_env(dir.path(), &exe).unwrap().unwrap();
+        let (_, path) = game_env(dir.path(), &exe).unwrap().env.unwrap();
         assert!(enabled::read(Path::new(&path)).unwrap().packages.is_empty());
 
         // A registry that cannot be read stops the start.
@@ -121,6 +583,7 @@ mod tests {
             version: "1.0.0".into(),
             name: "Big Maps".into(),
             description: String::new(),
+            homepage: None,
             simulation: true,
             builds: vec!["0".repeat(64)],
             features: Vec::new(),
@@ -150,5 +613,192 @@ mod tests {
 
         assert!(game_env(dir.path(), &exe).is_err());
         assert!(!root.join(enabled::FILE).exists());
+    }
+
+    /// A signed index and its files, held in memory, signed with a TEST
+    /// key made for the test.
+    struct Fake {
+        json: Vec<u8>,
+        signature: Vec<u8>,
+        files: BTreeMap<String, Vec<u8>>,
+    }
+
+    impl Source for Fake {
+        fn index(&self) -> Result<(Vec<u8>, Vec<u8>), tpf3mp_nativemods::fetch::FetchError> {
+            Ok((self.json.clone(), self.signature.clone()))
+        }
+
+        fn download(
+            &self,
+            file: &tpf3mp_nativemods::index::FileEntry,
+            path: &Path,
+        ) -> Result<(), tpf3mp_nativemods::fetch::FetchError> {
+            let bytes = self.files.get(&file.url).cloned().unwrap_or_default();
+            tpf3mp_nativemods::fetch::copy_verified(
+                &bytes[..],
+                path,
+                file.size,
+                &file.sha256,
+                |_| {},
+            )
+        }
+    }
+
+    fn native_package(id: &str, version: &str, build: &str) -> (Package, (String, Vec<u8>)) {
+        let bytes = format!("{id} {version}").into_bytes();
+        let url = format!("https://example.invalid/{id}/{version}/data.txt");
+        let package = Package {
+            id: id.into(),
+            version: version.into(),
+            name: format!("{id} mod"),
+            description: String::new(),
+            homepage: Some(format!("https://example.invalid/{id}")),
+            simulation: true,
+            builds: vec![build.into()],
+            features: Vec::new(),
+            settings: BTreeMap::from([
+                ("depth".to_owned(), Setting::Int(10)),
+                ("raster".to_owned(), Setting::Bool(true)),
+            ]),
+            depends: Vec::new(),
+            conflicts: Vec::new(),
+            files: vec![tpf3mp_nativemods::index::FileEntry {
+                path: "data.txt".into(),
+                url: url.clone(),
+                size: bytes.len() as u64,
+                sha256: tpf3mp_nativemods::signed::sha256_hex(&bytes),
+            }],
+            plugins: Vec::new(),
+        };
+        (package, (url, bytes))
+    }
+
+    fn setup(packages: Vec<(Package, (String, Vec<u8>))>) -> NativeSetup {
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+        let index = Index {
+            format: 1,
+            serial: 1,
+            packages: packages.iter().map(|(p, _)| p.clone()).collect(),
+        };
+        let json = serde_json::to_vec(&index).unwrap();
+        let signature = pair.sign(&json).as_ref().to_vec();
+        NativeSetup {
+            source: Arc::new(Fake {
+                json,
+                signature,
+                files: packages.into_iter().map(|(_, file)| file).collect(),
+            }),
+            keys: vec![pair.public_key().as_ref().to_vec()],
+        }
+    }
+
+    /// A member joining a room gets the room's version from the signed
+    /// index, with the room's settings, and leaves off a simulation mod the
+    /// room does not run; then their terms are the room's.
+    #[test]
+    fn a_member_gets_the_rooms_native_mods_from_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game").unwrap();
+        let build = build_of(&exe).unwrap();
+        let setup = setup(vec![
+            native_package("bigmap", "0.3.0", &build),
+            native_package("bigmap", "0.4.0", &build),
+            native_package("other", "1.0.0", &build),
+        ]);
+
+        // The owner: Big Maps 0.3.0, deeper than the default.
+        let owner = dir.path().join("owner");
+        apply(&owner, &setup, Some(&build), Change::Refresh).unwrap();
+        let mut store = Store::open(owner.join(FOLDER)).unwrap();
+        let index = store.cached_index(&setup.keys).unwrap();
+        let context = resolve::Context {
+            index: &index,
+            build: &build,
+            registry: BUILT_IN,
+        };
+        store
+            .install_exact(context, "bigmap", "0.3.0", setup.source.as_ref())
+            .unwrap();
+        store.set_enabled("bigmap", true).unwrap();
+        store
+            .set_setting("bigmap", "depth", Setting::Int(12))
+            .unwrap();
+        let room = next_terms(&owner, &exe).unwrap();
+        assert_eq!(room.len(), 1);
+        assert_eq!(room[0].package_version(), "0.3.0");
+        assert_eq!(room[0].name.as_str(), "bigmap mod");
+
+        // A member with the newest version and another simulation mod.
+        let member = dir.path().join("member");
+        apply(
+            &member,
+            &setup,
+            Some(&build),
+            Change::Install("bigmap".into()),
+        )
+        .unwrap();
+        apply(
+            &member,
+            &setup,
+            Some(&build),
+            Change::Install("other".into()),
+        )
+        .unwrap();
+        apply(
+            &member,
+            &setup,
+            Some(&build),
+            Change::Enable("other".into(), true),
+        )
+        .unwrap();
+        assert_ne!(next_terms(&member, &exe).unwrap(), room);
+
+        assert!(match_room(&member, &setup, &build, &room).unwrap());
+        let theirs = next_terms(&member, &exe).unwrap();
+        assert_eq!(theirs, room, "the same version, settings and nothing else");
+        let row = view(&member, Some(&setup), Some(&build))
+            .packages
+            .into_iter()
+            .find(|row| row.id == "other")
+            .unwrap();
+        assert!(!row.enabled, "the room does not run it");
+        // Matched already: nothing changes, and the game need not restart.
+        assert!(!match_room(&member, &setup, &build, &room).unwrap());
+
+        // A version the index does not have for this build: refused.
+        let mut gone = room.clone();
+        gone[0].version = Text::lossy("9.9.9+0000000000");
+        assert!(match_room(&member, &setup, &build, &gone).is_err());
+
+        // A room without native mods: the member's are switched off.
+        assert!(match_room(&member, &setup, &build, &[]).unwrap());
+        assert!(next_terms(&member, &exe).unwrap().is_empty());
+    }
+
+    #[test]
+    fn settings_travel_as_the_room_tells_them() {
+        for setting in [
+            Setting::Bool(true),
+            Setting::Int(-7),
+            Setting::Text("north".into()),
+        ] {
+            assert_eq!(from_value(&to_value(&setting).unwrap()), setting);
+        }
+        assert!(to_value(&Setting::Text("x".repeat(200))).is_err());
+    }
+
+    #[test]
+    fn without_the_key_the_panel_offers_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(view(dir.path(), None, None), NativeView::default());
+        let mut keyless = setup(Vec::new());
+        keyless.keys.clear();
+        assert!(!view(dir.path(), Some(&keyless), None).available);
+        let shown = view(dir.path(), Some(&setup(Vec::new())), None);
+        assert!(shown.available);
+        assert_eq!(shown.serial, None, "no index fetched yet");
     }
 }

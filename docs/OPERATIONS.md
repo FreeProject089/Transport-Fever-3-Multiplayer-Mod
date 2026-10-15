@@ -87,6 +87,10 @@ sudo rule. It checks every argument and runs no shell:
 ```sh
 ssh <you>@<server> status                 # the container, health, deployed commit
 ssh <you>@<server> logs --since 2h        # --tail 200, --follow
+ssh <you>@<server> logs --grep K7QM2X     # only a session's lines; or a player's (p-…) or room's (r-…)
+ssh <you>@<server> rooms                  # the rooms open now, with their players
+ssh <you>@<server> rooms --invite K7QM2X  # the room a player's invite opens
+ssh <you>@<server> rooms --name ann       # the rooms of players named like ann; --player p-… one player's
 ssh <you>@<server> diagnostics K7QM2X     # a player's diagnostics, or all
 ssh <you>@<server> diagnostics AB2CD3 hook  # one source of a run's
 ssh <you>@<server> diagnostics --name ann   # the sessions of players named like ann
@@ -99,7 +103,8 @@ ssh <you>@<server> deploy 3ad6364         # an earlier commit of main
 commits on it, which passed every check; one deploy runs at a time. SSH
 refuses those accounts a shell, a terminal, file transfer and any
 forwarding, and each use is logged to syslog as `tpf3mp-ctl`, with the
-developer's name (`journalctl -t tpf3mp-ctl`).
+developer's name (`journalctl -t tpf3mp-ctl`), and an invite they looked up
+as `<invite>`: it lets anyone into its room.
 
 - **Setting it up,** once, and after any of its files change:
   `sh deploy/host/install.sh` as root. It checks the sudo rule with
@@ -155,6 +160,12 @@ disk. The log never contains IP addresses or invites.
   launcher shows the player their support code. `docker compose logs |
   grep session=K7QM2X` shows that session; the player ID shows all of that player's sessions,
   and a room ID (`r-…`) the room's life.
+- **A room, by its invite.** A player quotes the invite of a room that
+  misbehaves: `curl http://127.0.0.1:9470/rooms?invite=K7QM2X` gives that
+  room (404 when none open now has it), with its ID, name, phase and
+  players (ID, name, connected). `/rooms` lists every room open now,
+  `?player=p-…` and `?name=ann` (any case) those of a player. The invite
+  itself is never written to a log; the room's ID is: grep for it.
 - **For a bug report:** `./collect-logs.sh` in `deploy/` writes one
   archive: the log of the last 24 hours (`--since 2h` for another window,
   `--for <ID>` for one session, player or room), the container's state

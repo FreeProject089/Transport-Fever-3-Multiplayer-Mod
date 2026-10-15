@@ -152,6 +152,7 @@ fn room_declaration() -> tpf3mp_proto::RoomDeclaration {
                     value: -3,
                 }],
             }],
+            native: Vec::new(),
         },
     }
 }

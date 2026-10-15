@@ -1,10 +1,11 @@
 # Native mods: a signed index, installed by the launcher
 
 *Owner-approved policy* ([DECISIONS.md](DECISIONS.md), D29, approved
-2026-10-08). The code currently provides framework only; there is no
-production trust key or index, player-facing installer, built-in native
-feature, or native-mod room term on the protocol. Players cannot install or
-use a native mod yet. The implemented and open parts are listed at the end.
+2026-10-08). The launcher's Native mods group, the room's native terms on
+the wire (protocol 20) and getting the room's native mods on joining are
+built; there is no production trust key or index, nor a built-in native
+feature yet, so players cannot use a native mod yet. The implemented and
+open parts are listed at the end.
 
 A **native mod** is a mod that is more than Lua: it needs code in the game.
 Big Maps ([BIGMAPS.md](BIGMAPS.md)) is the first: hook patches behind
@@ -32,6 +33,7 @@ assets of the `native-mods` release of the repository
       "version": "0.3.0",
       "name": "Big Maps",
       "description": "Maps up to 128 km a side.",
+      "homepage": "https://github.com/<its authors>/<its repository>",
       "simulation": true,
       "builds": ["<SHA-256 of the game's executable>"],
       "features": ["bigmap.octree", "bigmap.street_raster", "bigmap.placement",
@@ -56,10 +58,11 @@ assets of the `native-mods` release of the repository
 | `serial` | Grows with every index published. The launcher remembers the highest it accepted and refuses an older one, so a withdrawn package cannot come back by replaying an old signed index. The registry also binds an accepted serial to the SHA-256 of the exact index bytes; a crash after writing a complete cache pair recovers that serial floor, and different contents cannot reuse it. |
 | `id` | 1 to 40 lowercase letters, digits and `_`. |
 | `version` | Semantic version, at most 20 characters (it travels in the room's terms). |
+| `homepage` | Optional. The mod's own project page, such as its authors' repository: the launcher links to it, as CKAN links to a mod's. An `https` address of at most 200 characters. The files still come only as the signed index pins them, wherever they are hosted (the mod's own releases included). |
 | `simulation` | Whether it changes how the world runs. A feature the hook knows to change the simulation makes the package count as changing it too, whatever this says. |
 | `builds` | The game builds it runs on, by the executable's SHA-256, as hook profiles pin them ([HOOKS.md](HOOKS.md)). On any other build it is not installed, and not enabled if it was. |
 | `features` | The hook features it enables (below). |
-| `settings` | Its settings with their defaults: booleans, integers or text. A player's choice must name one of these and keep its type. |
+| `settings` | Its settings with their defaults: booleans, integers or text of at most 128 bytes (a room tells them to its members). A player's choice must name one of these and keep its type. |
 | `depends` | Packages it needs, with a semver requirement. |
 | `conflicts` | Packages that must not be installed beside it. |
 | `files` | Data, Lua and settings files: where each goes in the package's folder (plain names joined by `/`), where it comes from, its size and SHA-256. |
@@ -204,28 +207,69 @@ in the same version, with the same settings; one that changes only what a
 player sees is that player's own, as personal mods are ([MODS.md](MODS.md),
 D25).
 
-The room's **native terms** (`terms`) are, for each simulation-changing
-package enabled, its id, its version and a SHA-256 of its settings, ordered by
-id. The room compares them as it compares content: a member whose terms
-differ cannot start or join, and is told which package is missing, which
-version or settings differ, and which they run that the room does not. A
-member missing a package, or holding another version, gets the room's
-version **from the signed index in one click** (`missing_from_index`): the
-launcher installs exactly that id and version, for that member's build, or
-says it cannot. Packages never pass between players.
-
-Each term already has the shape of a mod in a content manifest:
+The room's **native terms** are, for each simulation-changing package the
+game runs, its id, its version and a SHA-256 of its settings (defaults
+included), ordered by id. Since protocol 20 they travel in the content
+manifest's own list, `ContentManifest::native`
+([PROTOCOL.md](PROTOCOL.md), "Native mods"): each as a mod named
 `native:<id>` (no mod folder can be named so; `:` is not allowed in a
-Windows file name) and `<version>+<the settings digest's first ten hex
-digits>`, at most 31 characters. **Not built:** carrying the terms on the
-wire. The room's declaration requires TPF3-MP's own mod last and the room's
-mod information one for one ([PROTOCOL.md](PROTOCOL.md), protocol 18), so
-the terms would go as an additive field of the content declaration beside
-the manifest, compared by the server like the fingerprint, with a
-`PROTOCOL_VERSION` bump. Until then the hook refuses multiplayer for a game
-with a simulation-changing package enabled
-(`enabled::ROOM_TERMS_CARRIED` is false), so no room can run two different
-worlds.
+Windows file name) whose version is `<version>+<the settings digest's first
+ten hex digits>`, at most 31 characters. The room compares them as it
+compares mods: a member whose terms differ cannot start or join, and is
+told which native mod is missing, which differs and which the room does not
+run.
+
+What a game declares is what the launcher started it with: the terms of the
+`enabled.json` it wrote for that game (`tpf3mp-agent`'s `native_mods`), and
+with no game running from the launcher, what the next game will run. The
+room's owner also tells the room every setting of each (`RoomConfig::native`,
+`RoomMods::native`), so a member's launcher can match them.
+
+**Joining a room** gets the room's native mods by itself:
+
+1. The room tells its native mods on joining its lobby, or before refusing
+   a join to its running game.
+2. The launcher installs each in the room's exact version from the signed
+   index, for this game's build, **never from another player**
+   (`match_room`, `Store::install_exact`); sets the room's settings over the
+   defaults, the player's own choices left out; switches each on; and
+   switches off any other simulation-changing native mod. One that changes
+   only what the player sees stays as it was. A version the index does not
+   have for this build, or settings that do not come out the same, refuse:
+   that player cannot join, and the window says why.
+3. **The game starts again with them**, since the hook reads the enabled
+   list once, as the game starts: when the game running from the launcher
+   runs other native mods, the launcher leaves the room's lobby, closes the
+   game, starts it again and joins the same room (invite and password as
+   the player gave them). A refused join to a running game does the same
+   before it tries again. With no game running, the player declares the
+   room's terms at once. This happens only on joining a room, and only when
+   native mods were installed or switched; nothing else closes the game.
+   The room's owner is never asked to: their game's terms are the room's.
+4. The lobby lists the room's native mods with whether this game runs each
+   alike, and offers **Get the room's native mods** when an attempt failed.
+
+A room restored after a server restart keeps its native mods and their full
+settings in the start record (format 9), so a new member's launcher installs
+and enables the exact room terms. Native-free format-8 logs remain
+recoverable. A format-8 log that names native mods is refused and preserved
+for diagnosis because its settings were never recorded; recovery does not
+invent defaults.
+
+Mods from Mod Hub are not native mods: players get those through their own
+game and Mod Hub account (D28).
+
+## In the launcher
+
+Settings has a **Native mods** group, shown only in a launcher built with
+the native-mods key. It lists each package of the last accepted index for
+this game's build and each installed one, with its description, a link to
+its own project page (`homepage`), whether it changes the simulation, and
+**Install** or **Update**, **Switch on**/**Switch off**, **Roll back** and
+**Uninstall**, then its settings (switches and numbers; text is shown).
+**Check the index** fetches the signed index again. A change takes effect
+in the next game the launcher starts; with no game running, the player
+declares the new terms at once.
 
 ## Framework built, player feature still open
 
@@ -241,22 +285,21 @@ Framework implemented (`crates/tpf3mp-nativemods`, with tests):
   launcher passing `TPF3MP_NATIVE_MODS` to the game it starts
   (`tpf3mp-agent`);
 - helpers for room-term comparison and finding a missing package in a
-  signed index; the room does not yet carry those terms;
+  signed index;
 - the launcher's updater uses the same signature and download code.
 
-This is not a player-ready native-mod feature: the production trusted-key
-list is empty, `features::BUILT_IN` has no native features, and the launcher
-has no native-mod page. The framework tests use temporary test keys.
+Built on it (protocol 20): the room's terms on the wire with their
+settings, the launcher's Native mods group, `Store::install_exact` and
+`resolve::resolve_exact` for a room's exact version, and getting the room's
+native mods on joining, the game started again with them.
+
+This is not yet a feature players can use: the production trusted-key list
+is empty and `features::BUILT_IN` has no native features. The tests use
+temporary test keys.
 
 Still open:
 
 - the native-mods key, its signing workflow and the first index;
-- the launcher's page for native mods: a **Native mods** group in Settings,
-  shown only in a launcher built with the native-mods key, listing each
-  package of the index for this build with **Install**, **Uninstall**,
-  **Roll back**, an on/off switch and its settings, and installed packages
-  the index no longer lists;
-- the room's terms on the wire, and the one-click install from the lobby;
 - copying a package's Lua mod folder where the game loads mods, the way
   TPF3-MP's own mod is installed ([MODS.md](MODS.md), "TPF3-MP's own mod");
 - Big Maps as the first package, with its features built into the hook;

@@ -148,6 +148,7 @@ fn launcher_config(
         content: toy_content(),
         mods: None,
         picker: None,
+        native: None,
         installed: None,
         link: format!("tpf3mp-launcher-{}-{name}", std::process::id()),
         worlds: Worlds::open(&root.join(name), 1 << 30).unwrap(),
