@@ -139,9 +139,30 @@ function Move-Path([string]$Path, [string]$Target) {
 
 # Moves a file or folder into the backups, and says where it went.
 function Move-Into([string]$Path, [string]$Folder) {
-    New-Item -ItemType Directory -Force -Path $Folder | Out-Null
+    $folderExisted = Test-Path -LiteralPath $Folder -PathType Container
+    $parent = Split-Path -Parent $Folder
+    $parentExisted = Test-Path -LiteralPath $parent -PathType Container
     $target = Join-Path $Folder (Split-Path -Leaf $Path)
-    Move-Path $Path $target
+    try {
+        New-Item -ItemType Directory -Force -Path $Folder | Out-Null
+        Move-Path $Path $target
+    }
+    catch {
+        $failure = $_
+        foreach ($directory in @(@{ Path = $Folder; Existed = $folderExisted }, @{ Path = $parent; Existed = $parentExisted })) {
+            if ($directory.Existed -or -not (Test-Path -LiteralPath $directory.Path -PathType Container)) { continue }
+            try {
+                if (@(Get-ChildItem -LiteralPath $directory.Path -Force).Count -eq 0) {
+                    Remove-Item -LiteralPath $directory.Path -Force
+                }
+            }
+            catch {
+                $script:Incomplete = $true
+                Write-Host "Could not remove empty backup folder $($directory.Path): $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+        }
+        throw $failure
+    }
     return $target
 }
 
@@ -177,12 +198,22 @@ function Get-SteamRoots {
     }
 }
 
-# Whether a file or folder of Steam or one of its libraries is there. On a
-# network share that cannot be reached, Test-Path throws ("The network path
-# was not found") instead of saying no.
+# Whether a file or folder of Steam or one of its libraries is there. On an
+# unavailable network share, Test-Path reports a small set of Win32 network
+# errors instead of saying no; other inspection failures must stop the
+# installer because it cannot safely check whether the game is running.
 function Test-LibraryPath([string]$Path, [string]$Type) {
     try { return [bool](Test-Path -LiteralPath $Path -PathType $Type) }
-    catch { return $false }
+    catch {
+        $exception = $_.Exception
+        while ($exception) {
+            if ($exception -is [System.ComponentModel.Win32Exception] -and $exception.NativeErrorCode -in @(53, 64, 67, 1231, 1232)) {
+                return $false
+            }
+            $exception = $exception.InnerException
+        }
+        throw
+    }
 }
 
 # The game's folder, from Steam's list of libraries and the game's manifest
