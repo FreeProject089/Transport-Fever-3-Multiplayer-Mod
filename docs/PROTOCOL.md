@@ -265,8 +265,10 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   and every setting, `NativeSetting`, keyed once in order, each a
   `NativeValue`: a boolean, a whole number or text of up to 128 bytes), and
   `RoomMods::native` tells them to every member, whose launcher installs
-  that version from the project's signed index with those settings
-  (never from another player). The room refuses a declaration whose
+  that version from the trusted source allowed by D29: the room server's
+  index or the project's optional signed index (never from another player).
+  The server-index wire path is pending in #148; protocol 20 on `dev` does
+  not yet serve a server registry index. The room refuses a declaration whose
   native mods do not match its manifest's one for one (`InvalidContent`).
   An owner cannot start a game with native terms until its valid room
   declaration supplies their settings.
@@ -275,6 +277,16 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   the same settings. Native-free format-8 logs remain readable. A format-8
   log that names native mods is refused and kept for diagnosis because its
   settings were not recorded.
+
+  Protocol 20 terms bind settings and package version, but do not by
+  themselves prove that two packages contain the same bytes. The pending
+  canonical `identity` work in #148 adds the full package digest to room
+  terms and checks installed files against their indexed file set. The
+  owner-approved plugin policy requires that same identity to include each
+  plugin's platform, ABI, path, size and SHA-256, plus declared hooks, before
+  a plugin can be loaded. Consent is stored locally by the launcher for
+  that exact identity; the consent choice is not sent to the room. Current
+  `dev` still refuses packages with plugins.
 - **Starting.** In the lobby, members declare their content and toggle
   **ready**. The owner can start the game only when every member is ready,
   all fingerprints are equal, and the world the owner handed over, if any,

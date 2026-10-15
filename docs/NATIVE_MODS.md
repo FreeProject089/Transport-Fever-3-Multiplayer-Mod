@@ -1,11 +1,16 @@
-# Native mods: a signed index, installed by the launcher
+# Native mods: trusted indexes, installed by the launcher
 
-*Owner-approved policy* ([DECISIONS.md](DECISIONS.md), D29, approved
-2026-10-08). The launcher's Native mods group, the room's native terms on
-the wire (protocol 20) and getting the room's native mods on joining are
-built; there is no production trust key or index, nor a built-in native
-feature yet, so players cannot use a native mod yet. The implemented and
-open parts are listed at the end.
+*Owner-approved policy* ([DECISIONS.md](DECISIONS.md), D29 and its
+server-index and plugin-consent amendments, approved 2026-10-15). The
+launcher group, protocol-20 room terms and room-version install on joining
+are built on `dev`. The open #148 work adds the server index and a full
+canonical package identity with installed-byte/file-set verification.
+Plugins and per-content executable consent are policy-approved but not
+implemented or merged: #151 remains open, and plugin entries and hook
+declarations must be added to that same identity before plugin code may
+load. No server registry or first native package is configured yet, so
+players cannot use a native mod yet. The implemented and open parts are
+listed at the end.
 
 A **native mod** is a mod that is more than Lua: it needs code in the game.
 Big Maps ([BIGMAPS.md](BIGMAPS.md)) is the first: hook patches behind
@@ -14,14 +19,18 @@ serves, settings, and a Lua mod folder. Mod Hub carries Lua mods for the
 game's own loader, and a room's Mod Hub mods are handled by D28
 ([LOBBY.md](LOBBY.md), [MODS.md](MODS.md)); native mods come through a
 channel of their own, managed the way CKAN manages Kerbal Space Program
-mods, but only from the project's signed index.
+mods. A launcher may use the project's signed index or the index of the
+server hosting the room, under the approved server-index amendment; it does
+not accept an arbitrary index URL.
 
 ## The index
 
-`native-mods.json` lists every package the launcher may install.
-`native-mods.json.sig` is an Ed25519 signature of its exact bytes. Both are
-assets of the `native-mods` release of the repository
-(`releases/download/native-mods/`), fetched over HTTPS only.
+`native-mods.json` lists packages the launcher may install from the optional
+project index. Its `native-mods.json.sig` is an Ed25519 signature of the exact
+JSON bytes; both are assets of the repository's `native-mods` release
+(`releases/download/native-mods/`), fetched over HTTPS only. A room server
+serves the same index schema over its authenticated connection and vouches
+for that index itself; its index has no project signature.
 
 ```json
 {
@@ -66,26 +75,34 @@ assets of the `native-mods` release of the repository
 | `depends` | Packages it needs, with a semver requirement. |
 | `conflicts` | Packages that must not be installed beside it. |
 | `files` | Data, Lua and settings files: where each goes in the package's folder (plain names joined by `/`), where it comes from, its size and SHA-256. |
-| `plugins` | Reserved for signed native libraries (`path`, `url`, `size`, `sha256`, and `abi`, the hook's plugin interface they are built against). This launcher refuses a package that has any. |
+| `plugins` | Native libraries pinned by platform, `path`, `url`, `size`, `sha256` and `abi`. Current `dev` still refuses a package that has any. The approved plugin policy requires explicit consent before a plugin payload is fetched or installed. |
+
+The plugin-consent prompt must get the author/publisher and trusted source
+from validated index or registry metadata. The current `dev` index schema
+does not yet carry all consent metadata; the schema must supply it before
+plugin loading is implemented. A `homepage` is a link for the player, not a
+source of prompt data: the launcher must not fetch it or a file URL to build
+the consent screen.
 
 Unknown fields are refused, and one malformed entry refuses the whole index:
-the project signs it, so a mistake is fixed there, never guessed around.
+the trusted project or server source must fix a mistake, never have the
+launcher guess around it.
 
-### Signing
+### Trusted sources
 
-The index is signed the way releases are (D7), with the same code: the
-launcher's updater and the index call `tpf3mp_nativemods::signed` (Ed25519
-through `ring`, public keys as base64 strings, more than one so that a key
-can be changed). The key is the **native-mods key**, a key of its own as the
-dev key is (D19): the public half is built into the launcher from
-`TPF3MP_NATIVE_MODS_PUBLIC_KEY`, and a launcher built without one installs no
-native mod. A release key cannot sign the index, and the native-mods key
-cannot sign a release.
+The project may still publish an optional native-mods index signed with its
+own key. Under the owner-approved server-index amendment, a launcher also
+trusts the index supplied by the server it is playing on, reached through
+that server's authenticated connection; the server builds it from its
+configured registry. The launcher keeps each server's index and serial
+floor separate. A server selected in Settings is used only when the player
+asks, and proposed registry entries are never installed by a room without
+the player's choice.
 
-To be built with the decision: a `sign-native-mods.yml` workflow that signs
-the index in a GitHub environment whose required reviewer approves each
-signing, as `sign.yml` does for releases. No key is in the repository; the
-tests make a fresh test key each time.
+The framework on `dev` still verifies the project's signed index. The open
+#148 work implements the server index and per-server cache. No private key
+or signing workflow is required for a server's own index; if the project
+publishes its optional index, its key remains separate from release keys.
 
 ## Installing
 
@@ -93,7 +110,9 @@ The launcher keeps native mods in its own data folder, never the game's:
 
 ```text
 <launcher data>/native-mods/
-  native-mods.json, native-mods.json.sig   the last index accepted
+  native-mods.json, native-mods.json.sig   optional project index and signature
+  servers/<server-key>/index.json         last index from that room server
+  servers/<server-key>/proposed.json      its proposed registry entries
   registry.json                            every installed package and its files
   enabled.json                             what the next game runs
   <id>/<version>/…                         a package's files
@@ -104,10 +123,11 @@ The launcher keeps native mods in its own data folder, never the game's:
 
 1. **Resolve** (`resolve`): the wanted package's newest version pinned to the
    running build, then its dependencies (an installed version is kept when it
-   satisfies the requirement). Refused: a package the index does not list,
-   none for this build, one with plugins, one naming a feature this hook does
-   not have, a dependency no version satisfies, a dependency cycle, a
-   conflict with a package chosen or installed. There is no backtracking: an
+   satisfies the requirement). Current `dev` refuses packages with plugins;
+   the approved policy allows them only after the consent and identity checks
+   below are implemented. Other refusals include a package the index does not
+   list, none for this build, a feature this hook does not have, an unsatisfied
+   dependency, a dependency cycle or a conflict. There is no backtracking: an
    install that does not hold together is refused with the reason.
 2. **Download** each file into `.partial-<version>/`, checking its size and
    SHA-256 on the way (`fetch`, the updater's code). More bytes than signed
@@ -172,9 +192,9 @@ on: Big Maps' own branches read `TPF3MP_BIGMAP_*` variables by hand; as a
 package, it would ask the plan instead (`native_mods::feature(id)`, which
 gives the feature's settings and its package's folder).
 
-### Features
+### Built-in features and plugins
 
-In this first version a package carries no code. It names **features
+Built-in features remain part of D29. A package may name **features
 compiled into the hook**, by id; the hook switches on those the launcher
 enabled. Each feature has an id (the package's id, a dot, the feature's), an
 effect (only what one player sees, or the simulation) and the profile
@@ -194,11 +214,12 @@ shows the shape, and the tests use it:
 The launcher reads the same registry to refuse a package this TPF3-MP cannot
 run before downloading it.
 
-**Later, not built:** signed plugin libraries. A package's `plugins` would be
-native libraries, signed in the index like every file and built against a
-versioned plugin interface of the hook (`abi`), loaded by the hook only for
-the build they are pinned to. That needs its own decision: until then a
-package with plugins is refused.
+The owner-approved plugin policy permits executable libraries from the same
+trusted sources as other native packages. It does not replace built-in
+features or make them executable consent items. Plugin loading and consent
+remain unimplemented on `dev`; current `dev` refuses packages with plugins.
+Before an implementation loads one, the plugin bytes and declarations must
+be covered by the package identity used in the room terms and package store.
 
 ## In a room
 
@@ -208,16 +229,25 @@ player sees is that player's own, as personal mods are ([MODS.md](MODS.md),
 D25).
 
 The room's **native terms** are, for each simulation-changing package the
-game runs, its id, its version and a SHA-256 of its settings (defaults
-included), ordered by id. Since protocol 20 they travel in the content
-manifest's own list, `ContentManifest::native`
-([PROTOCOL.md](PROTOCOL.md), "Native mods"): each as a mod named
-`native:<id>` (no mod folder can be named so; `:` is not allowed in a
-Windows file name) whose version is `<version>+<the settings digest's first
-ten hex digits>`, at most 31 characters. The room compares them as it
-compares mods: a member whose terms differ cannot start or join, and is
-told which native mod is missing, which differs and which the room does not
-run.
+game runs, its id, version, effective settings and full canonical package
+identity, ordered by id. Protocol 20 on `dev` carries the settings digest;
+the open #148 work adds the full `identity` digest and verifies installed
+file bytes against its file-set manifest. The identity covers package id and
+version, simulation flag, features, settings, dependencies and sorted
+regular-file paths, sizes and SHA-256s. Before plugin loading is
+implemented, extend that same identity with each plugin's platform, ABI,
+path, size and SHA-256 and its declared hooks, so terms, storage checks and
+consent all name the same content. The full digest is not a separate
+approval key.
+
+These terms travel in the content manifest's own list,
+`ContentManifest::native` ([PROTOCOL.md](PROTOCOL.md), "Native mods"):
+each as a mod named `native:<id>` (no mod folder can be named so; `:` is
+not allowed in a Windows file name). The pending #148 representation keeps
+the full digest in the native term while ordinary mod versions stay short.
+The room compares native terms as it compares mods: a member whose package
+bytes or settings differ cannot start or join, and is told which native mod
+is missing, which differs and which the room does not run.
 
 What a game declares is what the launcher started it with: the terms of the
 `enabled.json` it wrote for that game (`tpf3mp-agent`'s `native_mods`), and
@@ -229,14 +259,24 @@ room's owner also tells the room every setting of each (`RoomConfig::native`,
 
 1. The room tells its native mods on joining its lobby, or before refusing
    a join to its running game.
-2. The launcher installs each in the room's exact version from the signed
-   index, for this game's build, **never from another player**
+2. The launcher installs each in the room's exact version from the trusted
+   index of that room's server (or the project's optional signed index), for
+   this game's build, **never from another player**
    (`match_room`, `Store::install_exact`); sets the room's settings over the
    defaults, the player's own choices left out; switches each on; and
    switches off any other simulation-changing native mod. One that changes
    only what the player sees stays as it was. A version the index does not
-   have for this build, or settings that do not come out the same, refuse:
-   that player cannot join, and the window says why.
+   have for this build, settings that do not come out the same, or package
+   identity that differs, refuse: that player cannot join, and the window
+   says why. Before any plugin payload is fetched or installed, show the
+   author/publisher, trusted source and full canonical package digest from
+   the already validated index/registry metadata. Do not fetch a homepage,
+   file URL or other arbitrary URL to assemble that prompt. Reconnecting
+   with the same full identity does not prompt again. Any identity change
+   requires fresh consent; a version or metadata change may prompt again even
+   if plugin bytes are unchanged. Changed plugin bytes or hook declarations
+   necessarily change the identity. If the player declines, do not fetch,
+   install or enable that package's plugin payload, and keep the join blocked.
 3. **The game starts again with them**, since the hook reads the enabled
    list once, as the game starts: when the game running from the launcher
    runs other native mods, the launcher leaves the room's lobby, closes the
@@ -261,15 +301,20 @@ game and Mod Hub account (D28).
 
 ## In the launcher
 
-Settings has a **Native mods** group, shown only in a launcher built with
-the native-mods key. It lists each package of the last accepted index for
-this game's build and each installed one, with its description, a link to
+Settings has a **Native mods** group. It lists each package of the trusted
+index for the current server (or the optional project-signed index) and
+each installed one, with its description, a link to
 its own project page (`homepage`), whether it changes the simulation, and
 **Install** or **Update**, **Switch on**/**Switch off**, **Roll back** and
 **Uninstall**, then its settings (switches and numbers; text is shown).
-**Check the index** fetches the signed index again. A change takes effect
-in the next game the launcher starts; with no game running, the player
-declares the new terms at once.
+Plugin packages are marked **Runs code**. Before downloading their
+executable content, the launcher shows the author/publisher, trusted source
+and full canonical package digest, and asks for consent. It remembers
+consent for the same full identity on reconnect; a changed identity requires
+a new choice, even if a version or metadata change leaves plugin bytes
+unchanged. **Check the index** refreshes the index from its trusted source.
+A change takes effect in the next game the launcher starts; with no game
+running, the player declares the new terms at once.
 
 ## Framework built, player feature still open
 
@@ -291,7 +336,10 @@ Framework implemented (`crates/tpf3mp-nativemods`, with tests):
 Built on it (protocol 20): the room's terms on the wire with their
 settings, the launcher's Native mods group, `Store::install_exact` and
 `resolve::resolve_exact` for a room's exact version, and getting the room's
-native mods on joining, the game started again with them.
+native mods on joining, the game started again with them. The open #148
+work adds a full canonical package identity to room terms and verifies
+installed bytes against the file manifest. It does not yet cover plugin
+entries or implement executable consent.
 
 This is not yet a feature players can use: the production trusted-key list
 is empty and `features::BUILT_IN` has no native features. The tests use
@@ -299,8 +347,12 @@ temporary test keys.
 
 Still open:
 
-- the native-mods key, its signing workflow and the first index;
+- the server registry and first native package; the project's optional
+  signed index remains a separate source;
 - copying a package's Lua mod folder where the game loads mods, the way
   TPF3-MP's own mod is installed ([MODS.md](MODS.md), "TPF3-MP's own mod");
 - Big Maps as the first package, with its features built into the hook;
-- plugin libraries.
+- plugin loading and explicit per-identity consent. The open #151 code is
+  not merged; its plugin entries and declared hooks must extend #148's
+  canonical identity before the prompt, room terms, cache and byte checks
+  can refer to the exact executable content.
