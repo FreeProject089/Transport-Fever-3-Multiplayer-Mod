@@ -25,10 +25,12 @@ not accept an arbitrary index URL.
 
 ## The index
 
-`native-mods.json` lists every package the launcher may install.
-`native-mods.json.sig` is an Ed25519 signature of its exact bytes. Both are
-assets of the `native-mods` release of the repository
-(`releases/download/native-mods/`), fetched over HTTPS only.
+`native-mods.json` lists packages the launcher may install from the optional
+project index. Its `native-mods.json.sig` is an Ed25519 signature of the exact
+JSON bytes; both are assets of the repository's `native-mods` release
+(`releases/download/native-mods/`), fetched over HTTPS only. A room server
+serves the same index schema over its authenticated connection and vouches
+for that index itself; its index has no project signature.
 
 ```json
 {
@@ -108,7 +110,9 @@ The launcher keeps native mods in its own data folder, never the game's:
 
 ```text
 <launcher data>/native-mods/
-  native-mods.json, native-mods.json.sig   the last index accepted
+  native-mods.json, native-mods.json.sig   optional project index and signature
+  servers/<server-key>/index.json         last index from that room server
+  servers/<server-key>/proposed.json      its proposed registry entries
   registry.json                            every installed package and its files
   enabled.json                             what the next game runs
   <id>/<version>/…                         a package's files
