@@ -38,7 +38,7 @@ The shape tells the tool apart (measured unless noted):
 | stop, signal, waypoint placement | the edge removed and re-added, plus one edge-object record |
 | stop or signal bulldoze | the edge removed and re-added without the object |
 | construction bulldoze | `toRemove` populated, nothing added |
-| road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street's also lists the town buildings along it in `toRemove` (seen on build 40408); a switch's branch removed also removes the switch node and its two other edges and adds one edge joining their far ends (seen 2026-10-16) |
+| road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street's also lists the town buildings along it in `toRemove` (seen on build 40408); a street's branch, or a track's stub ending on a street, removed also removes the junction node and its two street edges and adds one edge joining their far ends, carried as a `BuildRoad` (seen on build 40420) |
 | tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file, its desc `autoRemovable`: the group rebuilt without the assets removed, thin instances then full ones (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408); nothing added when the last assets of a group go |
 | terraform | no nodes or segments; a `Grid<{height, base}>` of 4 m cells |
 | paint | no nodes or segments; the material index grid and its mask |
