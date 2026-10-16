@@ -2983,6 +2983,15 @@ construction's window its edits:
   itself, `createProposalRemove` for the construction and
   `makeSegmentsRemoveProposal` for the edges (on build 40408 the first
   gave exactly the bulldozer's proposal), and the player's company pays.
+  A switch's branch removed takes the switch node with it, and the game
+  joins the two edges left there into one new edge between their far ends
+  (seen in a room on 2026-10-16; until then refused as "a stop build that
+  adds or removes nodes"). Only the branch travels: every edge the
+  proposal adds must join two removed edges of its network at a removed
+  node, none with a stop or signal, and the player's game checks that its
+  own `makeSegmentsRemoveProposal` of the branch removes the same edges
+  and nodes and joins the same ends, else refuses. Every game's replay
+  refuses a removal that would add an edge that is no such join.
   A town building is a construction like any (one that lists its
   `townBuildings`) and goes the same way. A town street's proposal lists
   the town buildings along it in `toRemove` too; they travel beside the

@@ -7678,6 +7678,130 @@ fn the_bulldozer_removes_a_construction_or_edges_in_every_game() {
     assert_eq!(why, "removing an edge with a stop or signal on it");
 }
 
+/// A switch's branch bulldozed (a room, 2026-10-16: "a stop build that
+/// adds or removes nodes"): the game removes the switch node with the
+/// branch and joins the two edges left there into one. The room carries the
+/// branch alone, once this game proposes the same removal from it, and
+/// every game joins the edges as its own removal does; a join it cannot
+/// account for is refused.
+#[test]
+fn a_switch_branch_bulldozed_joins_the_edges_left_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    // The street 20-21-22 with the branch 21-23 at the switch 21.
+    lua.load(
+        "NODES[20] = { x = 0, y = 100, z = 0 } NODES[21] = { x = 50, y = 100, z = 0 } \
+         NODES[22] = { x = 100, y = 100, z = 0 } NODES[23] = { x = 50, y = 150, z = 0 } \
+         for id, e in pairs({ [200] = { 20, 21 }, [201] = { 21, 22 }, [202] = { 21, 23 } }) do \
+             EDGES[id] = { node0 = e[1], node1 = e[2], objects = {}, \
+                 tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 } } end \
+         STREETS[20] = { 200 } STREETS[21] = { 200, 201, 202 } STREETS[22] = { 201 } STREETS[23] = { 202 } \
+         local function seg(id, a, b, objects) \
+             return { entity = id, type = 0, comp = { node0 = a, node1 = b, objects = objects or {} } } end \
+         local function node(id) return { entity = id, comp = { position = NODES[id] } } end \
+         function REMOVAL(join, objects) return { toAdd = {}, toRemove = {}, proposal = { \
+             addedNodes = {}, edgeObjectsToAdd = {}, edgeObjectsToRemove = {}, \
+             addedSegments = { seg(-1, join[1], join[2]) }, \
+             removedSegments = { seg(202, 21, 23), seg(200, 20, 21, objects), seg(201, 21, 22) }, \
+             removedNodes = { node(21), node(23) } } } end \
+         OWN = REMOVAL({ 20, 22 }) \
+         api.engine.util.proposal = { makeSegmentsRemoveProposal = function(ids) \
+             ASKED = table.concat(ids, ',') return OWN end }",
+    )
+    .exec()
+    .unwrap();
+    let carried: String = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local action, why = capture.bulldoze(REMOVAL({ 22, 20 })) \
+             if action == nil then return why end \
+             ACTION = action \
+             local e = action.Bulldoze.Edges \
+             return e.network .. ':' .. #e.edges .. ':' .. e.edges[1].a.x .. ',' .. e.edges[1].a.y \
+                 .. '>' .. e.edges[1].b.x .. ',' .. e.edges[1].b.y .. ':' .. ASKED \
+                 .. ':' .. tostring(schema_check(action))",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(carried, "Street:1:50,100>50,150:202:true");
+    // Every game removes the branch as the game does, and the join with it.
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let applied: String = lua
+        .load(
+            "local out = {} for _, a in ipairs(HOOK.applied) do out[#out + 1] = tostring(a.ok) end \
+             local joined = false for _, l in ipairs(HOOK.logged) do \
+                 if l:find('removing Street edges 202, joining 1 pair(s) of edges at a removed switch', 1, true) \
+                 then joined = true end end \
+             return table.concat(out, ',') .. ':' .. #SENT .. ':' .. tostring(joined)",
+        )
+        .eval()
+        .unwrap_or_else(|error| {
+            panic!(
+                "{error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        });
+    assert_eq!(
+        applied,
+        "true:1:true",
+        "{:?}",
+        lua.load("return HOOK.logged").eval::<Vec<String>>()
+    );
+    // What the room cannot carry, each with why.
+    let why = |code: &str| -> String {
+        lua.load(format!(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             {code} local action, why = capture.bulldoze(BULLDOZED) \
+             return tostring(why)"
+        ))
+        .eval::<String>()
+        .unwrap_or_else(|error| panic!("{code}: {error}"))
+    };
+    // An edge added that joins no two removed edges at a removed node.
+    assert_eq!(
+        why("BULLDOZED = REMOVAL({ 20, 7 })"),
+        "a bulldozer proposal that builds"
+    );
+    // A signal on an edge the game would join.
+    assert_eq!(
+        why("BULLDOZED = REMOVAL({ 20, 22 }, { { 900, 1 } })"),
+        "joining edges with a stop or signal on them"
+    );
+    // This game would remove the branch without joining the edges.
+    assert_eq!(
+        why(
+            "BULLDOZED = REMOVAL({ 20, 22 }) OWN = { toAdd = {}, toRemove = {}, proposal = { \
+                 addedNodes = {}, addedSegments = {}, \
+                 removedSegments = { { entity = 202, type = 0, comp = { node0 = 21, node1 = 23 } } }, \
+                 removedNodes = { { entity = 23 } } } }"
+        ),
+        "a removal the game proposes otherwise: the edges it removes"
+    );
+    // Or joins other edges.
+    assert_eq!(
+        why("BULLDOZED = REMOVAL({ 20, 22 }) OWN = REMOVAL({ 20, 23 })"),
+        "a removal the game proposes otherwise: what it joins"
+    );
+    // A game whose own removal would build something else refuses the
+    // action rather than build it.
+    lua.load(
+        "OWN = REMOVAL({ 7, 22 }) SENT = {} HOOK.applied = {} \
+         HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let refused: String = lua
+        .load(
+            "local a = HOOK.applied[1] \
+             return tostring(a.ok) .. ':' .. tostring(a.why) .. ':' .. #SENT",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(refused, "false:a bulldozer proposal that builds:0");
+}
+
 #[test]
 fn the_bulldozer_removes_only_a_stock_airports_frozen_runway_signals() {
     let (lua, _script) = engine();

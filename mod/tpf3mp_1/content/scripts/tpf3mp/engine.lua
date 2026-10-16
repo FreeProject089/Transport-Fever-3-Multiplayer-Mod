@@ -880,6 +880,103 @@ local function airportRemovalSignals(construction, segments, removedObjects)
 	return true
 end
 
+-- The edges a removal joins. A switch's branch removed takes the switch
+-- node with it, and the game joins the two edges left there into one new
+-- edge between their far ends (the bulldozer in a room, 2026-10-16:
+-- [-n76645 +e-1/0:76648>76215 -e76749:76645>76647 -e76788:76648>76645
+-- -e76776:76645>76215]). Every edge a street proposal adds must be such a
+-- join: two removed edges of its network meeting at a removed node, the
+-- added edge between their other ends, none of them with a stop or signal
+-- (the join would carry them over). Returns the joined edges' entities as a
+-- set and how many joins; or raises. Also read by tpf3mp/apply.lua, on the
+-- removal every game proposes.
+function engine.merges(street)
+	local added = list(get(street, "addedSegments"))
+	if #added == 0 then return {}, 0 end
+	local gone = {}
+	for _, n in ipairs(list(get(street, "removedNodes"))) do
+		local e = get(n, "entity")
+		if type(e) ~= "number" then error("a removed node it cannot read", 0) end
+		gone[e] = true
+	end
+	local removed = list(get(street, "removedSegments"))
+	local merged, count = {}, 0
+	-- The end of a removed edge opposite node n, if it touches n.
+	local function across(seg, n)
+		local c = get(seg, "comp")
+		if get(c, "node0") == n then return get(c, "node1") end
+		if get(c, "node1") == n then return get(c, "node0") end
+		return nil
+	end
+	for _, seg in ipairs(added) do
+		local comp = get(seg, "comp")
+		local a, b, network = get(comp, "node0"), get(comp, "node1"), networkOf(seg)
+		local found
+		for i, s in ipairs(removed) do
+			for _, n in ipairs({ get(get(s, "comp"), "node0"), get(get(s, "comp"), "node1") }) do
+				if gone[n] and n ~= a and n ~= b and across(s, n) == a then
+					for j, t in ipairs(removed) do
+						if j ~= i and across(t, n) == b then
+							if found ~= nil then error("a bulldozer proposal that joins edges it cannot tell apart", 0) end
+							found = { s, t }
+						end
+					end
+				end
+			end
+		end
+		if found == nil then error("a bulldozer proposal that builds", 0) end
+		for _, s in ipairs(found) do
+			local e = get(s, "entity")
+			if type(e) ~= "number" or merged[e] or networkOf(s) ~= network then
+				error("a bulldozer proposal that builds", 0)
+			end
+			if #objectEntities(get(s, "comp")) > 0 then error("joining edges with a stop or signal on them", 0) end
+			merged[e] = true
+		end
+		if #objectEntities(comp) > 0 then error("joining edges with a stop or signal on them", 0) end
+		count = count + 1
+	end
+	return merged, count
+end
+
+-- The removal the game proposes itself from the edges `ids`
+-- (makeSegmentsRemoveProposal) must be the bulldozer's `street`: the same
+-- edges and nodes removed, the same edges joined, nothing else added; or
+-- raises. That proposal is what every game replays (tpf3mp/apply.lua).
+local function sameRemoval(street, ids)
+	local proposals = api.engine.util and api.engine.util.proposal
+	local make = proposals and proposals.makeSegmentsRemoveProposal
+	if make == nil then error("joining edges at a removed switch, which this game cannot propose again", 0) end
+	local ok, full = pcall(make, ids)
+	local own = ok and full ~= nil and get(full, "proposal") or nil
+	if own == nil then
+		error("joining edges at a removed switch the game will not propose again: " .. tostring(full), 0)
+	end
+	local function differs(what) error("a removal the game proposes otherwise: " .. what, 0) end
+	local function entities(p, key)
+		local out = {}
+		for _, v in ipairs(list(get(p, key))) do out[#out + 1] = tostring(get(v, "entity")) end
+		table.sort(out)
+		return table.concat(out, ",")
+	end
+	if entities(street, "removedSegments") ~= entities(own, "removedSegments") then differs("the edges it removes") end
+	if entities(street, "removedNodes") ~= entities(own, "removedNodes") then differs("the nodes it removes") end
+	if #list(get(own, "addedNodes")) > 0 then differs("what it adds") end
+	local function joins(p)
+		local out = {}
+		for _, seg in ipairs(list(get(p, "addedSegments"))) do
+			local c = get(seg, "comp")
+			local a, b = get(c, "node0"), get(c, "node1")
+			if type(a) ~= "number" or type(b) ~= "number" then differs("what it joins") end
+			if a > b then a, b = b, a end
+			out[#out + 1] = networkOf(seg) .. ":" .. a .. ">" .. b
+		end
+		table.sort(out)
+		return table.concat(out, ",")
+	end
+	if joins(street) ~= joins(own) then differs("what it joins") end
+end
+
 -- The bulldozer's proposal as a Bulldoze action (tpf3mp_proto
 -- action::Bulldoze): one construction, by its file and position, whose own
 -- entrance edge and node the game removes with it; or edges of one network,
@@ -892,15 +989,19 @@ function engine.bulldoze(proposal)
 	local ok, action = pcall(function()
 		local street = get(proposal, "proposal")
 		if street == nil then error("a proposal with no street proposal", 0) end
-		-- A stop removed: its edge rebuilt without it, nothing else.
+		-- A stop removed: its edge rebuilt without it, nothing else (no
+		-- node goes; a switch's branch removed takes its node, below).
 		if #list(get(proposal, "toAdd")) == 0 and #list(get(proposal, "toRemove")) == 0
-			and #list(get(street, "addedSegments")) == 1 and #list(get(street, "addedNodes")) == 0 then
+			and #list(get(street, "addedSegments")) == 1 and #list(get(street, "addedNodes")) == 0
+			and #list(get(street, "removedNodes")) == 0 then
 			return removeStop(street)
 		end
-		if #list(get(proposal, "toAdd")) > 0 or #list(get(street, "addedSegments")) > 0
-			or #list(get(street, "addedNodes")) > 0 then
+		if #list(get(proposal, "toAdd")) > 0 or #list(get(street, "addedNodes")) > 0 then
 			error("a bulldozer proposal that builds", 0)
 		end
+		-- The edges the game joins at a switch it removes are its own to
+		-- join, not the player's to remove: they are not carried.
+		local merged, merges = engine.merges(street)
 		local toRemove = list(get(proposal, "toRemove"))
 		local segments = list(get(street, "removedSegments"))
 		local objectsToAdd = list(get(street, "edgeObjectsToAdd"))
@@ -950,7 +1051,7 @@ function engine.bulldoze(proposal)
 		if #buildings > 64 then
 			error("removing " .. #buildings .. " town buildings at once, more than the room carries (64)", 0)
 		end
-		local network, edges = nil, {}
+		local network, edges, ids = nil, {}, {}
 		for k, seg in ipairs(segments) do
 			local n = networkOf(seg)
 			if network == nil then
@@ -958,11 +1059,19 @@ function engine.bulldoze(proposal)
 			elseif n ~= network then
 				error("removing streets and tracks at once", 0)
 			end
-			if #objectEntities(seg.comp) > 0 then error("removing an edge with a stop or signal on it", 0) end
-			local a, b = nodePos(seg.comp.node0), nodePos(seg.comp.node1)
-			if a == nil or b == nil then error("removed edge " .. k .. " has no position here", 0) end
-			edges[k] = { a = { x = a[1], y = a[2], z = a[3] }, b = { x = b[1], y = b[2], z = b[3] } }
+			if not merged[get(seg, "entity")] then
+				if #objectEntities(seg.comp) > 0 then error("removing an edge with a stop or signal on it", 0) end
+				local a, b = nodePos(seg.comp.node0), nodePos(seg.comp.node1)
+				if a == nil or b == nil then error("removed edge " .. k .. " has no position here", 0) end
+				edges[#edges + 1] = { a = { x = a[1], y = a[2], z = a[3] }, b = { x = b[1], y = b[2], z = b[3] } }
+				ids[#ids + 1] = get(seg, "entity")
+			end
 		end
+		if #edges == 0 then error("a bulldozer proposal that only joins edges", 0) end
+		-- Every game removes the edges as the game itself does
+		-- (makeSegmentsRemoveProposal, tpf3mp/apply.lua): a join travels
+		-- only if this game proposes the same removal from them.
+		if merges > 0 then sameRemoval(street, ids) end
 		return { Bulldoze = { Edges = { network = network, edges = edges, buildings = buildings } } }
 	end)
 	if not ok then return nil, tostring(action) end

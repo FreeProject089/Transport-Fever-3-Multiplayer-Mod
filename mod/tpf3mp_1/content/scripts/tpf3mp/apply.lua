@@ -1482,8 +1482,15 @@ function HANDLERS.Bulldoze(b)
 		end
 		proposal = proposals.makeSegmentsRemoveProposal(ids)
 		local gone = townBuildingsRemoved(proposal, b.Edges.buildings or {})
+		-- A switch the removal leaves with two edges goes, and they are
+		-- joined into one, as the player's bulldozer proposed (the player's
+		-- game checked that the game proposes the same, engine.bulldoze);
+		-- anything else it would build is refused.
+		local _, street = pcall(function() return proposal.proposal end)
+		local _, joins = module("engine").merges(street)
 		log("removing " .. network .. " edges " .. table.concat(ids, ",")
-			.. (gone ~= "" and (" and town buildings " .. gone) or ""))
+			.. (gone ~= "" and (" and town buildings " .. gone) or "")
+			.. (joins > 0 and (", joining " .. joins .. " pair(s) of edges at a removed switch") or ""))
 	elseif b.EdgeObject then
 		-- A simple proposal: the game's verdict first (buildProposal).
 		return removeEdgeObject(b.EdgeObject, context)
