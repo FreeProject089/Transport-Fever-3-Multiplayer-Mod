@@ -2,7 +2,7 @@
 #![allow(clippy::unwrap_used)]
 
 use tpf3mp_hook::{
-    crossings::{arm, decode, disarm, fill, is_crossing_window, layout, set_call},
+    crossings::{Change, arm, decode, disarm, fill, is_crossing_window, layout, set_call},
     modules::{Memory, layout as street},
     terrain::Heap,
 };
@@ -73,30 +73,132 @@ fn window(pairs: &[(i32, i32)]) -> Image {
 
 #[test]
 fn the_window_s_type_change_reads_as_the_crossing_and_its_type() {
-    assert_eq!(decode(&window(&[(51_234, 5)]), PROPOSAL), Ok((51_234, 5)));
+    assert_eq!(
+        decode(&window(&[(51_234, 5)]), PROPOSAL),
+        Ok(Change::Crossing {
+            entity: 51_234,
+            kind: 5
+        })
+    );
 }
 
-#[test]
-fn a_change_that_rebuilds_the_crossing_s_tracks_is_refused() {
-    // The window's other shape: the crossing's nodes mapped, its segments
-    // rebuilt.
+const SEGMENTS: usize = 0x1000;
+
+/// The window's rebuild: `removed` segments (entities) removed and as many
+/// laid again, the crossing's nodes mapped to `types`.
+fn rebuild(removed: &[i32], added: usize, types: &[(i32, i32)]) -> Image {
     let mut m = window(&[]);
-    m.map(layout::NODE_TYPES, NODE_MAP, &[(700, 5), (701, 5)]);
+    m.0.resize(SEGMENTS + 16 * street::SEGMENT_SIZE, 0);
+    m.map(layout::NODE_TYPES, NODE_MAP, types);
+    let at = SEGMENTS;
+    for (i, e) in removed.iter().enumerate() {
+        m.int(at + i * street::SEGMENT_SIZE, *e);
+    }
+    let end = (at + removed.len() * street::SEGMENT_SIZE) as u64;
+    m.word(PROPOSAL + street::REMOVED_SEGMENTS, at as u64);
+    m.word(PROPOSAL + street::REMOVED_SEGMENTS + 8, end);
+    m.word(PROPOSAL + street::REMOVED_SEGMENTS + 16, end);
+    let laid = SEGMENTS + 8 * street::SEGMENT_SIZE;
+    let end = (laid + added * street::SEGMENT_SIZE) as u64;
+    m.word(PROPOSAL + street::ADDED_SEGMENTS, laid as u64);
+    m.word(PROPOSAL + street::ADDED_SEGMENTS + 8, end);
+    m.word(PROPOSAL + street::ADDED_SEGMENTS + 16, end);
+    m
+}
+
+/// Seen in a room on 2026-10-16: the window lays the crossing's segments
+/// again and maps its nodes to the type. It reads as the nodes, the type and
+/// the segments; a rebuild of other shapes is refused.
+#[test]
+fn the_window_s_rebuild_reads_as_the_crossing_s_nodes_and_type() {
+    assert_eq!(
+        decode(&rebuild(&[900, 901], 2, &[(700, 5), (701, 5)]), PROPOSAL),
+        Ok(Change::Rebuild {
+            nodes: vec![700, 701],
+            kind: 5,
+            removed: vec![900, 901],
+            junctions: vec![],
+        })
+    );
+    // Seen in a room on 2026-10-17: the junction settings at the segments'
+    // ends laid again with them, and some reset.
+    let mut m = rebuild(&[900, 901], 2, &[(700, 5), (701, 5)]);
+    let configs = 0xe00;
+    m.int(configs + layout::CONFIG_NODE, 701);
+    m.int(configs + layout::CONFIG_SIZE + layout::CONFIG_NODE, 650);
+    let end = (configs + 2 * layout::CONFIG_SIZE) as u64;
+    m.word(PROPOSAL + layout::CONFIGS_ADDED, configs as u64);
+    m.word(PROPOSAL + layout::CONFIGS_ADDED + 8, end);
+    m.word(PROPOSAL + layout::CONFIGS_ADDED + 16, end);
+    let resets = 0xf40;
+    m.int(resets, 650);
+    m.word(PROPOSAL + layout::CONFIGS_REMOVED, resets as u64);
+    m.word(PROPOSAL + layout::CONFIGS_REMOVED + 8, resets as u64 + 4);
+    m.word(PROPOSAL + layout::CONFIGS_REMOVED + 16, resets as u64 + 4);
     assert_eq!(
         decode(&m, PROPOSAL),
-        Err("a crossing change that rebuilds the crossing's tracks".to_owned())
+        Ok(Change::Rebuild {
+            nodes: vec![700, 701],
+            kind: 5,
+            removed: vec![900, 901],
+            junctions: vec![650, 701],
+        })
     );
+    // Junctions without a rebuild are not the window's.
     let mut m = window(&[(51_234, 5)]);
-    let segment = 0xa00;
-    m.word(PROPOSAL + street::ADDED_SEGMENTS, segment as u64);
-    for i in 1..3 {
-        m.word(
-            PROPOSAL + street::ADDED_SEGMENTS + 8 * i,
-            (segment + street::SEGMENT_SIZE) as u64,
-        );
+    m.word(PROPOSAL + layout::CONFIGS_REMOVED, resets as u64);
+    m.word(PROPOSAL + layout::CONFIGS_REMOVED + 8, resets as u64 + 4);
+    m.word(PROPOSAL + layout::CONFIGS_REMOVED + 16, resets as u64 + 4);
+    assert_eq!(
+        decode(&m, PROPOSAL),
+        Err("a crossing change that also changes junctions".to_owned())
+    );
+    for (m, why) in [
+        (
+            rebuild(&[900, 901], 1, &[(700, 5), (701, 5)]),
+            "a crossing rebuild that does not lay its segments again one for one",
+        ),
+        (
+            rebuild(&[], 0, &[(700, 5)]),
+            "a crossing rebuild that does not lay its segments again one for one",
+        ),
+        (
+            rebuild(&[900], 1, &[(700, 5), (701, 6)]),
+            "a crossing rebuild that gives its nodes different types",
+        ),
+        (
+            rebuild(&[-1], 1, &[(700, 5)]),
+            "a crossing rebuild that removes a segment not yet built",
+        ),
+        (
+            rebuild(&[900], 1, &[]),
+            "a crossing change that lays segments and types no crossing",
+        ),
+    ] {
+        assert_eq!(decode(&m, PROPOSAL), Err(why.to_owned()));
     }
-    let why = decode(&m, PROPOSAL).unwrap_err();
-    assert!(why.contains("also changes segments"), "{why}");
+    // Both maps at once.
+    let mut m = rebuild(&[900], 1, &[(700, 5)]);
+    m.map(layout::CROSSING_TYPES, CROSSING_MAP, &[(51_234, 5)]);
+    assert_eq!(
+        decode(&m, PROPOSAL),
+        Err("a crossing change in both of the proposal's maps".to_owned())
+    );
+    // A node added.
+    let mut m = rebuild(&[900], 1, &[(700, 5)]);
+    m.word(PROPOSAL + street::ADDED_NODES, 0xe00);
+    m.word(
+        PROPOSAL + street::ADDED_NODES + 8,
+        0xe00 + street::NODE_SIZE as u64,
+    );
+    m.word(
+        PROPOSAL + street::ADDED_NODES + 16,
+        0xe00 + street::NODE_SIZE as u64,
+    );
+    assert_eq!(
+        decode(&m, PROPOSAL),
+        Err("a crossing change that also changes nodes".to_owned())
+    );
 }
 
 #[test]
@@ -201,7 +303,14 @@ fn inserting(
 fn the_room_s_carrier_gets_the_crossing_and_its_type_as_the_window_s_build() {
     let mut m = window(&[]);
     fill(&mut m, &mut inserting(0xc00, 51_234), PROPOSAL, 51_234, 5).unwrap();
-    assert_eq!(decode(&m, PROPOSAL), Ok((51_234, 5)), "as the window's own");
+    assert_eq!(
+        decode(&m, PROPOSAL),
+        Ok(Change::Crossing {
+            entity: 51_234,
+            kind: 5
+        }),
+        "as the window's own"
+    );
 }
 
 #[test]

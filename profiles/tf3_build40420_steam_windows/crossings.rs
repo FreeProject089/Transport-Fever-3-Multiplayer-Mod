@@ -40,6 +40,9 @@ pub mod layout {
     pub const CONFIGS_ADDED: usize = 0x60;
     pub const CONFIGS_REMOVED: usize = 0x78;
     pub const CONFIG_SIZE: usize = 0x80;
+    /// Where a configuration added names its node
+    /// (`BaseNodeLaneConnectionAndEntity`, docs/HOOKS.md "Junction tools").
+    pub const CONFIG_NODE: usize = 0x78;
 
     /// MSVC `std::unordered_map`: the list's sentinel node and its size
     /// (`sub_28b250`).

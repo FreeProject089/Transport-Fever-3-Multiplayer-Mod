@@ -2669,9 +2669,11 @@ function HANDLERS.SetCrossingType(change)
 	local index = crossings.typeIndex(change.crossing_type)
 	local PLAYER_OWNED = api.type.ComponentType.PLAYER_OWNED
 	local function may(e, what)
-		if not pcall(api.engine.getComponent, e, PLAYER_OWNED) then
-			error("the owner of the " .. what .. " does not read", 0)
-		end
+		local read = pcall(function()
+			local owned = api.engine.getComponent(e, PLAYER_OWNED)
+			return owned and owned.player
+		end)
+		if not read then error("the owner of the " .. what .. " does not read", 0) end
 		mine(e, what)
 	end
 	may(entity, "level crossing")
@@ -2689,13 +2691,17 @@ function HANDLERS.SetCrossingType(change)
 	-- an empty build here, as the window's own (docs/HOOKS.md, "Level
 	-- crossing types").
 	if type(apply.crossing) ~= "function" then error("this hook cannot set a crossing's type", 0) end
-	local armed, why = apply.crossing(entity, index)
-	if armed ~= true then error("the hook would not take the crossing: " .. tostring(why), 0) end
 	local context = api.type.Context.new()
 	context.player = company()
-	local sent, err = pcall(function()
-		return run(api.cmd.makeWorldBuildProposalCmd(api.type.Proposal.new(), context, true, true))
-	end)
+	local command = api.cmd.makeWorldBuildProposalCmd(api.type.Proposal.new(), context, true, true)
+	-- Armed for this one build only: disarmed whatever becomes of it, so no
+	-- later build of the room's is filled with it.
+	local armed, why = apply.crossing(entity, index)
+	if armed ~= true then
+		apply.crossing(nil)
+		error("the hook would not take the crossing: " .. tostring(why), 0)
+	end
+	local sent, err = pcall(run, command)
 	local filled = apply.crossing(nil)
 	if not sent then error(err, 0) end
 	if filled ~= true then error("the hook filled no build with the crossing", 0) end

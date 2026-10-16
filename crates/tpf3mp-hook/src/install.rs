@@ -1031,13 +1031,13 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
                                 "refused: the profile does not lead to the crossing map's insert"
                             }
                         ),
-                        Some((_, false)) => "the profile does not find the crossing maps, so                                              the crossing window stays refused"
+                        Some((_, false)) => "the profile does not find the crossing maps, so the crossing window stays refused"
                             .to_owned(),
                         None => "the profile has no crossing window call, so it stays refused"
                             .to_owned(),
                     };
                     format!(
-                        "the build tools build through the room; {module}; {terrain}; {stop};                          {crossing}"
+                        "the build tools build through the room; {module}; {terrain}; {stop}; {crossing}"
                     )
                 })
                 .unwrap_or_else(|error| format!("the build tools stay refused: {error}"))

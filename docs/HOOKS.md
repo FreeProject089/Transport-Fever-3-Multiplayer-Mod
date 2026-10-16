@@ -3462,18 +3462,28 @@ its proposal there, where the profile also finds both maps where they were
 call; lea rcx,[rdi+0xd0]`). The map is MSVC's: a sentinel list node at +8
 and the size at +0x10; each node next, previous, key (+0x10), value
 (+0x14). The reader walks the list to exactly its size, every link
-answered by its back link, no key twice. Only the first shape is carried:
-no geometry, no junction, an empty +0x90 and one crossing in +0xd0; any
-other is refused with why. A recognised click always keeps an answer
-(the crossing and type, or `crossing window: ` and why), so the GUI never
-hands another tool's preview for it.
+answered by its back link, no key twice. Both shapes are read, and
+nothing else: no node added or removed, no edge object, construction or
+junction. The first is one crossing in +0xd0 and no segment; the second
+(the one a click on Japan_2 took, 2026-10-16) as many segments laid again
+as removed, each an existing one, and the crossing's nodes in +0x90, all
+of one type (at most 16 segments and 8 nodes). Any other is refused with
+why. A recognised click always keeps an answer (the crossing and type,
+the nodes, type and segments, or `crossing window: ` and why), so the
+GUI never hands another tool's preview for it.
 
 The GUI half of the game script (`tpf3mp_sim`) makes the action
 (`tpf3mp/crossings.lua`, `capture`): the crossing by the places of all its
 nodes, sorted by whole millimetres, and the type by its resource file
 (`railroadCrossingTypeRep.getName`; an index differs between games). A
 crossing gone, a type not offered here, or the type it has already is
-refused. Whatever is not handed to the room, the player is told in the
+refused. For the rebuild, the crossing is the one its nodes belong to
+(`getRailroadCrossingForNode`): every node named is that crossing's,
+every one of its nodes is named, and every segment laid again ends at
+one of them (on Japan_2 the street leading onto the crossing, 2026-10-17),
+every junction laid again at an end of one of those. Either shape becomes the same action: every game replays it
+the one way below, whichever way the window built it here. Whatever is
+not handed to the room, the player is told in the
 game bar ("Not in multiplayer yet: changing a level crossing's type",
 why in brackets), through the note `tpf3mp.notice`, which the game bar
 plugin shows.
@@ -3510,8 +3520,9 @@ stops (`replayFatal`). The crossing gets a new entity, which the room
 never names: the next action finds it by its nodes again.
 
 Refused in the sender and in every replay until `acceptance.lua`'s
-`crossings` is turned on after a two-player game. Not covered: the
-window's rebuild shape; the cost (the window checks the player can afford
+`crossings` is turned on after a two-player game. Not covered: what the
+window's rebuild does beyond the type (it lays the crossing's segments
+again; the replay does not); the cost (the window checks the player can afford
 the change; the carrier is built with the game's cost as any build of the
 room's, unchecked against the window's); crossing types in the room's checkpoints (no lane
 reads them); the type a road or track tool's toolbar picks for a new

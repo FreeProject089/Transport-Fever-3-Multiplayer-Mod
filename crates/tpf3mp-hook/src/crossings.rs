@@ -24,7 +24,7 @@ use std::sync::{Mutex, PoisonError};
 
 use tpf3mp_proto::lua::LuaValue;
 
-use crate::modules::{self, Memory, i32_at, read, u64_at, vector};
+use crate::modules::{self, Memory, i32_at, ids, read, u64_at, vector};
 use crate::terrain::Heap;
 
 pub use crate::build_data::native::crossings::{
@@ -54,6 +54,33 @@ pub fn is_crossing_window(return_address: usize) -> bool {
     window != 0 && return_address == window
 }
 
+/// What the window's click changes, read from its proposal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    /// The crossing (this game's entity) to the type, in the window's own
+    /// map: no geometry at all.
+    Crossing { entity: i32, kind: i32 },
+    /// The window's rebuild: the crossing's segments `removed` laid again
+    /// as they were, and the crossing's `nodes` to the type
+    /// (`node2rcType`).
+    Rebuild {
+        nodes: Vec<i32>,
+        kind: i32,
+        removed: Vec<i32>,
+        /// The nodes whose junction settings the rebuild lays again (for
+        /// the segments laid anew), each once.
+        junctions: Vec<i32>,
+    },
+}
+
+/// Most segments the window's rebuild of one crossing lays again, and most
+/// nodes it maps, before it is a misread.
+const MAX_SEGMENTS: usize = 16;
+const MAX_NODES: usize = 8;
+/// Most junction settings the rebuild lays again or resets: the ends of its
+/// segments.
+const MAX_JUNCTIONS: usize = 32;
+
 /// Keeps what the window queued at click `click` (the count before it): the
 /// crossing and its type, or why the room does not carry it. Logs one line.
 pub fn record(memory: &dyn Memory, click: u64, payload: usize) {
@@ -63,8 +90,17 @@ pub fn record(memory: &dyn Memory, click: u64, payload: usize) {
         Err("the profile does not find this build's crossing maps".to_owned())
     };
     match &read {
-        Ok((entity, kind)) => crate::log::line(&format!(
+        Ok(Change::Crossing { entity, kind }) => crate::log::line(&format!(
             "crossing window: click {click} sets crossing {entity} to type {kind}"
+        )),
+        Ok(Change::Rebuild {
+            nodes,
+            kind,
+            removed,
+            junctions,
+        }) => crate::log::line(&format!(
+            "crossing window: click {click} sets the crossing on nodes {nodes:?} to type {kind}, \
+             laying its segments {removed:?} again (junctions at {junctions:?})"
         )),
         Err(why) => crate::log::line(&format!(
             "crossing window: click {click} is not carried: {why}"
@@ -77,46 +113,187 @@ pub fn record(memory: &dyn Memory, click: u64, payload: usize) {
 /// click from the module editor's.
 pub const WHY_PREFIX: &str = "crossing window: ";
 
+fn integers(values: &[i32]) -> LuaValue {
+    LuaValue::Table(
+        values
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                (
+                    LuaValue::Integer(i as i64 + 1),
+                    LuaValue::Integer(i64::from(*v)),
+                )
+            })
+            .collect(),
+    )
+}
+
 /// Keeps `read` for click `click` as the GUI takes it: `{ crossingType =
-/// true, entity = e, type = t }`, or why not, after [`WHY_PREFIX`].
-fn keep(click: u64, read: Result<(i32, i32), String>) {
+/// true, type = t, entity = e }` or `{ crossingType = true, type = t, nodes
+/// = { ... }, removed = { ... }, junctions = { ... } }`, or why not, after
+/// [`WHY_PREFIX`].
+fn keep(click: u64, read: Result<Change, String>) {
     modules::keep(
         click,
-        read.map(|(entity, kind)| {
-            LuaValue::Table(vec![
-                (LuaValue::string("crossingType"), LuaValue::Boolean(true)),
-                (
-                    LuaValue::string("entity"),
-                    LuaValue::Integer(i64::from(entity)),
-                ),
-                (LuaValue::string("type"), LuaValue::Integer(i64::from(kind))),
-            ])
+        read.map(|change| {
+            let mut fields = vec![(LuaValue::string("crossingType"), LuaValue::Boolean(true))];
+            match change {
+                Change::Crossing { entity, kind } => {
+                    fields.push((LuaValue::string("type"), LuaValue::Integer(i64::from(kind))));
+                    fields.push((
+                        LuaValue::string("entity"),
+                        LuaValue::Integer(i64::from(entity)),
+                    ));
+                }
+                Change::Rebuild {
+                    nodes,
+                    kind,
+                    removed,
+                    junctions,
+                } => {
+                    fields.push((LuaValue::string("type"), LuaValue::Integer(i64::from(kind))));
+                    fields.push((LuaValue::string("nodes"), integers(&nodes)));
+                    fields.push((LuaValue::string("removed"), integers(&removed)));
+                    fields.push((LuaValue::string("junctions"), integers(&junctions)));
+                }
+            }
+            LuaValue::Table(fields)
         })
         .map_err(|why| format!("{WHY_PREFIX}{why}")),
     );
 }
 
-/// The crossing and the type the window's proposal at `payload` sets, when
-/// it is the shape the room carries; why not otherwise.
-pub fn decode(memory: &dyn Memory, payload: usize) -> Result<(i32, i32), String> {
-    let head = read(
-        memory,
-        payload,
-        crate::modules::layout::HEAD_LEN,
-        "the crossing proposal",
-    )?;
-    nothing_else(memory, &head)?;
-    match entries(memory, &head, layout::CROSSING_TYPES, "the crossing map")?[..] {
-        [(entity, kind)] if entity >= 0 && kind >= 0 => Ok((entity, kind)),
-        [_] => Err("a crossing or type that is not one".to_owned()),
-        [] => Err("a crossing change that changes no crossing".to_owned()),
-        _ => Err("a change of more than one crossing".to_owned()),
+/// What the window's proposal at `payload` changes, when it is a shape the
+/// room carries; why not otherwise. Either shape changes nothing but the
+/// crossing: no node added or removed, no edge object or construction; the
+/// rebuild lays again exactly as many segments as it removes, each an
+/// existing one, and the junction settings at their ends (the GUI checks
+/// the segments are the crossing's and the junctions at their ends).
+pub fn decode(memory: &dyn Memory, payload: usize) -> Result<Change, String> {
+    use crate::modules::layout as street;
+    let head = read(memory, payload, street::HEAD_LEN, "the crossing proposal")?;
+    for (offset, stride, what) in [
+        (street::ADDED_NODES, street::NODE_SIZE, "nodes"),
+        (street::REMOVED_NODES, street::NODE_SIZE, "nodes"),
+        (street::EDGE_OBJECTS_TO_REMOVE, 4, "edge objects"),
+        (
+            street::EDGE_OBJECTS_TO_ADD,
+            street::EDGE_OBJECT_SIZE,
+            "edge objects",
+        ),
+        (street::TO_REMOVE, 4, "constructions"),
+        (street::TO_ADD, street::ENTITY_SIZE, "constructions"),
+    ] {
+        if vector(&head, offset, stride, usize::MAX, "the crossing proposal")?.1 != 0 {
+            return Err(format!("a crossing change that also changes {what}"));
+        }
     }
+    let (configs_at, configs) = vector(
+        &head,
+        layout::CONFIGS_ADDED,
+        layout::CONFIG_SIZE,
+        MAX_JUNCTIONS,
+        "the junctions laid",
+    )?;
+    let (resets_at, resets) = vector(
+        &head,
+        layout::CONFIGS_REMOVED,
+        4,
+        MAX_JUNCTIONS,
+        "the junctions removed",
+    )?;
+    let (_, added) = vector(
+        &head,
+        street::ADDED_SEGMENTS,
+        street::SEGMENT_SIZE,
+        MAX_SEGMENTS,
+        "the segments laid",
+    )?;
+    let (removed_at, removed) = vector(
+        &head,
+        street::REMOVED_SEGMENTS,
+        street::SEGMENT_SIZE,
+        MAX_SEGMENTS,
+        "the segments removed",
+    )?;
+    let nodes = entries(memory, &head, layout::NODE_TYPES, "node2rcType")?;
+    let crossings = entries(memory, &head, layout::CROSSING_TYPES, "the crossing map")?;
+    if nodes.is_empty() {
+        if added != 0 || removed != 0 {
+            return Err("a crossing change that lays segments and types no crossing".to_owned());
+        }
+        if configs != 0 || resets != 0 {
+            return Err("a crossing change that also changes junctions".to_owned());
+        }
+        return match crossings[..] {
+            [(entity, kind)] if entity >= 0 && kind >= 0 => Ok(Change::Crossing { entity, kind }),
+            [_] => Err("a crossing or type that is not one".to_owned()),
+            [] => Err("a crossing change that changes no crossing".to_owned()),
+            _ => Err("a change of more than one crossing".to_owned()),
+        };
+    }
+    if !crossings.is_empty() {
+        return Err("a crossing change in both of the proposal's maps".to_owned());
+    }
+    if removed == 0 || added != removed {
+        return Err(
+            "a crossing rebuild that does not lay its segments again one for one".to_owned(),
+        );
+    }
+    if nodes.len() > MAX_NODES {
+        return Err("a crossing rebuild of more nodes than a crossing has".to_owned());
+    }
+    let kind = nodes[0].1;
+    if kind < 0 || nodes.iter().any(|(node, k)| *node < 0 || *k != kind) {
+        return Err("a crossing rebuild that gives its nodes different types".to_owned());
+    }
+    let removed = ids(
+        memory,
+        removed_at,
+        removed,
+        street::SEGMENT_SIZE,
+        0,
+        "the segments removed",
+    )?;
+    if removed.iter().any(|e| *e < 0) {
+        return Err("a crossing rebuild that removes a segment not yet built".to_owned());
+    }
+    // The node of each junction laid again (`BaseNodeLaneConnectionAndEntity`,
+    // its node at +0x78) and of each one reset.
+    let mut junctions = ids(
+        memory,
+        configs_at,
+        configs,
+        layout::CONFIG_SIZE,
+        layout::CONFIG_NODE,
+        "the junctions laid",
+    )?;
+    junctions.extend(ids(
+        memory,
+        resets_at,
+        resets,
+        4,
+        0,
+        "the junctions removed",
+    )?);
+    if junctions.iter().any(|n| *n < 0) {
+        return Err(
+            "a crossing rebuild that changes the junction of a node not yet built".to_owned(),
+        );
+    }
+    junctions.sort_unstable();
+    junctions.dedup();
+    Ok(Change::Rebuild {
+        nodes: nodes.into_iter().map(|(node, _)| node).collect(),
+        kind,
+        removed,
+        junctions,
+    })
 }
 
-/// Refuses a proposal `head` that changes anything but crossings' types
-/// through the window's own map: geometry, edge objects, constructions,
-/// junctions, or `node2rcType` (the window's rebuild of a crossing).
+/// Refuses a carrier `head` with anything in it but the window's own
+/// crossing map: geometry, edge objects, constructions, junctions, or
+/// `node2rcType`.
 fn nothing_else(memory: &dyn Memory, head: &[u8]) -> Result<(), String> {
     use crate::modules::layout as street;
     for (offset, stride, what) in [
@@ -136,14 +313,11 @@ fn nothing_else(memory: &dyn Memory, head: &[u8]) -> Result<(), String> {
         (layout::CONFIGS_REMOVED, 4, "junctions"),
     ] {
         if vector(head, offset, stride, usize::MAX, "the crossing proposal")?.1 != 0 {
-            return Err(format!(
-                "a crossing change that also changes {what} (the window rebuilds the \
-                 crossing's tracks)"
-            ));
+            return Err(format!("the carrier also changes {what}"));
         }
     }
     if !entries(memory, head, layout::NODE_TYPES, "node2rcType")?.is_empty() {
-        return Err("a crossing change that rebuilds the crossing's tracks".to_owned());
+        return Err("the carrier has node2rcType".to_owned());
     }
     Ok(())
 }

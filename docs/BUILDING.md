@@ -602,7 +602,7 @@ then places along the track (Auto Signals) go as one `PlaceSignals`
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (**26**; combines station access, company perks
+`ACTION_SCHEMA_VERSION` (**27**; combines station access, company perks
 and preservation, plus named stops and gated asset removal; 26 adds a
 signal's settings to `PlaceStop` and `PlaceSignals`; 27 appends
 `SetCrossingType`). This

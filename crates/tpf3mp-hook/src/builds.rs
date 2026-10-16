@@ -80,6 +80,10 @@ pub fn stopped() -> u64 {
 /// The mod's game script begins or ends applying the room's actions.
 pub fn set_replaying(replaying: bool) {
     REPLAYING.store(replaying, Ordering::Release);
+    // A crossing armed for a build of the room's never outlives its actions.
+    if !replaying {
+        crate::crossings::disarm();
+    }
 }
 
 /// Whether `payload` is a `WorldBuildProposal`'s the player made.
