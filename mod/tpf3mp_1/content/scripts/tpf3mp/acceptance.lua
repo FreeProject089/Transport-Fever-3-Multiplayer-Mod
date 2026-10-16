@@ -14,12 +14,19 @@
 -- investigation/TPF3_SUBSIDIES_2026-10-07.md.
 -- Line waypoints passed local two-game acceptance on build 40420, 2026-10-16:
 -- a line edited with waypoints in a room, both games' rolling world checks alike.
-local acceptance = { subsidies = true, rename = true, waypoints = true, terraform = true, bridges = true, perks = false, preservation = false, signals = true }
+-- Terrain paint and the asset brush (action schema 27) passed local two-game
+-- acceptance on build 40420, 2026-10-16: paint strokes of several sizes, the
+-- large ones in bands, and tree strokes of 78 and 124 trees, alike in both.
+local acceptance = { subsidies = true, rename = true, waypoints = true, terraform = true, bridges = true, perks = false, preservation = false, signals = true, paint = true, assets = true }
 
 function acceptance.check(action)
     local feature
     if action.Subsidy then feature = "subsidies" end
     if action.Terraform then feature = "terraform" end
+    -- Terrain paint (action::TerrainPaint, schema 27).
+    if action.Paint then feature = "paint" end
+    -- The asset brush (action::AssetStroke, schema 27).
+    if action.PlantAssets then feature = "assets" end
     if action.Perk then feature = "perks" end
     -- A town building's Historic Preservation (action::Preservation).
     if action.Preserve then feature = "preservation" end

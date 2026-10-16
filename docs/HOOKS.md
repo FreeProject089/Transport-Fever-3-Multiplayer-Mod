@@ -3001,9 +3001,9 @@ construction's window its edits:
   (full and thin instances): what a replay of it would have to build.
   On build 13090a8 the rebuilt group read as plain models: each a model's
   file (`::/assets/...`) and its world matrix, none thin, one construction
-  of no file and no desc type, for a group of thin instances. With
-  `TPF3MP_TREE_BULLDOZE=1` in the player's game (the hook's `trees()`),
-  that proposal travels as a `Bulldoze::Assets`: the group by its first
+  of no file and no desc type, for a group of thin instances. Unless
+  `TPF3MP_TREE_BULLDOZE=0` is set in the player's game (the hook's
+  `trees()`), that proposal travels as a `Bulldoze::Assets`: the group by its first
   asset and how many it holds, the assets taken out by model and position,
   and which way the tool turned them (read off its matrices; a rebuilt
   group that holds any asset the group did not, turns a thin one
@@ -3639,10 +3639,29 @@ its click, but the GUI's sender
 refuses the actions (`terraform awaits two-player game acceptance`), and
 so would every game's replay; nothing is armed and no carrier is filled.
 
-The painter's and the asset brush's clicks are stopped with
-`terrain tool: click N cannot go to the room: terrain paint: the room
-does not carry it yet` (or `the asset brush: ...`), and the GUI's
-`stopped a build the room cannot carry: terrain tool: ...`.
+The painter's click is stopped the same way, and its stroke read at
+the same call (`paint: click N queued ...`): the materials grid (a byte a
+texel, 255 where the stroke leaves one as it is) and the mask grid, a
+`vector<bool>` of 32-bit words with its count of bits just past it
+(`MASK_BITS`, 0x28 into the grid, as TPF2's `Grid<bool>`). The hook cuts
+it into `Paint` actions of whole rows, each within 4,096 runs (materials
+and mask together), run-length packed; every game arms the hook with one
+(`tpf3mp_native.terrain(t)`, the action's body) and sends the empty
+carrier, whose materials and mask grids the hook fills.
+
+The asset brush's click is stopped too, and its stroke read there
+(`asset brush: click N queued ...`): the groups it removes (`toRemove`)
+and each group it adds, a `ConstructionEntity` of no file whose
+subconstruction's models (the vector at 0x140 of the first element of the
+vector at 0xa30, each 0xa8 bytes: the model's resource name, its world
+matrix at 0x60) are its trees (seen on build 40420 with the hook's asset
+probe, 2026-10-16). The GUI names each removed group by its first asset
+and how many it holds, as the asset bulldozer does, and hands the room
+`PlantAssets` actions; every game finds its own copy of each removed group
+and builds the stroke's groups through the game's own Lua, as the
+bulldozer's replay rebuilds one (`api.type.Proposal.ConstructionEntity`,
+an autoRemovable desc, one subconstruction of the trees), for the acting
+company. A group missing or ambiguous in a game refuses the stroke there.
 
 ### The world's lanes
 
@@ -6301,8 +6320,8 @@ implementation that is absent here.
 
 The first company also gets the map's all-companies display; its selection
 and editing checks still use its own player. The line-viewer probe diagnoses
-unrendered route data and does not fix it. Tree/rock bulldozing remains opt-in
-with `TPF3MP_TREE_BULLDOZE=1`; brushes remain refused. Action schema 25 adds
+unrendered route data and does not fix it. Tree/rock bulldozing, terrain
+paint and the asset brush go through the room (2026-10-16). Action schema 25 adds
 `PlaceStop::name` and `Bulldoze::Assets` to dev's existing schema 24, without
 renumbering its perk or preservation actions. Native playtest observations
 above are the contributor's evidence; this integration has no new live-game

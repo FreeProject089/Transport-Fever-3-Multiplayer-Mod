@@ -578,9 +578,12 @@ then places along the track (Auto Signals) go as one `PlaceSignals`
 - **Paint** is the material index and mask grids on the same path. The
   material texels are simulation data, not a graphics setting: a paint applied
   in the right place with the two games at different texture resolutions.
-- **The asset brush** commits asset-group records. Lua cannot create asset
-  groups, so the replay is again a native fill of an empty carrier; removed
-  groups travel by position and count. The cost of not replicating it was
+- **The asset brush** commits asset-group records. On TF3, Lua can build
+  an asset group (`Proposal.ConstructionEntity` with an autoRemovable desc
+  and one subconstruction of the models, as the bulldozer's replay does),
+  so the hook only reads the stroke and every game builds its groups in
+  Lua (`PlantAssets`, schema 27); removed groups travel by their first
+  asset and count. The cost of not replicating it was
   measured: 104 trees on one game, every replicated command on-step, and six
   hundred steps later the town-building and road lanes diverged in three
   towns 9 km apart, because town growth reads the assets. A desync minutes
@@ -670,6 +673,8 @@ appended.
 | `ApplyRank` | a company rank to take, as the company window sends the game's growth script (`applyLevel`); the acting player's company takes it ([HOOKS.md](HOOKS.md), "Company ranks") |
 | `Perk` | a company perk from the construction menu: Industry Greenification (the industry by its canonical id, `IndustryId`, which every game binds by its construction, and the permit), or a marketing campaign (the town, the campaign's duration and line cost factor, the permit, and the price the tool charged). Gated off (`acceptance.lua`, `perks`) ([HOOKS.md](HOOKS.md), "Company perks") |
 | `Preserve` | a town building's Historic Preservation checkbox: the construction it stands in, by file and position, its index in that construction's town buildings, and whether it is preserved. Gated off (`acceptance.lua`, `preservation`) |
+| `Paint` | a terrain paint stroke: the materials grid (first texel, columns, rows, run-length values, 255 unchanged) and its mask grid, the same way; a large stroke goes as several, a band of whole rows each. Behind `acceptance.lua`'s `paint` (schema 27) |
+| `PlantAssets` | an asset brush stroke: the model files it uses, the groups it replaces (first asset and count) and the groups it builds, each asset its model's index and its matrix (`Transform`). Behind `acceptance.lua`'s `assets` (schema 27) |
 | `PlaceSignals` | signals a mod's script places along existing tracks after its player's signal (Auto Signals): each track by its ends (node 0 first), each new signal's place along it from that end and side, each removed signal's place and construction; the new signals' construction, one-way and settings once. Every game rebuilds all the tracks in one proposal, or none. Behind `acceptance.lua`'s `signals` |
 
 **Polylines.** A road or track build is a polyline: the tool's proposal by

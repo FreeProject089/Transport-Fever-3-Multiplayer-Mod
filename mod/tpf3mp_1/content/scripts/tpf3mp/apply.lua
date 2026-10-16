@@ -1412,6 +1412,69 @@ local function removeAssets(a, context)
 	return true
 end
 
+-- An asset brush stroke (action::AssetStroke): every group it replaces found
+-- here as the asset bulldozer finds one, the one group that holds exactly
+-- that many assets with its first one where it stood; then one build that
+-- removes them and adds the stroke's groups, each as the tool builds one
+-- (construction_builder_util::CreateProposalAddAsset, as removeAssets
+-- rebuilds a group): a construction entity at the world's origin whose desc
+-- is autoRemovable and whose one subconstruction lists the group's assets,
+-- each its model's file and its world matrix. Owned by the player's company
+-- and paid by it, as the player's own build. A replaced group missing or
+-- ambiguous here refuses the stroke, in every game.
+function HANDLERS.PlantAssets(t)
+	local P = api.type.Proposal
+	local removed = {}
+	for i, r in ipairs(t.removed or {}) do
+		local found = {}
+		for _, g in ipairs(assetGroupsAt(r.first.model, r.first.at.x, r.first.at.y, r.first.at.z)) do
+			if #g.assets == r.count then found[#found + 1] = g.entity end
+		end
+		if #found ~= 1 then
+			error(string.format("%s asset group of %d assets with %s at %.2f, %.2f here (group %d the stroke replaces)",
+				#found == 0 and "no" or "more than one", r.count, tostring(r.first.model), r.first.at.x, r.first.at.y, i), 0)
+		end
+		removed[#removed + 1] = found[1]
+	end
+	local identity = matrix({ basis = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }, origin = { x = 0, y = 0, z = 0 } })
+	local added, count = {}, 0
+	for g, group in ipairs(t.groups or {}) do
+		local models = {}
+		for _, a in ipairs(group) do
+			local file = t.models[a.model + 1]
+			if file == nil then error("group " .. g .. " names a model the stroke does not", 0) end
+			local tm = P.TransformedModel.new()
+			tm.id = file
+			tm.transf = matrix(a.transform)
+			models[#models + 1] = tm
+		end
+		local sub = P.Subconstruction.new()
+		sub.models = models
+		local ce = P.ConstructionEntity.new()
+		local desc = ce.desc
+		if desc == nil then error("this game makes no construction desc for an asset group", 0) end
+		desc.autoRemovable = true
+		ce.desc = desc
+		local con = ce.construction
+		if con == nil then error("this game makes no construction for an asset group", 0) end
+		con.subconstructions = { sub }
+		ce.construction = con
+		ce.transf = identity
+		ce.playerEntity = company()
+		added[#added + 1] = ce
+		count = count + #models
+	end
+	local proposal = P.new()
+	proposal.toRemove = removed
+	proposal.toAdd = added
+	local context = api.type.Context.new()
+	context.player = company()
+	run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	log(string.format("asset brush applied: %d group(s) of %d asset(s), replacing %d group(s)", #added, count,
+		#removed))
+	return true
+end
+
 local function townBuildingsRemoved(proposal, named)
 	local ok, removed = pcall(function()
 		local l, out = proposal.toRemove, {}
@@ -1556,6 +1619,27 @@ function HANDLERS.Terraform(t)
 	if filled ~= true then error("the hook filled no build with the grid", 0) end
 	log(string.format("terraform applied: %d by %d cells from cell (%d, %d), heights %.2f to %.2f m",
 		width, height, x0, y0, low or 0, high or 0))
+	return true
+end
+
+-- A terrain painter's stroke, as the grids the hook read (action::TerrainPaint,
+-- the hook made it, crates/tpf3mp-hook/src/terrain.rs): as a terraform, the
+-- stroke goes to the hook (apply.terrain) and an empty proposal, the carrier,
+-- is sent as the player's build; the hook fills the carrier's materials and
+-- mask grids at its apply. The action fails unless the carrier was filled.
+function HANDLERS.Paint(t)
+	if type(apply.terrain) ~= "function" then error("this hook cannot apply paint", 0) end
+	local armed, why = apply.terrain(t)
+	if armed ~= true then error("the hook would not take the paint: " .. tostring(why), 0) end
+	local context = api.type.Context.new()
+	context.player = company()
+	local sent, err = pcall(function()
+		return run(api.cmd.makeWorldBuildProposalCmd(api.type.Proposal.new(), context, true, true))
+	end)
+	local filled = apply.terrain(nil)
+	if not sent then error(err, 0) end
+	if filled ~= true then error("the hook filled no build with the paint", 0) end
+	log("paint applied: " .. module("capture").paintSummary(t))
 	return true
 end
 
