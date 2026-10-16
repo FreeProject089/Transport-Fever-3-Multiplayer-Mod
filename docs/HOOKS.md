@@ -1233,6 +1233,34 @@ money, ran in the game script's `postUpdate`.
 Every other action is refused with a line in `hook.log`, the same on every
 game, so the worlds stay alike. The native build tools come next.
 
+#### What applying an action costs
+
+Applying another player's build runs in this game's step, so a slow one
+stutters the game of everyone who watches it. The game script logs, from
+Lua's `os.clock` (nothing of it reaches the world; it is the elapsed time
+on Windows, but the process's CPU time on Linux and macOS, where the game's
+other threads count too):
+
+```
+mod: applying BuildRoad took 680.0 ms: nodes Street 1x 14.0 ms (4964), verdict 1x 15.0 ms, commands 1x 28.0 ms, junctions 1x 590.0 ms
+mod: actions since the last checkpoint: 2 applied in 160.0 ms (kind n/total/longest ms: BuildConstruction 2/160.0/88.0), registry.sync 0.0 ms over 4 calls
+```
+
+The first for each action that took at least 20 ms (`apply.SLOW_MS`), by
+part (`tpf3mp/apply.lua`, `apply.costText`): `nodes <network>` a read of
+a whole network (its nodes), `near <network>` a preview's octree lookup of
+nodes (the edges found; docs/BUILDING.md), `constructionAt` the search of every
+construction (how many), `junctions` the junction settings it keeps,
+`verdict` the game's `makeProposalData`, `refresh` and `regenerate` the
+game's own proposals for a construction, and `commands` every command it
+sent. The second at each checkpoint, by kind of action. A preview of
+another member's build is made the same way in the GUI (`tpf3mp/previews.lua`),
+and every 10 s while any arrive:
+
+```
+mod: build previews in the last 10.0 s: made 25 in 1396.0 ms (longest 158.0) [BuildRoad: nodes Street 1x 133.0 ms (4945)], drawn 25 in 405.0 ms (longest 29.0), retried 0 in 0.0 ms (longest 0.0)
+```
+
 ### The room's world
 
 A room plays its owner's world. On a server that keeps worlds, the owner
