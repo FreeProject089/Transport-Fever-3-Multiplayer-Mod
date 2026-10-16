@@ -225,6 +225,35 @@ function data()
 
 	-- The snapshot of a terrain tool's click, from its stroke as the hook read
 	-- it (tpf3mp_native.built): its Terraform actions, one a band of rows.
+	-- The level crossing window's click (crates/tpf3mp-hook/src/crossings.rs,
+	-- tpf3mp/crossings.lua): its SetCrossingType, or why the room does not
+	-- carry it. Either way the player is told when it does not go to the
+	-- room: the window itself shows nothing.
+	local CROSSING_WHY = "crossing window: "
+	local crossingsModule = nil
+	local function crossingEdit(native, whyNot)
+		local shape = "crossing window"
+		if native == nil then return { why = tostring(whyNot):sub(#CROSSING_WHY + 1), shape = shape, tell = true } end
+		if crossingsModule == nil then
+			local ok, m = pcall(ug_require, MOD .. "::/scripts/tpf3mp/crossings.lua")
+			crossingsModule = ok and type(m) == "table" and m or false
+		end
+		if not crossingsModule then return { why = "the crossings module does not load", shape = shape, tell = true } end
+		local action, why = crossingsModule.capture(native)
+		return { action = action, why = why, shape = shape, tell = true }
+	end
+	-- Tells the player, in the game bar (gui/tpf3mp/tpf3mp.script.lua), that
+	-- a click of theirs did not go to the room: under NOTICE_NOTE, a count
+	-- first, so the same refusal twice is told twice.
+	local NOTICE_NOTE = "tpf3mp.notice"
+	local noticed = 0
+	local function tell(l, why)
+		noticed = noticed + 1
+		local text = "Not in multiplayer yet: changing a level crossing's type"
+		if why and why ~= "" then text = text .. " (" .. tostring(why) .. ")" end
+		l:note(NOTICE_NOTE, tostring(noticed) .. "	" .. text)
+	end
+
 	local function terraformEdit(built)
 		local actions, why = capture.terraform(built)
 		if not actions then return { why = "the terrain tool's stroke: " .. tostring(why), shape = "terrain tool" } end
@@ -371,6 +400,8 @@ function data()
 					apply.log = function(line) linked:log(line) end
 					-- A terraform's grid goes to the hook (tpf3mp/apply.lua).
 					apply.terrain = function(grid) return linked:terrain(grid) end
+					-- A level crossing's type goes the same way (tpf3mp/apply.lua).
+					apply.crossing = function(entity, index) return linked:crossing(entity, index) end
 				end
 				lanes = lanesModule
 				capture = captureModule
@@ -883,6 +914,10 @@ function data()
 				elseif native == nil and type(whyNot) == "string" and whyNot:find("terrain tool: ", 1, true) == 1 then
 					-- The painter's, the asset brush's, or a stroke that did not read.
 					seen = { why = whyNot, shape = "terrain tool" }
+				elseif type(native) == "table" and native.crossingType then
+					seen = crossingEdit(native)
+				elseif native == nil and type(whyNot) == "string" and whyNot:find(CROSSING_WHY, 1, true) == 1 then
+					seen = crossingEdit(nil, whyNot)
 				elseif native ~= nil or whyNot ~= nil then
 					seen = moduleEdit(native, whyNot)
 				end
@@ -904,11 +939,13 @@ function data()
 						if seen.upgrade then l:log("upgrade handed to the room: " .. seen.upgrade) end
 					else
 						l:log("the player's build was not handed to the room: " .. tostring(why))
+						if seen.tell then tell(l, why) end
 					end
 				else
 					l:log("stopped a build the room cannot carry: "
 						.. tostring(seen and seen.why or "no proposal seen (a tool that tells game scripts nothing)")
 						.. ((seen and seen.shape) and (" [" .. seen.shape .. "]") or ""))
+					if seen and seen.tell then tell(l, seen.why) end
 				end
 				snapshots[handled] = nil
 				handled = handled + 1

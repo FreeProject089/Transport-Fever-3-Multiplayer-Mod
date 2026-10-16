@@ -67,6 +67,10 @@
 //!   why. `terrain()` disarms, and answers whether a build was filled
 //!   (`nil` when none was armed). Optional in the contract: a hook without
 //!   it applies no terraform.
+//! - `crossing(entity, type)`: likewise, arms the next build with level
+//!   crossing `entity` taking type `type` ([`crate::crossings`]): `true`, or
+//!   `nil` and why; `crossing()` disarms and answers whether a build was
+//!   filled. Optional: a hook without it sets no crossing's type.
 //! - `applied(index, ok, entity, why)`: in a game script's `postUpdate`,
 //!   after applying the batch's action `index` (from 1): whether it went,
 //!   what it made, if anything, and why not. For one of the player's own,
@@ -847,6 +851,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"built", native_built),
                 (b"replaying", native_replaying),
                 (b"terrain", native_terrain),
+                (b"crossing", native_crossing),
                 (b"applied", native_applied),
                 (b"results", native_results),
                 (b"status", native_status),
@@ -2695,6 +2700,46 @@ unsafe fn number_arg(api: &LuaApi, l: State, index: c_int) -> Option<f64> {
         let mut is_number = 0;
         let value = (api.tonumberx)(l, index, &mut is_number);
         (is_number != 0).then_some(value)
+    }
+}
+
+/// `crossing(entity, type)`: arms the next build the room's actions send
+/// with level crossing `entity` taking type `type` (this game's index);
+/// `crossing()` disarms and answers whether a build was filled
+/// ([`crate::crossings`]).
+unsafe extern "C-unwind" fn native_crossing(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread; its
+    // arguments are on it; a C function's stack has LUA_MINSTACK free slots.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) == TNIL {
+            match crate::crossings::disarm() {
+                Some(filled) => (api.pushboolean)(l, c_int::from(filled)),
+                None => (api.pushnil)(l),
+            }
+            return 1;
+        }
+        let whole = |n: Option<f64>| {
+            n.filter(|v| v.fract() == 0.0 && *v >= 0.0 && *v <= f64::from(i32::MAX))
+                .map(|v| v as i32)
+        };
+        let outcome = match (whole(number_arg(api, l, 1)), whole(number_arg(api, l, 2))) {
+            (Some(entity), Some(kind)) => crate::crossings::arm(entity, kind),
+            _ => Err("a crossing and a type are whole numbers".to_owned()),
+        };
+        match outcome {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushnil)(l);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
     }
 }
 

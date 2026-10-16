@@ -46,6 +46,7 @@
         "scripts/tpf3mp/capitals.lua",
         "scripts/tpf3mp/capture.lua",
         "scripts/tpf3mp/companies.lua",
+        "scripts/tpf3mp/crossings.lua",
         "scripts/tpf3mp/engine.lua",
         "scripts/tpf3mp/follow.lua",
         "scripts/tpf3mp/geom.lua",

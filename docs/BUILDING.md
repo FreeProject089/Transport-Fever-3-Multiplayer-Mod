@@ -604,7 +604,8 @@ then places along the track (Auto Signals) go as one `PlaceSignals`
 What an intent's payload carries: `tpf3mp_proto::action`, version
 `ACTION_SCHEMA_VERSION` (**26**; combines station access, company perks
 and preservation, plus named stops and gated asset removal; 26 adds a
-signal's settings to `PlaceStop` and `PlaceSignals`). This
+signal's settings to `PlaceStop` and `PlaceSignals`; 27 appends
+`SetCrossingType`). This
 integration combines the existing
 junction schema with the selected vehicle, depot, demolition, precedence
 and gated action additions described in [COVERAGE.md](COVERAGE.md).
@@ -671,6 +672,7 @@ appended.
 | `Perk` | a company perk from the construction menu: Industry Greenification (the industry by its canonical id, `IndustryId`, which every game binds by its construction, and the permit), or a marketing campaign (the town, the campaign's duration and line cost factor, the permit, and the price the tool charged). Gated off (`acceptance.lua`, `perks`) ([HOOKS.md](HOOKS.md), "Company perks") |
 | `Preserve` | a town building's Historic Preservation checkbox: the construction it stands in, by file and position, its index in that construction's town buildings, and whether it is preserved. Gated off (`acceptance.lua`, `preservation`) |
 | `PlaceSignals` | signals a mod's script places along existing tracks after its player's signal (Auto Signals): each track by its ends (node 0 first), each new signal's place along it from that end and side, each removed signal's place and construction; the new signals' construction, one-way and settings once. Every game rebuilds all the tracks in one proposal, or none. Behind `acceptance.lua`'s `signals` |
+| `SetCrossingType` | a level crossing's type, picked in the crossing's window: the crossing by the places of all its nodes (sorted, each once), the type by its resource file. Every game finds the one crossing on exactly those nodes, checks the acting company may change it (the crossing and each of its roads and tracks its own or no one's), gives it the type through an empty build the hook fills as the window fills its own (the crossing in the proposal's crossing map), and reads the type back. Gated off (`acceptance.lua`, `crossings`) |
 
 **Polylines.** A road or track build is a polyline: the tool's proposal by
 positions, the originator's decisions included:

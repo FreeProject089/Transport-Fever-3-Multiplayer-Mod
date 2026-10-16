@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 26;
+pub const ACTION_SCHEMA_VERSION: u32 = 27;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -86,6 +86,9 @@ pub const MAX_WAYPOINTS: usize = 32;
 /// Most industry types one prospection may find. Build 40408's economy has
 /// at most a handful per cargo.
 pub const MAX_INDUSTRY_TYPES: usize = 32;
+/// Most nodes one level crossing names. TF3 builds a crossing on the two
+/// ends of its connector.
+pub const MAX_CROSSING_NODES: usize = 8;
 
 /// A resource file name as the game lists it, such as
 /// `street/standard/town_medium_new.lua` or a vehicle's `.mdl`.
@@ -1237,6 +1240,39 @@ pub struct Preservation {
     pub preserved: bool,
 }
 
+/// A level crossing's type, chosen in the crossing's window (the native
+/// `RailroadCrossingComp`, whose build maps the crossing to the type: docs/
+/// HOOKS.md, "Level crossing types"). Appended under schema version 27.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossingType {
+    /// The crossing, by the places of all its nodes, sorted and each once:
+    /// a crossing whose nodes are not exactly these is another one.
+    pub nodes: BoundedVec<Pos, MAX_CROSSING_NODES>,
+    /// The type, by its resource file (`railroadCrossingTypeRep`'s name),
+    /// never its index, which each game assigns as it loads.
+    pub crossing_type: ResName,
+}
+
+impl CrossingType {
+    /// Refuses a crossing named by no node, by unsorted or repeated ones, or
+    /// a type with no name.
+    pub fn validate(&self) -> Result<(), ActionError> {
+        if self.nodes.is_empty() {
+            return Err(ActionError::Crossing("a crossing with no node"));
+        }
+        let key = |p: &Pos| (p.x, p.y, p.z);
+        if self.nodes.windows(2).any(|w| key(&w[0]) >= key(&w[1])) {
+            return Err(ActionError::Crossing(
+                "nodes not sorted, or one named twice",
+            ));
+        }
+        if self.crossing_type.as_str().is_empty() {
+            return Err(ActionError::Crossing("a type with no name"));
+        }
+        Ok(())
+    }
+}
+
 /// One player action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
@@ -1301,6 +1337,9 @@ pub enum Action {
     /// (`PlaceSignals`). Appended under schema version 26: the variants
     /// before it keep their bytes.
     PlaceSignals(PlaceSignals),
+    /// A level crossing's type ([`CrossingType`]). Appended under schema
+    /// version 27.
+    SetCrossingType(CrossingType),
 }
 
 #[derive(Debug, Error)]
@@ -1330,6 +1369,10 @@ pub enum ActionError {
     /// place off its edge.
     #[error("invalid signals: {0}")]
     Signals(&'static str),
+    /// A [`CrossingType`] naming no node, a node twice or out of order, or
+    /// no type.
+    #[error("invalid level crossing: {0}")]
+    Crossing(&'static str),
 }
 
 impl Action {
@@ -1362,6 +1405,7 @@ impl Action {
             Action::Preserve(_) => "Preserve",
             Action::CalendarSpeed { .. } => "CalendarSpeed",
             Action::PlaceSignals(_) => "PlaceSignals",
+            Action::SetCrossingType(_) => "SetCrossingType",
         }
     }
 
@@ -1390,6 +1434,7 @@ impl Action {
                 None => return Ok(()),
             },
             Self::PlaceSignals(signals) => return signals.validate(),
+            Self::SetCrossingType(crossing) => return crossing.validate(),
             _ => return Ok(()),
         };
         for (i, change) in changes.iter().enumerate() {
@@ -1553,7 +1598,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1596,7 +1641,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1631,7 +1676,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1649,7 +1694,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1664,7 +1709,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1675,7 +1720,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1687,7 +1732,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 19, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1724,7 +1769,7 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [26, 11]);
+            assert_eq!(payload.as_bytes()[..2], [27, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         // Appended under schema version 24: the perk tools take the next tag.
@@ -1732,7 +1777,7 @@ mod tests {
             industry: IndustryId(5),
             permit: None,
         });
-        assert_eq!(green.to_payload().unwrap().as_bytes(), [26, 21, 0, 5, 0]);
+        assert_eq!(green.to_payload().unwrap().as_bytes(), [27, 21, 0, 5, 0]);
         // Appended under schema version 24: Historic Preservation takes the
         // next tag.
         let preserve = Action::Preserve(Preservation {
@@ -1745,7 +1790,7 @@ mod tests {
         });
         assert_eq!(
             preserve.to_payload().unwrap().as_bytes(),
-            [26, 22, 1, b'b', 2, 0, 0, 0, 1]
+            [27, 22, 1, b'b', 2, 0, 0, 0, 1]
         );
         // Appended under schema version 26: signals on existing tracks take
         // the next tag.
@@ -1769,7 +1814,16 @@ mod tests {
         });
         assert_eq!(
             signals.to_payload().unwrap().as_bytes(),
-            [26, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
+            [27, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
+        );
+        // Appended under schema version 27: a level crossing's type.
+        let crossing = Action::SetCrossingType(CrossingType {
+            nodes: BoundedVec::new(vec![pos(0, 0, 0), pos(1, 0, 0)]).unwrap(),
+            crossing_type: Text::new("c").unwrap(),
+        });
+        assert_eq!(
+            crossing.to_payload().unwrap().as_bytes(),
+            [27, 25, 2, 0, 0, 0, 2, 0, 0, 1, b'c']
         );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),
@@ -1778,7 +1832,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

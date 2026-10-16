@@ -483,6 +483,12 @@ protected folder such as Program Files.
 - **Bridge and tunnel types.** Click a bridge or tunnel and pick another
   type, or none, in its window as usual: it is rebuilt in every player's
   game. A stop on it stays where it was.
+- **Level crossing types.** Picking another type in a level crossing's
+  window is refused in a room for now, and the game bar says so ("Not in
+  multiplayer yet: changing a level crossing's type"); the crossing keeps
+  its type in every game. The change is built and waits for a two-player
+  game test. A type picked in the road or track tool for a new crossing is
+  not carried yet either.
 - **Line waypoints, Industry Greenification marketing campaigns and
   Historic Preservation.**
   These new channels are refused pending a two-player game acceptance run.

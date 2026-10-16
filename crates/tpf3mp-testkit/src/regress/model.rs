@@ -662,6 +662,7 @@ impl State {
             // Signals a mod spaces along a track: the model keeps no
             // signals' places along their edges.
             Action::PlaceSignals(_) => Ok(()),
+            Action::SetCrossingType(_) => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }

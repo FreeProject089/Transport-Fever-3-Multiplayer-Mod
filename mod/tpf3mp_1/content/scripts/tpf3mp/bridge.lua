@@ -518,6 +518,22 @@ function Link:terrain(grid)
 	return result, why
 end
 
+-- While the room's actions run: arms the next build sent with level crossing
+-- `entity` taking type `index` (true, or nil and why), or with no arguments
+-- disarms, answering whether a build was filled (nil when none was armed).
+-- A hook without `crossing` (it is optional) sets no crossing's type.
+function Link:crossing(entity, index)
+	if type(self.native.crossing) ~= "function" then return nil, "this hook cannot set a crossing's type" end
+	local ok, result, why
+	if entity == nil then
+		ok, result, why = pcall(self.native.crossing)
+	else
+		ok, result, why = pcall(self.native.crossing, entity, index)
+	end
+	if not ok then return nil, "the hook refused: " .. tostring(result) end
+	return result, why
+end
+
 -- Whether the room's game runs. A hook that cannot say is taken to say yes:
 -- the guard then refuses rather than lets a command through unchecked.
 function Link:room()

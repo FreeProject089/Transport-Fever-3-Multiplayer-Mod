@@ -12,7 +12,7 @@
 -- run-1006-225251 and run-1006-230635; docs/MODS.md).
 -- Subsidies passed local two-game acceptance on build 40408, 2026-10-07:
 -- investigation/TPF3_SUBSIDIES_2026-10-07.md.
-local acceptance = { subsidies = true, rename = true, waypoints = false, terraform = true, bridges = true, perks = false, preservation = false, signals = true }
+local acceptance = { subsidies = true, rename = true, waypoints = false, terraform = true, bridges = true, perks = false, preservation = false, signals = true, crossings = false }
 
 function acceptance.check(action)
     local feature
@@ -22,6 +22,8 @@ function acceptance.check(action)
     -- A town building's Historic Preservation (action::Preservation).
     if action.Preserve then feature = "preservation" end
     if action.PlaceSignals then feature = "signals" end
+    -- A level crossing's type from its window (action::CrossingType).
+    if action.SetCrossingType then feature = "crossings" end
     if action.Rename or (action.VehicleOp and type(action.VehicleOp.change) == "table"
         and action.VehicleOp.change.Recolor) then feature = "rename" end
     local line = action.CreateLine and action.CreateLine.line

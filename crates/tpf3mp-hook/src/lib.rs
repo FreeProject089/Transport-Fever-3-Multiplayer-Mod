@@ -39,6 +39,7 @@ pub mod build_data;
 pub mod builds;
 pub mod cadence;
 pub mod clipboard;
+pub mod crossings;
 pub mod drawing;
 pub mod edgewatch;
 pub mod emission;

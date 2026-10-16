@@ -10,11 +10,11 @@ use tpf3mp_proto::{
     BoundedVec, MAX_PAYLOAD, Payload, Text,
     action::{
         ACTION_SCHEMA_VERSION, Action, ActionError, AssignLine, Bulldoze, BuyVehicle, CompanyId,
-        CompanyOp, ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration,
-        EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData,
-        LineId, LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES,
-        Network, NewSignal, NodeRef, OldSignal, Param, ParamValue, PlaceSignals, PlaceStop,
-        Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild,
+        CompanyOp, ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, CrossingType,
+        Decoration, EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange,
+        LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES,
+        MAX_VERTICES, Network, NewSignal, NodeRef, OldSignal, Param, ParamValue, PlaceSignals,
+        PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild,
         SignalEdge, StationId, StopRules, Structure, SubsidyOp, SubsidyRef, Tangent, Terminal,
         Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir, VehicleChange,
         VehicleId, VehicleOp, Vertex,
@@ -598,6 +598,13 @@ fn samples() -> Vec<Action> {
                 },
             ]),
         }),
+        Action::SetCrossingType(CrossingType {
+            nodes: list(vec![
+                pos(-4_000, 120_500, 3_250),
+                pos(4_000, 120_500, 3_250),
+            ]),
+            crossing_type: text("infrastructure/railroad_crossing/era_c_eu/era_c_eu.rcr"),
+        }),
     ]
 }
 
@@ -764,13 +771,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=24.
+    // Every top-level variant is sampled: postcard tags them 0..=25.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=24).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=25).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();
@@ -1071,4 +1078,51 @@ proptest! {
         versioned.extend(bytes);
         check(&versioned);
     }
+}
+
+/// A level crossing travels as the places of all its nodes, sorted and each
+/// once, and its type by name; a crossing with no node, nodes out of order or
+/// named twice, or a type with no name is refused on the wire and from the mod.
+#[test]
+fn a_crossing_type_names_every_node_once_in_order() {
+    let crossing = samples()
+        .into_iter()
+        .find_map(|action| match action {
+            Action::SetCrossingType(crossing) => Some(crossing),
+            _ => None,
+        })
+        .unwrap();
+    let table = lua::action_to_lua(&Action::SetCrossingType(crossing.clone())).unwrap();
+    let lua::LuaValue::Table(nodes) = table.get("SetCrossingType").unwrap().get("nodes").unwrap()
+    else {
+        panic!("nodes are a sequence");
+    };
+    assert_eq!(
+        nodes[0].1.get("x"),
+        Some(&lua::LuaValue::Number(-4.0)),
+        "a node's place is in metres in the mod"
+    );
+
+    let refused = |crossing: CrossingType, why: &str| {
+        let action = Action::SetCrossingType(crossing);
+        match action.validate() {
+            Err(ActionError::Crossing(said)) => assert_eq!(said, why),
+            other => panic!("{why}: {other:?}"),
+        }
+        let wire = postcard::to_stdvec(&(ACTION_SCHEMA_VERSION, &action)).unwrap();
+        assert!(Action::from_payload(&Payload::new(wire).unwrap()).is_err());
+        assert!(lua::action_from_lua(&lua::action_to_lua(&action).unwrap()).is_err());
+    };
+    let mut none = crossing.clone();
+    none.nodes = BoundedVec::empty();
+    refused(none, "a crossing with no node");
+    let mut reversed = crossing.clone();
+    reversed.nodes = list(vec![crossing.nodes[1], crossing.nodes[0]]);
+    refused(reversed, "nodes not sorted, or one named twice");
+    let mut twice = crossing.clone();
+    twice.nodes = list(vec![crossing.nodes[0], crossing.nodes[0]]);
+    refused(twice, "nodes not sorted, or one named twice");
+    let mut nameless = crossing;
+    nameless.crossing_type = text("");
+    refused(nameless, "a type with no name");
 }

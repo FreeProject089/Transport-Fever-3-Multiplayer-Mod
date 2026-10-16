@@ -2655,6 +2655,68 @@ function HANDLERS.Preserve(p)
 	return run(api.cmd.makeTownBuildingSetBlockedDevelopmentCmd(building, p.preserved == true))
 end
 
+-- A level crossing's type, from its window (tpf3mp/crossings.lua): the one
+-- crossing whose nodes are exactly where the action names them, if the
+-- acting company may change it (its own or no one's: the crossing and every
+-- road and track of it, an owner that does not read refused), takes the type
+-- as the window gives it: an empty build the hook fills with the crossing
+-- and type (crates/tpf3mp-hook/src/crossings.rs). The type is read back:
+-- unchanged, the game did not take it (the same in every game); anything
+-- else, or no crossing left, stops the replay, as the worlds may differ.
+function HANDLERS.SetCrossingType(change)
+	local crossings = module("crossings")
+	local entity, c = crossings.resolve(change.nodes)
+	local index = crossings.typeIndex(change.crossing_type)
+	local PLAYER_OWNED = api.type.ComponentType.PLAYER_OWNED
+	local function may(e, what)
+		if not pcall(api.engine.getComponent, e, PLAYER_OWNED) then
+			error("the owner of the " .. what .. " does not read", 0)
+		end
+		mine(e, what)
+	end
+	may(entity, "level crossing")
+	local edges = c.edges
+	for i = 1, (edges and #edges or 0) do may(edges[i], "level crossing's road or track") end
+	local before = c.typeIndex
+	if before == index then
+		log("crossing " .. tostring(entity) .. " is of type " .. tostring(change.crossing_type) .. " already")
+		return true
+	end
+	local _, nodes = crossings.places(c)
+	-- The game's script API reaches only node2rcType, which types the
+	-- crossings a proposal lays anew; the window retypes one in place
+	-- through a map of its own (crossing -> type), which the hook fills in
+	-- an empty build here, as the window's own (docs/HOOKS.md, "Level
+	-- crossing types").
+	if type(apply.crossing) ~= "function" then error("this hook cannot set a crossing's type", 0) end
+	local armed, why = apply.crossing(entity, index)
+	if armed ~= true then error("the hook would not take the crossing: " .. tostring(why), 0) end
+	local context = api.type.Context.new()
+	context.player = company()
+	local sent, err = pcall(function()
+		return run(api.cmd.makeWorldBuildProposalCmd(api.type.Proposal.new(), context, true, true))
+	end)
+	local filled = apply.crossing(nil)
+	if not sent then error(err, 0) end
+	if filled ~= true then error("the hook filled no build with the crossing", 0) end
+	-- What the game made of it: the crossing on the same nodes, which the
+	-- game makes anew (it removes the old one and adds one of the type).
+	local okAfter, after = pcall(api.engine.system.railRoadCrossingSystem.getRailroadCrossingForNode, nodes[1])
+	local now = okAfter and crossings.component(after)
+	if not now then
+		error({ replayFatal = "level crossing " .. tostring(entity) .. " is gone after its type change" }, 0)
+	end
+	if now.typeIndex == before then
+		error("the game did not change the crossing's type", 0)
+	end
+	if now.typeIndex ~= index then
+		error({ replayFatal = "level crossing " .. tostring(entity) .. " took type " .. tostring(now.typeIndex)
+			.. ", not " .. tostring(change.crossing_type) }, 0)
+	end
+	log("crossing " .. tostring(entity) .. " (now " .. tostring(after) .. ") set to type " .. tostring(change.crossing_type))
+	return true
+end
+
 -- The room's companies (tpf3mp/companies.lua): the acting player founds,
 -- joins, renames, recolours or dissolves one, and its head locks it, sends a
 -- player out or shares its stations, in `ctx.roster`; `ctx.seal` is the

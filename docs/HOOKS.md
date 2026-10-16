@@ -3428,6 +3428,95 @@ complete the playtest above. AGENTS.md currently prohibits automated game
 launches/modifications; a human must run this check or explicitly override
 that restriction before an agent runs it.
 
+### Level crossing types
+
+Clicking a level crossing opens `RailroadCrossingContent`, whose only child
+is the native `builtin.RailroadCrossingComp` (`gui/entity_window/
+make_entity_window.tl`): no Lua runs when the player picks another type.
+Its selection handler (build 40420: the `<lambda_5>` thunk 0x28a4ca0 ->
+`sub_28a35a0`) calls `UpdateRailRoadCrossingProposal` (0x28a41c0), the
+CanAfford check ("Not Enough Money") for the window's player, the
+`WorldBuildProposal` factory 0x9f0000 (withCostRep 0, ignoreErrors 0,
+**playerInitiated 1**) and `CommandList::Add` (0x28a386c). So in a room the
+hook's apply detour stops it like any player build (`builds.rs`), and game
+scripts hear nothing: until this reader the change was dropped in the
+clicker's game with no word to the player, and never reached the others
+(two games, 2026-10-16: equal rolling checks, the window back at the old
+type).
+
+The proposal (`construction_builder_util::Proposal`, the StreetProposal
+head `junctions.rs` reads) takes one of two shapes, chosen by whether the
+crossing's edge is found in the street graph's index (`sub_b4e690`):
+
+- the crossing entity mapped to the new type index in an
+  `std::unordered_map<int,int>` at +0xd0, nothing else. No Lua binding
+  reaches this map;
+- a rebuild of the crossing's segments, and each of its nodes mapped to
+  the type at +0x90: the map Lua's `SimpleStreetProposal.node2rcType`
+  converts to (`sub_10c6750`).
+
+`crates/tpf3mp-hook/src/crossings.rs` tells the window's `Add` call by its
+return address (`RailroadCrossingComp/type selection Add call`) and reads
+its proposal there, where the profile also finds both maps where they were
+(`StreetProposal/level crossing maps`, the constructor's `add rcx,0x90;
+call; lea rcx,[rdi+0xd0]`). The map is MSVC's: a sentinel list node at +8
+and the size at +0x10; each node next, previous, key (+0x10), value
+(+0x14). The reader walks the list to exactly its size, every link
+answered by its back link, no key twice. Only the first shape is carried:
+no geometry, no junction, an empty +0x90 and one crossing in +0xd0; any
+other is refused with why. A recognised click always keeps an answer
+(the crossing and type, or `crossing window: ` and why), so the GUI never
+hands another tool's preview for it.
+
+The GUI half of the game script (`tpf3mp_sim`) makes the action
+(`tpf3mp/crossings.lua`, `capture`): the crossing by the places of all its
+nodes, sorted by whole millimetres, and the type by its resource file
+(`railroadCrossingTypeRep.getName`; an index differs between games). A
+crossing gone, a type not offered here, or the type it has already is
+refused. Whatever is not handed to the room, the player is told in the
+game bar ("Not in multiplayer yet: changing a level crossing's type",
+why in brackets), through the note `tpf3mp.notice`, which the game bar
+plugin shows.
+
+Every game's replay (`apply.lua`, `SetCrossingType`) finds the crossings
+on a node within 0.5 m (any direction) of a named place, among the nodes
+on both a street and a track, by `railRoadCrossingSystem.
+getRailroadCrossingForNode`, and keeps the one whose nodes are exactly
+the named places, refusing none or two. The acting company must own the
+crossing and each of its edges or find them unowned (`mine`); an owner
+that does not read is refused.
+
+The script API cannot retype a crossing. `node2rcType` (+0x90) is read
+only where the proposal lays a crossing's streets anew (`sub_2644c80`,
+from `street_util::CreateShapes`, 0x263f4a0), so a proposal with nothing
+but it changes nothing (static reading). The window's map (+0xd0) is read
+in `CreateShapes` too (0x264012a): for each crossing the old entity goes to
+`RailroadCrossingProposalData`'s removals and a copy of it, nodes, edges
+and state kept, of the new type, to its additions; `street_util::
+UpdateEngine` removes and adds them. So the replay builds as the window
+does, through a carrier like the terraform's: the game script arms the
+hook (`tpf3mp_native.crossing(entity, type)`, this game's crossing and
+index), sends an empty `api.type.Proposal`, and the apply detour, while
+the room's actions run, fills it: the crossing into the carrier's
+crossing map through the game's own insert (`sub_567540`,
+`unordered_map<int,int>::try_emplace`, found through the window's call of
+it at 0x28a42cf, `UpdateRailRoadCrossingProposal/crossing map insert`,
+since it has eleven byte-identical twins; its head is checked), the type
+into the node it answers, the map read back to hold exactly that. A
+carrier with anything else in it is refused, and so is the build. The
+crossing is then read back by its first node: of the old type, the action
+is refused (alike in every game); of another type, or gone, the replay
+stops (`replayFatal`). The crossing gets a new entity, which the room
+never names: the next action finds it by its nodes again.
+
+Refused in the sender and in every replay until `acceptance.lua`'s
+`crossings` is turned on after a two-player game. Not covered: the
+window's rebuild shape; the cost (the window checks the player can afford
+the change; the carrier is built with the game's cost as any build of the
+room's, unchecked against the window's); crossing types in the room's checkpoints (no lane
+reads them); the type a road or track tool's toolbar picks for a new
+crossing (`rcType`, `node2rcType` of the tool's proposal), which the
+capture of builds drops, so each game's replay picks the engine's own.
 ### Build previews
 
 What a player's build tool shows before the click, the road, track,
