@@ -14415,8 +14415,6 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
         local link = assert(bridge.attach(bridge.find()))
         local actions = {
             { Preserve = { building = { file = 'b.con', at = { x = 0, y = 0, z = 0 } }, index = 0, preserved = true } },
-            { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
-            { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
             { Perk = { Greenify = { industry = 0 } } },
             { Perk = { Marketing = { town = 0, duration_ms = 1, line_cost_factor = 0.5, cost = 1 } } },
         }
@@ -14427,11 +14425,13 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             assert(not applied and why:find('awaits two%-player game acceptance'), tostring(why))
         end
         assert(#HOOK.commands == 0)
-        -- Renaming and recolouring (investigation/TPF3_RENAME_2026-10-07.md)
-        -- and subsidies (investigation/TPF3_SUBSIDIES_2026-10-07.md) passed
-        -- two-player game acceptance: neither port refuses them for it any
-        -- more, whatever else it finds wrong.
+        -- Renaming and recolouring (investigation/TPF3_RENAME_2026-10-07.md),
+        -- subsidies (investigation/TPF3_SUBSIDIES_2026-10-07.md) and line
+        -- waypoints (2026-10-16) passed two-player game acceptance: neither
+        -- port refuses them for it any more, whatever else it finds wrong.
         local accepted = {
+            { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
+            { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
             { Rename = { what = { Vehicle = 1 }, name = 'x' } },
             { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
             { Subsidy = { Accept = { uid = 1, kind = 'x' } } },
