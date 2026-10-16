@@ -7678,6 +7678,174 @@ fn the_bulldozer_removes_a_construction_or_edges_in_every_game() {
     assert_eq!(why, "removing an edge with a stop or signal on it");
 }
 
+/// Tracks with signals on them, as the bulldozer removes them (build 40420,
+/// 2026-10-16: "1 Signal Will Be Removed", refused in a room before): the
+/// edges go to the room, and every game removes them with exactly the
+/// signals on them, whether its own proposal lists them or not.
+#[test]
+fn the_bulldozer_removes_tracks_with_their_signals_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    lua.load(
+        "NODES[20] = { x = 200, y = 0, z = 0 } NODES[21] = { x = 300, y = 0, z = 0 } \
+         NODES[22] = { x = 400, y = 0, z = 0 } \
+         local t = { x = 100, y = 0, z = 0 } \
+         EDGES[200] = { node0 = 20, node1 = 21, tangent0 = t, tangent1 = t, objects = { { 700, 2 } } } \
+         EDGES[201] = { node0 = 21, node1 = 22, tangent0 = t, tangent1 = t, objects = { { 701, 2 }, { 702, 2 } } } \
+         TRACKS = { [20] = { 200 }, [21] = { 200, 201 }, [22] = { 201 } } \
+         local streets = api.engine.system.streetSystem \
+         streets.getNode2TrackEdgeMap = function() return TRACKS end \
+         streets.getNodeTrackSegments = function(n) return TRACKS[n] or {} end \
+         api.type.ComponentType.PLAYER_OWNED = 15 \
+         OWNERS = {} \
+         local get = api.engine.getComponent \
+         api.engine.getComponent = function(e, kind) \
+             if kind == 15 then return OWNERS[e] and { player = OWNERS[e] } or nil end return get(e, kind) end \
+         GAME_LISTS = {} \
+         api.engine.util.proposal = { makeSegmentsRemoveProposal = function(ids) \
+             return { removesEdges = table.concat(ids, ','), toAdd = {}, toRemove = {}, \
+                 proposal = { edgeObjectsToRemove = GAME_LISTS } } end } \
+         function SIGNALLED(removed) \
+             local function seg(e) local c, objects = EDGES[e], {} \
+                 for i, o in ipairs(EDGES[e].objects) do objects[i] = { o[1], o[2] } end \
+                 return { entity = e, type = 1, \
+                 comp = { node0 = c.node0, node1 = c.node1, objects = objects } } end \
+             return { toAdd = {}, toRemove = {}, proposal = { addedNodes = {}, addedSegments = {}, \
+                 removedNodes = {}, removedSegments = { seg(200), seg(201) }, \
+                 edgeObjectsToAdd = {}, edgeObjectsToRemove = removed } } \
+         end",
+    )
+    .exec()
+    .unwrap();
+    let captured: String = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local action, why = capture.bulldoze(SIGNALLED({ 700, 701, 702 })) \
+             if not action then error(why) end \
+             TRACKS_GONE = action \
+             local e = action.Bulldoze.Edges \
+             return table.concat({ e.network, #e.edges, e.edges[1].a.x, e.edges[2].b.x, \
+                 tostring(schema_check(action)) }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(captured, "Track|2|200|400|true");
+
+    // A signal missing from the removal, one listed twice, one not on the
+    // tracks, a stop on them, or a construction removed with them: refused.
+    for (mutation, expected) in [
+        ("removed = { 700, 701 }", "removing a stop or signal"),
+        (
+            "removed = { 700, 701, 702, 702 }",
+            "removing a stop or signal",
+        ),
+        (
+            "removed = { 700, 701, 702, 703 }",
+            "removing a stop or signal",
+        ),
+        (
+            "p.proposal.removedSegments[2].comp.objects[2] = { 702, 0 }",
+            "removing a stop or signal",
+        ),
+        ("p.toRemove = { 5000 }", "removing a stop or signal"),
+        (
+            "p.proposal.removedSegments[2].type = 0",
+            "removing a stop or signal",
+        ),
+    ] {
+        let why: String = lua
+            .load(format!(
+                "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+                 local removed = {{ 700, 701, 702 }} \
+                 {} \
+                 local p = SIGNALLED(removed) {} \
+                 local _, why = capture.bulldoze(p) return tostring(why)",
+                if mutation.starts_with("removed") {
+                    mutation
+                } else {
+                    ""
+                },
+                if mutation.starts_with("removed") {
+                    ""
+                } else {
+                    mutation
+                },
+            ))
+            .eval()
+            .unwrap();
+        assert_eq!(why, expected, "{mutation}");
+    }
+    // Signals on the removed edges but none in the removal: still refused.
+    let why: String = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local _, why = capture.bulldoze(SIGNALLED({})) return tostring(why)",
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(why, "removing an edge with a stop or signal on it");
+
+    // Every game removes both tracks and the three signals: given where
+    // its own proposal leaves any out, its own list kept where it names
+    // them all.
+    for (listed, sent) in [
+        ("{}", "700,701,702"),
+        ("{ 701 }", "700,701,702"),
+        ("{ 702, 700, 701 }", "702,700,701"),
+    ] {
+        lua.load(format!(
+            "GAME_LISTS = {listed} SENT = {{}} HOOK.applied = {{}} \
+             HOOK.batch = {{ TRACKS_GONE }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap();
+        let removed: String = lua
+            .load(
+                "local p = SENT[1] and SENT[1].proposal \
+                 return table.concat({ tostring(HOOK.applied[1].ok), tostring(p and p.removesEdges), \
+                     p and table.concat(p.proposal.edgeObjectsToRemove, ',') or 'none', \
+                     tostring(SENT[1] and SENT[1].context.player) }, '|')",
+            )
+            .eval()
+            .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+        assert_eq!(
+            removed,
+            format!("true|200,201|{sent}|25"),
+            "game lists {listed}"
+        );
+    }
+
+    // A game whose removal would take another object, a stop on a track
+    // where the room's has a signal, or another company's signal: refused
+    // there, nothing sent.
+    for (setup, why) in [
+        (
+            "GAME_LISTS = { 700, 999 }",
+            "the game would remove an edge object 999 the bulldozer did not",
+        ),
+        (
+            "EDGES[201].objects = { { 701, 2 }, { 702, 1 } }",
+            "edge 2 has a stop on it",
+        ),
+        ("OWNERS[701] = 30", "the signal belongs to another company"),
+    ] {
+        lua.load(format!(
+            "GAME_LISTS = {{}} OWNERS = {{}} \
+             EDGES[201].objects = {{ {{ 701, 2 }}, {{ 702, 2 }} }} \
+             {setup} SENT = {{}} HOOK.applied = {{}} \
+             HOOK.batch = {{ TRACKS_GONE }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap();
+        let refused: String = lua
+            .load("return #SENT .. '|' .. tostring(HOOK.applied[1].ok) .. '|' .. tostring(HOOK.applied[1].why)")
+            .eval()
+            .unwrap();
+        assert_eq!(refused, format!("0|false|{why}"), "{setup}");
+    }
+}
+
 #[test]
 fn the_bulldozer_removes_only_a_stock_airports_frozen_runway_signals() {
     let (lua, _script) = engine();
@@ -9026,6 +9194,104 @@ fn the_bulldozer_removes_a_stop_in_every_game() {
     assert_eq!(
         removed, "1|1|556|100|555|25",
         "the other stop kept under its own entity"
+    );
+}
+
+/// A two-sided stop, as the bulldozer removes it with one click (build
+/// 40420, 2026-10-16: "removing more than one stop at once" in a room): both
+/// its stops go to the room as one action, and every game rebuilds the edge
+/// once without them, its other stop kept.
+#[test]
+fn the_bulldozer_removes_both_stops_of_a_two_sided_stop_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    lua.load(
+        "local two = '::/stations/street/small_stops/small_new_twosided.con' \
+         OBJECTS[555] = { transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 56,0.2,0,1 }, edgeObjectConstruction = two } \
+         OBJECTS[556] = { transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 44,0.2,0,1 }, edgeObjectConstruction = two } \
+         OBJECTS[558] = { transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 56,20,0,1 }, edgeObjectConstruction = two } \
+         function TWO_SIDED(objects, kept) \
+             local function seg(e, o) return { entity = e, type = 0, comp = { node0 = 8, node1 = 9, \
+                 tangent0 = { x = 0, y = 80, z = 0 }, tangent1 = { x = 0, y = 80, z = 0 }, objects = o } } end \
+             return { toAdd = {}, toRemove = {}, proposal = { addedNodes = {}, removedNodes = {}, \
+                 removedSegments = { seg(100, objects) }, addedSegments = { seg(-1, kept) }, \
+                 edgeObjectsToAdd = {} } } \
+         end",
+    )
+    .exec()
+    .unwrap();
+    let removal: String = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local action, why = capture.bulldoze(TWO_SIDED({ { 555, 0 }, { 556, 1 }, { 558, 0 } }, { { 558, 0 } })) \
+             if not action then error(why) end \
+             STOPS = action \
+             local b = action.Bulldoze.EdgeObjects \
+             return table.concat({ tostring(schema_check(action)), b.edge.network, #b.objects, \
+                 b.objects[1].at.x, b.objects[2].at.x, b.objects[1].model }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        removal,
+        "true|Street|2|56|44|::/stations/street/small_stops/small_new_twosided.con"
+    );
+    // Two stops on one side, or of two constructions, are not one stop.
+    for (objects, setup) in [
+        ("{ { 555, 0 }, { 556, 0 } }", ""),
+        (
+            "{ { 555, 0 }, { 556, 1 } }",
+            "OBJECTS[556].edgeObjectConstruction = '::/stations/street/small_stops/small_new.con'",
+        ),
+    ] {
+        let why: String = lua
+            .load(format!(
+                "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+                 local model = OBJECTS[556].edgeObjectConstruction {setup} \
+                 local _, why = capture.bulldoze(TWO_SIDED({objects}, {{}})) \
+                 OBJECTS[556].edgeObjectConstruction = model \
+                 return tostring(why)"
+            ))
+            .eval()
+            .unwrap();
+        assert_eq!(
+            why, "removing more than one stop at once",
+            "{objects} {setup}"
+        );
+    }
+
+    // Every game rebuilds edge 100 once, without both, stop 558 kept.
+    lua.load(
+        "EDGES[100].objects = { { 555, 0 }, { 556, 1 }, { 558, 0 } } HOOK.batch = { STOPS } \
+         UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let removed: String = lua
+        .load(
+            "local p = SENT[1].proposal.streetProposal local e = p.edgesToAdd[1] \
+             return table.concat({ #SENT, #e.comp.objects, e.comp.objects[1][1], \
+                 table.concat(p.edgesToRemove, ','), table.concat(p.edgeObjectsToRemove, ',') }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert_eq!(removed, "1|1|558|100|555,556");
+
+    // A game where one of them is gone removes neither.
+    lua.load(
+        "EDGES[100].objects = { { 555, 0 }, { 558, 0 } } SENT = {} HOOK.applied = {} \
+         HOOK.batch = { STOPS } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    let refused: String = lua
+        .load("return #SENT .. '|' .. tostring(HOOK.applied[1].ok) .. '|' .. tostring(HOOK.applied[1].why)")
+        .eval()
+        .unwrap();
+    assert_eq!(
+        refused,
+        "0|false|no ::/stations/street/small_stops/small_new_twosided.con there"
     );
 }
 

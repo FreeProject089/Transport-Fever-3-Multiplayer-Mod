@@ -511,7 +511,8 @@ protected folder such as Program Files.
   with stops keeps them. So do the track menu's tools: electrification,
   a track's type and its decorations (seen with the road tools; the track
   tools are not yet tried in a real game). Remove them, and roads and
-  tracks, with the bulldozer.
+  tracks, with the bulldozer: a two-sided stop goes with one click, and
+  a track takes its signals with it.
 - **Airfields and airports.** Build the game's stock airfield or airport
   from **Air** with a hangar if you want to buy aircraft there. Place roads
   near the passenger building as in the base game. Use **Configure** on

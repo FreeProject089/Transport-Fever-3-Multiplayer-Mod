@@ -1448,6 +1448,52 @@ local function townBuildingsRemoved(proposal, named)
 	return table.concat(ids, ",")
 end
 
+-- The signals on the tracks a removal takes away go with them, in its
+-- edgeObjectsToRemove: an edge removed with objects still on it leaves them
+-- pointing nowhere (on TPF2 that crashed every game; docs/BUILDING.md).
+-- makeSegmentsRemoveProposal answers a whole Proposal, its street part in
+-- `proposal` (as the bulldozer's own). Its list may name them already; one
+-- that names anything else refuses the removal, and one that leaves any
+-- out is given them, and must then read back exactly those, else the
+-- removal is refused too.
+local function withSignalsRemoved(proposal, signals)
+	local want, unique = {}, {}
+	for _, id in ipairs(signals) do
+		if not want[id] then unique[#unique + 1] = id end
+		want[id] = true
+	end
+	signals = unique
+	table.sort(signals)
+	local function listed()
+		local ok, out = pcall(function()
+			local l, out = proposal.proposal.edgeObjectsToRemove, {}
+			for i = 1, (l and #l or 0) do out[i] = l[i] end
+			return out
+		end)
+		if not ok or type(out) ~= "table" then
+			error("the game's removal does not say which signals it takes", 0)
+		end
+		return out
+	end
+	-- Exactly the signals, each once; or false, and raises for anything else.
+	local function exactly(l)
+		local seen = {}
+		for _, id in ipairs(l) do
+			if not want[id] then
+				error("the game would remove an edge object " .. tostring(id) .. " the bulldozer did not", 0)
+			end
+			if seen[id] then error("the game's removal names signal " .. tostring(id) .. " twice", 0) end
+			seen[id] = true
+		end
+		return #l == #signals
+	end
+	if not exactly(listed()) then
+		pcall(function() proposal.proposal.edgeObjectsToRemove = signals end)
+		if not exactly(listed()) then error("the game's removal will not take the signals on the tracks", 0) end
+	end
+	log("removing signals " .. table.concat(signals, ",") .. " with their tracks")
+end
+
 -- The bulldozer's removals, as the game makes them itself: a construction
 -- with what is its own (createProposalRemove: its entrance edge and node, as
 -- the bulldozer proposed them on build 40408; a town building alone), or
@@ -1472,21 +1518,32 @@ function HANDLERS.Bulldoze(b)
 	elseif b.Edges then
 		local network = b.Edges.network
 		local nodes = readNodes(network)
-		local ids = {}
+		local ids, signals = {}, {}
 		for k, ends in ipairs(b.Edges.edges) do
 			local e = edgeBetween(nodes, network, arr(ends.a), arr(ends.b))
 			if e == nil then error("no " .. network .. " edge to remove (" .. k .. ")", 0) end
-			if #(e.comp.objects or {}) > 0 then error("edge " .. k .. " has a stop or signal on it", 0) end
+			-- A track's signals go with it, as the bulldozer removes them; a
+			-- stop, or any object on a street, refuses it.
+			for _, o in ipairs(e.comp.objects or {}) do
+				if network ~= "Track" or o[2] ~= enum("EdgeObjectType").SIGNAL then
+					error("edge " .. k .. " has a stop on it", 0)
+				end
+				mine(o[1], "signal")
+				signals[#signals + 1] = o[1]
+			end
 			mine(e.id, "road or track")
 			ids[#ids + 1] = e.id
 		end
 		proposal = proposals.makeSegmentsRemoveProposal(ids)
+		if #signals > 0 then withSignalsRemoved(proposal, signals) end
 		local gone = townBuildingsRemoved(proposal, b.Edges.buildings or {})
 		log("removing " .. network .. " edges " .. table.concat(ids, ",")
 			.. (gone ~= "" and (" and town buildings " .. gone) or ""))
 	elseif b.EdgeObject then
 		-- A simple proposal: the game's verdict first (buildProposal).
-		return removeEdgeObject(b.EdgeObject, context)
+		return removeEdgeObject(b.EdgeObject.edge, { b.EdgeObject }, context)
+	elseif b.EdgeObjects then
+		return removeEdgeObject(b.EdgeObjects.edge, b.EdgeObjects.objects, context)
 	elseif b.Assets then
 		return removeAssets(b.Assets, context)
 	else
@@ -1805,32 +1862,40 @@ function HANDLERS.PlaceStop(stop)
 	return built
 end
 
--- A stop the bulldozer removes: the object of that construction on the
--- edge, nearest where it stood, within 2 m.
-function removeEdgeObject(ref, context)
-	local network = ref.edge.network
-	local e = stopEdge(ref.edge)
-	local best, bestD
-	for _, o in ipairs(e.comp.objects or {}) do
-		local c = api.engine.getComponent(o[1], api.type.ComponentType.EDGE_OBJECT)
-		local t = c and c.transf
-		if c and c.edgeObjectConstruction == ref.model and t then
-			local dx, dy, dz = t[13] - ref.at.x, t[14] - ref.at.y, t[15] - ref.at.z
-			local dist = dx * dx + dy * dy + dz * dz
-			if dist <= 4 and (bestD == nil or dist < bestD or (dist == bestD and o[1] < best)) then
-				best, bestD = o[1], dist
+-- The stops the bulldozer removes from one edge (one, or both of a
+-- two-sided stop): for each, the object of its construction on the edge
+-- nearest where it stood, within 2 m, each a different one; the edge
+-- rebuilt once without them.
+function removeEdgeObject(edge, removed, context)
+	local network = edge.network
+	local e = stopEdge(edge)
+	local taken, gone, names = {}, {}, {}
+	for _, ref in ipairs(removed) do
+		local best, bestD
+		for _, o in ipairs(e.comp.objects or {}) do
+			local c = not taken[o[1]] and api.engine.getComponent(o[1], api.type.ComponentType.EDGE_OBJECT)
+			local t = c and c.transf
+			if c and c.edgeObjectConstruction == ref.model and t then
+				local dx, dy, dz = t[13] - ref.at.x, t[14] - ref.at.y, t[15] - ref.at.z
+				local dist = dx * dx + dy * dy + dz * dz
+				if dist <= 4 and (bestD == nil or dist < bestD or (dist == bestD and o[1] < best)) then
+					best, bestD = o[1], dist
+				end
 			end
 		end
+		if best == nil then error("no " .. tostring(ref.model) .. " there", 0) end
+		mine(best, "stop")
+		taken[best] = true
+		gone[#gone + 1] = best
+		names[#names + 1] = tostring(ref.model) .. " " .. tostring(best)
 	end
-	if best == nil then error("no " .. tostring(ref.model) .. " there", 0) end
-	mine(best, "stop")
 	local objects = {}
 	for _, o in ipairs(e.comp.objects) do
-		if o[1] ~= best then objects[#objects + 1] = { o[1], o[2] } end
+		if not taken[o[1]] then objects[#objects + 1] = { o[1], o[2] } end
 	end
 	local proposal = rebuildWith(e, network, objects)
-	proposal.streetProposal.edgeObjectsToRemove = { best }
-	log("removing " .. tostring(ref.model) .. " " .. tostring(best) .. " from " .. network .. " edge " .. e.id)
+	proposal.streetProposal.edgeObjectsToRemove = gone
+	log("removing " .. table.concat(names, ", ") .. " from " .. network .. " edge " .. e.id)
 	return buildProposal(proposal, context)
 end
 

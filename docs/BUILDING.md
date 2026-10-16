@@ -36,9 +36,9 @@ The shape tells the tool apart (measured unless noted):
 | construction placement | `toAdd[0]` plus the template's own street pieces (a one-track modular rail station: 25 track nodes, 24 edges); `toRemove` empty |
 | module edit | `toRemove[0]` the old construction, `toAdd[0]` the new `ConstructionEntity` (same file, new params); a modular station re-adds its internal track |
 | stop, signal, waypoint placement | the edge removed and re-added, plus one edge-object record |
-| stop or signal bulldoze | the edge removed and re-added without the object |
+| stop or signal bulldoze | the edge removed and re-added without the object; a two-sided stop's two objects together (build 40420) |
 | construction bulldoze | `toRemove` populated, nothing added |
-| road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street's also lists the town buildings along it in `toRemove` (seen on build 40408) |
+| road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street's also lists the town buildings along it in `toRemove` (seen on build 40408), and a track's the signals on it in `edgeObjectsToRemove` (build 40420) |
 | tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file, its desc `autoRemovable`: the group rebuilt without the assets removed, thin instances then full ones (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408); nothing added when the last assets of a group go |
 | terraform | no nodes or segments; a `Grid<{height, base}>` of 4 m cells |
 | paint | no nodes or segments; the material index grid and its mask |
@@ -531,8 +531,17 @@ bulldozer removes, the same way (HOOKS.md, "The build tools"): a
 edge named by its ends within 0.5 m, the stop's place by the point of the
 edge's centreline where it stands, and the stop's construction, which the
 GUI notes from the construction menu (TF3's proposal does not name it). A
-two-sided stop goes as one `PlaceStop` built on both sides. A stop that
-replaces another stays refused. Signals and waypoints go the same way, with
+two-sided stop goes as one `PlaceStop` built on both sides, and the
+bulldozer's removal of it, both its stops at once, as one
+`Bulldoze::EdgeObjects` (schema 27): every game finds each of the two by
+its construction within 2 m of where it stood and rebuilds the edge once
+without them, or removes neither. A stop that replaces another stays
+refused. A track bulldozed with signals on it goes as `Bulldoze::Edges`:
+every game finds the same tracks, refuses the removal if any of them
+carries a stop or another company's signal, and removes the tracks with
+exactly the signals on them, listed in the proposal's
+`edgeObjectsToRemove` (an edge removed with objects left on it crashed
+TPF2's games). Signals and waypoints go the same way, with
 the settings the signal tool builds them with (its
 `EdgeObjectBuilder.params`, which every game sets on the signal it builds:
 a mod's settings, Auto Signals' spacing among them). Signals a mod's script
@@ -602,9 +611,10 @@ then places along the track (Auto Signals) go as one `PlaceSignals`
 ## The action schema
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
-`ACTION_SCHEMA_VERSION` (**26**; combines station access, company perks
+`ACTION_SCHEMA_VERSION` (**27**; combines station access, company perks
 and preservation, plus named stops and gated asset removal; 26 adds a
-signal's settings to `PlaceStop` and `PlaceSignals`). This
+signal's settings to `PlaceStop` and `PlaceSignals`; 27 the bulldozer's
+removal of a two-sided stop, `Bulldoze::EdgeObjects`). This
 integration combines the existing
 junction schema with the selected vehicle, depot, demolition, precedence
 and gated action additions described in [COVERAGE.md](COVERAGE.md).
@@ -652,7 +662,7 @@ appended.
 |---|---|
 | `BuildRoad` | street type (TF3: its road template), road style (TF3), bus lane, tram track (none, plain, electric), a polyline whose links may each name their own kind, decorations, the towns' lock and the company's ownership (the road modifiers) |
 | `BuildTrack` | track type (TF3: its road template), road style (TF3), catenary, a polyline |
-| `Bulldoze` | edges of one network by their ends, with the town buildings the game removes along them, each by file and position; or a construction (a town building among them) by file and position; or a stop, signal or waypoint by its edge, position and model |
+| `Bulldoze` | edges of one network by their ends, with the town buildings the game removes along them, each by file and position; or a construction (a town building among them) by file and position; or a stop, signal or waypoint by its edge, position and model; or both stops of a two-sided stop, each by position and model, on one edge (schema 27) |
 | `BuildConstruction` | file, transform, every parameter (`seed` included), name, the construction it replaces for a module edit, and its connection: the streets and tracks its tool built with it, as a polyline whose every link names its kind |
 | `BuyVehicle` | the depot by its construction's file and position and its index among the construction's depots (its `depots`, then its subconstructions that are depots: an airfield's or airport's hangar; an airport's second hangar), the consist front to back (each part's model, facing, each compartment's load, colour), its groups and multiple units |
 | `SellVehicle` | vehicles |

@@ -11,10 +11,10 @@ use tpf3mp_proto::{
     action::{
         ACTION_SCHEMA_VERSION, Action, ActionError, AssignLine, Bulldoze, BuyVehicle, CompanyId,
         CompanyOp, ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, Decoration,
-        EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange, LineData,
-        LineId, LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES, MAX_VERTICES,
-        Network, NewSignal, NodeRef, OldSignal, Param, ParamValue, PlaceSignals, PlaceStop,
-        Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild,
+        EdgeEnds, EdgeKind, EdgeObjectAt, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange,
+        LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES,
+        MAX_VERTICES, Network, NewSignal, NodeRef, OldSignal, Param, ParamValue, PlaceSignals,
+        PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild,
         SignalEdge, StationId, StopRules, Structure, SubsidyOp, SubsidyRef, Tangent, Terminal,
         Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir, VehicleChange,
         VehicleId, VehicleOp, Vertex,
@@ -276,6 +276,22 @@ fn samples() -> Vec<Action> {
             },
             at: pos(45_000, 3_000, 0),
             model: text("station/street/bus_stop.mdl"),
+        }),
+        Action::Bulldoze(Bulldoze::EdgeObjects {
+            edge: EdgeRef {
+                network: Network::Street,
+                ends: ends(pos(10, 0, 0), pos(90_000, 0, 0)),
+            },
+            objects: list(vec![
+                EdgeObjectAt {
+                    at: pos(45_000, 3_000, 0),
+                    model: text("stations/street/small_stops/small_new_twosided.con"),
+                },
+                EdgeObjectAt {
+                    at: pos(45_000, -3_000, 0),
+                    model: text("stations/street/small_stops/small_new_twosided.con"),
+                },
+            ]),
         }),
         Action::BuildConstruction(ConstructionBuild {
             file: text("station/rail/modular_station/modular_station.con"),

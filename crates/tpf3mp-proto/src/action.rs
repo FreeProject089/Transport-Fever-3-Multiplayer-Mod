@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 26;
+pub const ACTION_SCHEMA_VERSION: u32 = 27;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -526,6 +526,25 @@ pub enum Bulldoze {
     /// Trees and other assets taken out of their asset group, which every
     /// game builds again from its own copy without them (schema 25).
     Assets(AssetRemoval),
+    /// The stops one bulldozer click removes from one edge together: both
+    /// of a two-sided stop (schema 27). Each is the stop of its model on
+    /// the edge nearest its `at`, every one a different object; every game
+    /// rebuilds the edge once without them.
+    EdgeObjects {
+        edge: EdgeRef,
+        objects: BoundedVec<EdgeObjectAt, MAX_REMOVED_STOPS>,
+    },
+}
+
+/// Most stops one bulldoze of an edge's objects removes: a two-sided stop's.
+pub const MAX_REMOVED_STOPS: usize = 2;
+
+/// A stop, signal or waypoint on an edge: its construction's file and where
+/// it stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeObjectAt {
+    pub at: Pos,
+    pub model: ResName,
 }
 
 /// One asset of an asset group: its model's file and where it stands,
@@ -1553,7 +1572,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1596,7 +1615,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1631,7 +1650,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1649,7 +1668,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1664,7 +1683,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1675,7 +1694,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1687,7 +1706,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 19, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1724,7 +1743,7 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [26, 11]);
+            assert_eq!(payload.as_bytes()[..2], [27, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         // Appended under schema version 24: the perk tools take the next tag.
@@ -1732,7 +1751,7 @@ mod tests {
             industry: IndustryId(5),
             permit: None,
         });
-        assert_eq!(green.to_payload().unwrap().as_bytes(), [26, 21, 0, 5, 0]);
+        assert_eq!(green.to_payload().unwrap().as_bytes(), [27, 21, 0, 5, 0]);
         // Appended under schema version 24: Historic Preservation takes the
         // next tag.
         let preserve = Action::Preserve(Preservation {
@@ -1745,7 +1764,7 @@ mod tests {
         });
         assert_eq!(
             preserve.to_payload().unwrap().as_bytes(),
-            [26, 22, 1, b'b', 2, 0, 0, 0, 1]
+            [27, 22, 1, b'b', 2, 0, 0, 0, 1]
         );
         // Appended under schema version 26: signals on existing tracks take
         // the next tag.
@@ -1769,7 +1788,39 @@ mod tests {
         });
         assert_eq!(
             signals.to_payload().unwrap().as_bytes(),
-            [26, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
+            [27, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
+        );
+        // Appended under schema version 27: a two-sided stop's removal takes
+        // the next Bulldoze tag.
+        let stops = Action::Bulldoze(Bulldoze::EdgeObjects {
+            edge: EdgeRef {
+                network: Network::Street,
+                ends: EdgeEnds {
+                    a: pos(0, 0, 0),
+                    b: pos(1, 0, 0),
+                },
+            },
+            objects: BoundedVec::new(vec![
+                EdgeObjectAt {
+                    at: pos(0, 1, 0),
+                    model: Text::new("s").unwrap(),
+                },
+                EdgeObjectAt {
+                    at: pos(0, -1, 0),
+                    model: Text::new("s").unwrap(),
+                },
+            ])
+            .unwrap(),
+        });
+        assert_eq!(
+            stops.to_payload().unwrap().as_bytes(),
+            [
+                27, // schema version
+                2,  // Action::Bulldoze
+                4,  // Bulldoze::EdgeObjects
+                0, 0, 0, 0, 2, 0, 0, // Street, (0, 0, 0), (1, 0, 0)
+                2, 0, 2, 0, 1, b's', 0, 1, 0, 1, b's', // two stops, (0, 1, 0) and (0, -1, 0)
+            ]
         );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),
@@ -1778,7 +1829,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10
