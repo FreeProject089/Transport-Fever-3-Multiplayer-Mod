@@ -52,8 +52,12 @@ use crate::lobby;
 /// The Lua run once in each of the game's Lua states, the first time the
 /// loader runs there. It wraps `resolveutil.loadfile` (the function
 /// `base/init.lua` calls for every `ug_require`) so that the game's
-/// `gui/menu/main_page.tl` is served from the mod's copy. The mod's own copy
-/// is never redirected, so the wrap cannot loop, and the original resolved
+/// `gui/menu/main_page.tl` is served from the mod's copy, and so is the line
+/// manager's window, `gui/line_vehicle_mgmt/manager_window.tl` (the game's,
+/// with the stations clicked while a new line is being created kept for it,
+/// not dropped: in a room that takes the room's round trip). Either copy that
+/// does not load leaves the game's own. The mod's own copies are never
+/// redirected, so the wrap cannot loop, and the original resolved
 /// path stays the module's cache key, so the rest of the menu sees the same
 /// `MainPage` value it always did. Requests to the hook pass straight
 /// through to the original, where the detour answers them.
@@ -74,6 +78,14 @@ ru.loadfile = function(path, ...)
 			return chunk, err
 		end
 		pcall(debugPrint, "[tpf3mp] main menu: the mod's main_page.tl is not loadable (" .. tostring(ok and err or chunk) .. "); the menu stays the game's")
+	end
+	if type(path) == "string" and path:find("gui/line_vehicle_mgmt/manager_window%.tl$") and not path:find("^tpf3mp_1::") then
+		local ok, chunk, err = pcall(orig, "tpf3mp_1::/gui/line_vehicle_mgmt/manager_window.tl", ...)
+		if ok and chunk then
+			pcall(debugPrint, "[tpf3mp] line manager: " .. path .. " is served from tpf3mp_1::/gui/line_vehicle_mgmt/manager_window.tl")
+			return chunk, err
+		end
+		pcall(debugPrint, "[tpf3mp] line manager: the mod's manager_window.tl is not loadable (" .. tostring(ok and err or chunk) .. "); the window stays the game's")
 	end
 	return orig(path, ...)
 end
@@ -835,6 +847,57 @@ mod tests {
         };
         assert!(second.is_null());
         assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn the_patch_serves_the_line_managers_window_from_the_mod() {
+        assert!(PATCH.contains(r#"path:find("gui/line_vehicle_mgmt/manager_window%.tl$")"#));
+        assert!(
+            PATCH.contains(
+                r#"pcall(orig, "tpf3mp_1::/gui/line_vehicle_mgmt/manager_window.tl", ...)"#
+            )
+        );
+        assert!(
+            PATCH.contains("the window stays the game's"),
+            "a copy that does not load must fall back"
+        );
+    }
+
+    #[test]
+    fn the_line_managers_window_is_the_mods_and_the_games_where_the_copy_fails() {
+        let lua = mlua::Lua::new();
+        lua.load(
+            r#"
+            debugPrint = function() end
+            BROKEN = false
+            resolveutil = { loadfile = function(path)
+                if BROKEN and path:find("^tpf3mp_1::") then return nil, "a type error" end
+                return function() return path end
+            end }
+            "#,
+        )
+        .exec()
+        .unwrap();
+        lua.load(PATCH).exec().unwrap();
+        let load = |path: &str| -> String {
+            lua.load(format!("return resolveutil.loadfile({path:?})()"))
+                .eval()
+                .unwrap()
+        };
+        assert_eq!(
+            load("::/gui/line_vehicle_mgmt/manager_window.tl"),
+            "tpf3mp_1::/gui/line_vehicle_mgmt/manager_window.tl"
+        );
+        assert_eq!(
+            load("::/gui/line_vehicle_mgmt/line_util.tl"),
+            "::/gui/line_vehicle_mgmt/line_util.tl"
+        );
+        lua.load("BROKEN = true").exec().unwrap();
+        assert_eq!(
+            load("::/gui/line_vehicle_mgmt/manager_window.tl"),
+            "::/gui/line_vehicle_mgmt/manager_window.tl",
+            "the game's own when the copy does not load"
+        );
     }
 
     #[test]
