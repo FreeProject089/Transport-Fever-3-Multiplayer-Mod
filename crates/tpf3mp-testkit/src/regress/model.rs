@@ -2405,6 +2405,7 @@ mod tests {
                 bus_lane: false,
                 tram: Tram::None,
                 polyline: lines,
+                crossing_type: None,
             })
         };
         let both = || {

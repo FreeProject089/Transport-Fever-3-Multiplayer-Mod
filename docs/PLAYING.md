@@ -486,8 +486,12 @@ protected folder such as Program Files.
 - **Level crossing types.** Click a level crossing and pick another type
   in its window as usual: every player's crossing gets it. A change the
   room cannot carry is refused, and the game bar says so ("Not in
-  multiplayer yet: changing a level crossing's type"). A type picked in
-  the road or track tool for a new crossing is not carried yet.
+  multiplayer yet: changing a level crossing's type"). The type picked in
+  the road or track tool's toolbar goes with a build that lays a new
+  crossing, so every game lays it of that type; a crossing already there
+  keeps its own. A build whose type cannot be read is refused, and the
+  game bar says so ("Not in multiplayer yet: a level crossing type picked
+  in the build tool").
 - **Line waypoints.** Add waypoints to a line's route in the line
   manager as usual: the line is changed in every player's game, each
   waypoint on the same lane or, for an aircraft, at the same place.

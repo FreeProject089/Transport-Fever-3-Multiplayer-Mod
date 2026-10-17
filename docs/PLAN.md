@@ -420,9 +420,10 @@ Dev C:
   refused; the network lane reads every crossing's type. Behind
   `acceptance.lua`'s `crossings`, on since the two-player game of
   2026-10-17 (Japan_2, the guest's swap in both games, world checks
-  natively compared). Open: the type
-  the road and track tools pick for a new crossing (`rcType`), not
-  carried ([HOOKS.md](HOOKS.md), "Level crossing types").
+  natively compared). The type the road and track tools pick for a new
+  crossing (`rcType`) goes with `BuildRoad`/`BuildTrack` (schema 28),
+  behind `crossingTypes`, on since its two-player game of 2026-10-17
+  ([HOOKS.md](HOOKS.md), "Level crossing types").
 - [ ] Landmarks, built once: the second on the same turn is refused and
   pays nothing.
 - [ ] Warehouses, specialised terminals, maintenance facilities, noise

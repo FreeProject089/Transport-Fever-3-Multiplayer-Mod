@@ -19,8 +19,13 @@
 -- crossing-carrier-1017d, crossing-rows-1017, crossing-native-1017-gate):
 -- the guest's swap applied in both games, and the world checks, natively
 -- compared, agreed.
-local acceptance = { subsidies = true, rename = true, waypoints = true, terraform = true, bridges = true, perks = false, preservation = false, signals = true, crossings = true }
-
+-- The road and track tools' toolbar crossing type (BuildRoad/BuildTrack
+-- crossing_type) passed local two-game acceptance on build 40420,
+-- 2026-10-17, on Japan_2 (run crossing-tool-1017b): a track across a road
+-- by the guest, a road across a track by the host and one of the
+-- preselected type, each crossing of the picked type in both games, read
+-- back as expected, and 20 paired rolling world checks equal.
+local acceptance = { subsidies = true, rename = true, waypoints = true, terraform = true, bridges = true, perks = false, preservation = false, signals = true, crossings = true, crossingTypes = true }
 function acceptance.check(action)
     local feature
     if action.Subsidy then feature = "subsidies" end
@@ -31,6 +36,10 @@ function acceptance.check(action)
     if action.PlaceSignals then feature = "signals" end
     -- A level crossing's type from its window (action::CrossingType).
     if action.SetCrossingType then feature = "crossings" end
+    -- The level crossing type a road or track tool's toolbar picked for the
+    -- crossings its build lays (RoadBuild.crossing_type, schema 28).
+    local build = action.BuildRoad or action.BuildTrack
+    if type(build) == "table" and build.crossing_type ~= nil then feature = "crossingTypes" end
     if action.Rename or (action.VehicleOp and type(action.VehicleOp.change) == "table"
         and action.VehicleOp.change.Recolor) then feature = "rename" end
     local line = action.CreateLine and action.CreateLine.line

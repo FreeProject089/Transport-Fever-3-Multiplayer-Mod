@@ -120,6 +120,7 @@ pub fn road(vertices: Vec<Vertex>) -> Action {
         bus_lane: false,
         tram: Tram::None,
         polyline: polyline(vertices, &Structure::Ground),
+        crossing_type: None,
     })
 }
 
@@ -129,6 +130,7 @@ pub fn track(vertices: Vec<Vertex>, structure: &Structure) -> Action {
         style: None,
         catenary: true,
         polyline: polyline(vertices, structure),
+        crossing_type: None,
     })
 }
 
@@ -400,12 +402,14 @@ pub fn upgrade(network: Network, a: Pos, b: Pos, template: &str, modes: u32) -> 
             bus_lane: false,
             tram: Tram::None,
             polyline,
+            crossing_type: None,
         }),
         Network::Track => Action::BuildTrack(TrackBuild {
             track: text(TRACK),
             style: None,
             catenary: false,
             polyline,
+            crossing_type: None,
         }),
     }
 }
@@ -1178,6 +1182,7 @@ fn upgrades_scenario() -> Scenario {
                     list(vec![street_edge(a, b)]),
                 )
                 .expect("two vertices"),
+                crossing_type: None,
             }),
         )
         .expect_all([Check::Ignored(1), Check::StreetEdges(1), Check::EdgeObjects(1)])

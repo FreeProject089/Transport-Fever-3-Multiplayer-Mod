@@ -1112,6 +1112,7 @@ mod tests {
                 BoundedVec::<EdgeRef, 256>::empty(),
             )
             .unwrap(),
+            crossing_type: None,
         });
         assert_eq!(action, expected);
         let back = action_to_lua(&action).unwrap();

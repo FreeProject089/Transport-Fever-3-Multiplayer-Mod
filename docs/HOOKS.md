@@ -3536,9 +3536,71 @@ Refused in the sender and in every replay until `acceptance.lua`'s
 window's rebuild does beyond the type (it lays the crossing's segments
 again; the replay does not); the cost (the window checks the player can afford
 the change; the carrier is built with the game's cost as any build of the
-room's, unchecked against the window's; each game logs what the company paid, `the company paid N`); the type a road or track tool's toolbar picks for a new
-crossing (`rcType`, `node2rcType` of the tool's proposal), which the
-capture of builds drops, so each game's replay picks the engine's own.
+room's, unchecked against the window's; each game logs what the company paid, `the company paid N`).
+
+**The tools' toolbar type.** The road and track tools (one native class,
+`UI::StreetBuilder`) take the toolbar's `rcType` (a concrete type: the
+list has no automatic entry) and, building their proposal
+(`CreateProposalAndUpdate`, build 40420 `sub_5771f0`, insert at
+0x5780d6), map each crossing node of their own polyline, a node with both
+a street and a track edge in the proposal's graph, to `-2 - rcType` in
+`node2rcType` (+0x90); an automatic choice (-1) maps nothing.
+`CreateShapes`' reader (`sub_2644c80`) looks up every node of each
+crossing it lays: `-1` is ignored, a value `>= 0` forces that type (the
+window's rebuild writes those), one below -1 gives `-2 - value` only where
+no crossing is on the group's nodes already. Without an entry the crossing
+gets `GetBestRailroadCrossingType` (`sub_8b5bf0`), the era's newest
+visible type, not the tool's default by lane speed. The Lua binding of the
+tool's proposal does not reach +0x90, so until this the capture dropped
+the choice and every game's replay laid the era's type (seen 2026-10-17).
+
+So the hook reads it at the click (`crossings::record_tool`, from
+`add_detour` for every player build that is not the module editor's, a
+terrain tool's or the window's): the map walked whole as above, `-1`
+entries left out, nothing mapped read as none, every other entry the
+tool's preferred encoding and all one type read as that type; a forced
+value or two types are refused. Each click's reading is kept in a queue of
+its own (16 clicks), so the GUI's routing of the other native records is
+untouched, and handed to the GUI once (`tpf3mp_native.toolCrossing(n)`).
+A profile that does not find the maps reads as unknown. The GUI gives a
+street or track click's `BuildRoad` or `BuildTrack` the type by its
+resource file (`crossing_type`, action schema 28), the type checked
+visible here. Only a click read as picking no type goes as it is: a
+reading that is refused, a type not offered, a click with nothing kept, a
+reading the profile cannot make, a hook without `toolCrossing`, and a type
+picked while `crossingTypes` is off all stop the build, and the player is
+told ("Not in multiplayer yet: a level crossing type picked in the build
+tool"), since every game would otherwise lay another type than theirs.
+
+Every game's replay (`apply.lua`, `buildNetwork`) resolves the type by
+name first (one not offered refuses the build before anything is sent,
+alike in every game), then maps each vertex's node of its proposal
+(`node2rcType` of the `SimpleProposal`: new nodes by their proposal ids,
+snapped ones by their entities) to `-2 - type`, as the tool does. The tool
+maps only its crossing nodes, but a vertex that joins no crossing is never
+looked up, and the preferred encoding leaves a crossing already there its
+own type, so the crossings laid are the tool's. The crossings at the
+build's vertices on both networks (a vertex with a street and a track
+edge: a captured track across a street brings the crossing's node as a
+new vertex, the street's halves as links to it) are read before the build
+and after it: on the vertex's own node when it is an existing one, and on
+the nodes its existing neighbours reach within 10 m of it through an edge
+of their network (the game lays a crossing as half, connector, half). A
+crossing laid anew of another type than the toolbar's, or one extended
+that lost its own, is logged ("took type"), not refused: the build went,
+and the network lane of the room's world checks reads every crossing's
+type, so games that laid different types are found there. Behind
+`acceptance.lua`'s `crossingTypes` (while it is off, the GUI refuses a
+build with a type and a replay refuses one that carries it), on since the
+two-player game of 2026-10-17 (Japan_2, run `crossing-tool-1017b`: a
+track across a road by the guest, a road across a track by the host, and
+one of the preselected type, each crossing of the picked type in both
+games, read back as expected, 20 paired rolling world checks equal). Not
+covered:
+a construction's or another tool's click whose proposal maps crossing
+nodes (read, never carried; none is known); the preview the other members
+see (sent before the click, without the type); the cost of a type (the
+replay builds at the game's cost for its proposal).
 ### Build previews
 
 What a player's build tool shows before the click, the road, track,
