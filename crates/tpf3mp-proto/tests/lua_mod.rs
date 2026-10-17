@@ -1993,13 +1993,20 @@ tpf3mp_native.part = function(n, k, kind)
     if n == nil then return { mode = PART_MODE or 'on', parts = PLAN_PARTS or 10, stride = PLAN_STRIDE or 1 } end
     PART_CALLS[#PART_CALLS + 1] = n .. '/' .. k .. '/' .. kind
     if PART_FAIL then return { mode = 'on', why = PART_FAIL } end
-    return { mode = PART_MODE or 'on', ms = 1, timing = 'fake', lights = {}, deferred = {} }
+    return { mode = PART_MODE or 'on', ms = 1, timing = 'fake', lights = {}, deferred = {},
+             crossingTypes = PART_CROSSINGS or {} }
 end
-tpf3mp_native.partTexts = function(n, k, kind, preferences, lights, deferred, rows)
+tpf3mp_native.partTexts = function(n, k, kind, preferences, lights, deferred, rows, crossingTypes)
     PART_TEXTS[#PART_TEXTS + 1] = n .. '/' .. k .. '/' .. kind
     if PART_TEXTS_FAIL then return nil, nil, PART_TEXTS_FAIL end
     local net, cons = '1:' .. NATIVE_TEXT, '1:cons'
     if kind == 'constructions' then net = nil else cons = nil end
+    -- The crossings' types as the Lua named them, on a junctions turn.
+    if kind == 'junctions' then
+        local names = {}
+        for _, index in ipairs(PART_CROSSINGS or {}) do names[#names + 1] = tostring(crossingTypes and crossingTypes[index]) end
+        net = net .. '|crossings ' .. table.concat(names, ',')
+    end
     if rows then return net, cons, { 'row' }, { 'con@0,0' } end
     return net, cons
 end
@@ -16294,35 +16301,21 @@ fn level_crossings_types_are_in_the_network_lane() {
     assert_eq!(out[9], "1");
 }
 
-/// Where the hook reads the parts, it reads no level crossings: this Lua
-/// adds the part's crossing rows to the hook's network text on a junctions
-/// turn, so two games whose crossing differs in type split there.
+/// Where the hook reads the parts, it reads their level crossings too; this
+/// Lua names their types (`part`'s `crossingTypes`, `partTexts`' eighth
+/// argument), so two games whose crossing's type differs split there, and a
+/// type with no name stops the check rather than going by its index.
 #[test]
-fn rolling_parts_carry_the_level_crossings_the_hook_does_not_read() {
-    let game = |kind: u32| {
+fn rolling_parts_name_the_level_crossings_the_hook_reads() {
+    let game = |name: &str| {
         let lua = rolling_game();
         lua.load(FAKE_PARTS).exec().unwrap();
         lua.load(format!(
-            r#"api.type.ComponentType.RAILROAD_CROSSING = 931
-            local NODES = {{ [90700] = {{ x = 10, y = 20, z = 1 }}, [90701] = {{ x = 18, y = 20, z = 1 }} }}
-            local X = {{ nodes = {{ 90700, 90701 }}, edges = {{}}, typeIndex = {kind} }}
-            local get = api.engine.getComponent
-            api.engine.getComponent = function(e, k)
-                if k == 931 then return e == 90800 and X or nil end
-                if NODES[e] and k == api.type.ComponentType.BASE_NODE then return {{ position = NODES[e] }} end
-                return get(e, k)
-            end
-            local list = api.engine.getEntitiesWithComponent
-            api.engine.getEntitiesWithComponent = function(k)
-                if k == 931 then return {{ 90800 }} end
-                return list(k)
-            end
-            api.engine.system.railRoadCrossingSystem = {{ getRailroadCrossingForNode = function(n)
-                if NODES[n] then return 90800 end
-                return -1
-            end }}
+            r#"PART_CROSSINGS = {{ 3 }}
             api.res = api.res or {{}}
-            api.res.railroadCrossingTypeRep = {{ getName = function(i) return 'crossing/type' .. i .. '.rcr' end }}"#
+            api.res.railroadCrossingTypeRep = {{ getName = function(i)
+                if i == 3 then return {name:?} end
+            end }}"#
         ))
         .exec()
         .unwrap();
@@ -16336,16 +16329,20 @@ fn rolling_parts_carry_the_level_crossings_the_hook_does_not_read() {
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", log(lua)))
     };
-    let (a, b) = (read(&game(3)), read(&game(5)));
+    let (a, b) = (read(&game("crossing/a.rcr")), read(&game("crossing/b.rcr")));
     assert_ne!(a[0], b[0], "the crossing's type is in the network history");
     assert_eq!(a[1..], b[1..], "and in nothing else");
-    assert_eq!(read(&game(3)), a, "the same world, the same history");
-    let reports: Vec<String> = game(3)
-        .load("for s=1,11 do ROLL_STEP(s,false) end ROLL_STEP(12,true) return REPORTS")
-        .eval()
-        .unwrap();
+    assert_eq!(
+        read(&game("crossing/a.rcr")),
+        a,
+        "the same world, the same history"
+    );
+    // No name: the check stops on the junctions turn (the second update).
+    let nameless = game("");
     assert!(
-        reports.iter().any(|r| r.contains("crossings listed 1")),
-        "{reports:?}"
+        nameless
+            .load("ROLL_STEP(1,false) ROLL_STEP(2,false)")
+            .exec()
+            .is_err()
     );
 }

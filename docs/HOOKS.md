@@ -3974,8 +3974,10 @@ latency bound for this prototype, and the one local measurement below does
 not establish frame-time safety on other maps or machines.
 
 **Bindings.** In the game script's `postUpdate`, `part(n, k, kind)` reads
-one batch and keeps it. `partTexts(n, k, kind, preferences, lights,
-deferred, rows)`, called in the same update, answers its lanes' texts:
+one batch and keeps it, and hands the Lua its light and crossing types
+(`lights`, `crossingTypes`) and the junctions left to it (`deferred`).
+`partTexts(n, k, kind, preferences, lights, deferred, rows,
+crossingTypes)`, called in the same update, answers its lanes' texts:
 `count:hash`, as `summary` makes them, and `nil` for a lane the kind does
 not read. It answers only for the batch asked for, read at the room's
 current step, and only once. `part()` without arguments reports the
@@ -3997,17 +3999,24 @@ update, not only on a batch's. No other reader takes over.
   `transf` (16 float32 at +0x58; x and y at +0x88 and +0x8c), as
   `file@x,y` to 0.1 m.
 
-The hook reads no level crossing. On a part's junctions turn the mod adds
-the part's crossings to the hook's network text (`<hook's text>|crossings
-<count>:<hash>`): every crossing's row as `crossings.rows` makes it,
-`crossing:x,y,z;x,y,z|file` (its nodes' places in whole millimetres,
-sorted; its type's file), in the part of its first node's millimetres, as
-a junction's. Every crossing is listed by `getEntitiesWithComponent` where
-the engine lists them, else from the nodes on both a street and a track
-(`crossings listed N` or `by nodes N` in the checkpoint line). In compare
-mode the crossing rows join the hook's rows before they are compared with
-this Lua's, which read them too. A tile (version 1) reads the crossings on
-its edges' nodes.
+On a part's junctions turn the hook reads its level crossings too: each
+`RailroadCrossing` (its pool by `CompVec<RailroadCrossing>`'s vtable,
+0x40 bytes: its nodes, a `std::vector` of 4-byte entities at +0, at most
+8, aligned, its capacity past its end; its type's index at +0x30), its
+nodes' places from their `BaseNode` in whole millimetres rounded half up
+(`floor(v * 1000 + 0.5)`, as `crossings.lua`'s `mm`; a junction's key rounds
+ties to even), sorted, none twice; the crossing in the part of its first
+node's millimetres, as a junction. `part` hands the game's Lua the
+crossings' type indices (`crossingTypes`), which it names
+(`crossings.names`, a type with no name failing the read) and hands back
+as `partTexts`' eighth argument. The rows are `crossing:x,y,z;x,y,z|file`,
+as `crossings.rows` makes them, and the network text is the hook's own
+followed by theirs, `<count>:<hash>|crossings <count>:<hash>`; with `rows`
+the crossing rows are among the network's, so compare mode checks them
+row by row against this Lua's. A world that never had a crossing may have
+no pool of them: that one absence is no crossing, but a pool whose head
+does not read fails the read. A tile (version 1) reads, in Lua, the
+crossings on its edges' nodes.
 
 Rows are sorted, joined and hashed in the hook; no row comes into the
 mod's Lua unless compared.
@@ -4023,7 +4032,8 @@ What it reads, only while the game's step runs (the engine is
 `[CGameTime+8]` of the `CGameTime` the step called its speed getter on, so
 only inside the game script's `postUpdate`):
 
-- the pools of `BaseEdge`, `BaseNode`, `BaseNodeConfig` and `Construction`,
+- the pools of `BaseEdge`, `BaseNode`, `BaseNodeConfig`, `Construction` and
+  (on a junctions turn, where the engine has one) `RailroadCrossing`,
   each the one of the engine's pools (`engine+0x78`) whose vtable is its
   `CompVec`'s; its index there is its type id;
 - every entity whose component bits (`engine+0xc0`, 16 bytes an entity)
@@ -4035,7 +4045,7 @@ only inside the game script's `postUpdate`):
   reads nothing and cannot fault), so that the waits for memory overlap;
 - each edge's ends, lane configs, road template, nodes and network; each
   node's position; each junction's turns, crosswalk set, phases, flags,
-  preference and light type.
+  preference and light type; each level crossing's nodes and type index.
 
 Anything that does not read as the layout says fails the read with why:
 a pointer out of order, a count past its bound, an entity whose bits and

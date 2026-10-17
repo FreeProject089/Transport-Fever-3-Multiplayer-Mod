@@ -879,7 +879,10 @@ local function rollingParts(api, scan, step, checkpoint)
 		local compare = read.mode == "compare"
 		local preferences, lights = junctions.names(api, read.lights)
 		local deferred = junctions.rowsOf(api, read.deferred)
-		local net, cons, netRows, consRows = native.partTexts(n, k, kind, preferences, lights, deferred, compare)
+		-- The hook reads the part's level crossings; this Lua names their types.
+		local crossingTypes = crossings.names(api, read.crossingTypes)
+		local net, cons, netRows, consRows = native.partTexts(n, k, kind, preferences, lights, deferred, compare,
+			crossingTypes)
 		if net == nil and cons == nil then
 			error("part " .. k .. " of the world has no texts: " .. tostring(netRows), 0)
 		end
@@ -895,28 +898,16 @@ local function rollingParts(api, scan, step, checkpoint)
 		c.n, c.sum, c.max = c.n + 1, c.sum + (read.ms or 0), math.max(c.max, read.ms or 0)
 		compared.byKind[kind] = c
 		values[lanes.NETWORK], values[lanes.CONSTRUCTIONS] = net, cons
-		-- The level crossings of this part, which the hook does not read:
-		-- this Lua's rows, with the junctions'.
-		local crossingRows = {}
-		if net ~= nil and lanes.kindHas(kind, "junctions") then
-			local all = crossings.rows(api)
-			for _, row in ipairs(all) do
-				if lanes.rowPart(lanes.NETWORK, row, n) == k then crossingRows[#crossingRows + 1] = row end
-			end
-			values[lanes.NETWORK] = net .. "|crossings " .. summary(crossingRows)
-		end
 		if compare then
 			local own = luaPart(api, n, k, kind)
-			local nativeRows = {}
-			for _, row in ipairs(netRows or {}) do nativeRows[#nativeRows + 1] = row end
-			for _, row in ipairs(crossingRows) do nativeRows[#nativeRows + 1] = row end
-			table.sort(nativeRows)
-			local theirs = { [lanes.NETWORK] = nativeRows, [lanes.CONSTRUCTIONS] = consRows }
+			local theirs = { [lanes.NETWORK] = netRows, [lanes.CONSTRUCTIONS] = consRows }
 			local differ = {}
 			for _, lane in ipairs({ lanes.NETWORK, lanes.CONSTRUCTIONS }) do
 				if lanes.kindReads(kind, lane) then
 					local text = summary(own[lane])
 					-- The rows themselves, not only their count and hash.
+					-- The network's text adds its crossings after its own:
+					-- compared, the rows count.
 					local native = values[lane]
 					if lane == lanes.NETWORK then native = summary(theirs[lane] or {}) end
 					if text ~= native or not sameRows(own[lane], theirs[lane] or {}) then
@@ -963,9 +954,9 @@ local function rollingParts(api, scan, step, checkpoint)
 			texts[#texts + 1] = out[lane]
 		end
 		local line = string.format("rolling world check: steps=%d-%d part=%d/%d last_ms=%.3f"
-			.. " native_mean_ms=%.2f native_max_ms=%.2f by kind [%s] (%s) crossings %s%s signature=%s",
+			.. " native_mean_ms=%.2f native_max_ms=%.2f by kind [%s] (%s)%s signature=%s",
 			scan.first, step, k, n, ms, compared.nativeMs / math.max(1, compared.reads), compared.nativeMax,
-			byKindText(), tostring(compared.timing), tostring(crossings.listed),
+			byKindText(), tostring(compared.timing),
 			(compared.agree + compared.differ > 0)
 				and string.format(" compared agree=%d differ=%d", compared.agree, compared.differ) or "",
 			fastHash(table.concat(texts, "\n")))

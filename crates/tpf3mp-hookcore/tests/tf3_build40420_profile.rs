@@ -325,6 +325,11 @@ fn assert_netread_data(image: &[u8], pe: &PeHeaders) {
             0x22a7f0,
         ),
         ("Construction", layout::CONSTRUCTION_POOL_VTABLE, 0x22acf0),
+        (
+            "RailroadCrossing",
+            layout::RAILROAD_CROSSING_POOL_VTABLE,
+            0x22b770,
+        ),
     ] {
         assert_eq!(
             rva_u64(image, pe, vtable as u64),
@@ -332,7 +337,7 @@ fn assert_netread_data(image: &[u8], pe: &PeHeaders) {
             "CompVec<{name}> vtable"
         );
     }
-    let code: [(u64, &[u8], &str); 11] = [
+    let code: [(u64, &[u8], &str); 14] = [
         (
             0x9553b,
             &[0x48, 0x69, 0xc0, 0x18, 0x01, 0x00, 0x00],
@@ -388,6 +393,29 @@ fn assert_netread_data(image: &[u8], pe: &PeHeaders) {
             &[0xc4, 0x41, 0x7a, 0x10, 0xa5, 0x8c, 0x00, 0x00, 0x00],
             "vmovss xmm12, [r13+0x8c] (transf y)",
         ),
+        // The RailroadCrossing store's copy (sub_17ee70): its 0x40 stride,
+        // and its type index at +0x30.
+        (
+            0x17ef0d,
+            &[0x48, 0xc1, 0xe3, 0x06],
+            "shl rbx, 6 (RailroadCrossing size)",
+        ),
+        (
+            0x17ef5a,
+            &[0x8b, 0x46, 0x30, 0x89, 0x43, 0x30],
+            "mov eax, [rsi+0x30]; mov [rbx+0x30], eax (a crossing's type index)",
+        ),
+        // Its Lua binding's field offsets (sub_1885d30): stateTime 0x38,
+        // state 0x34, typeIndex 0x30, edges 0x18, then nodes (r15d, 0).
+        (
+            0x1887a4e,
+            &[
+                0xc7, 0x45, 0x80, 0x38, 0x00, 0x00, 0x00, 0xc7, 0x45, 0x84, 0x34, 0x00, 0x00, 0x00,
+                0xc7, 0x45, 0x88, 0x30, 0x00, 0x00, 0x00, 0xc7, 0x45, 0x8c, 0x18, 0x00, 0x00, 0x00,
+                0x44, 0x89, 0x7d, 0x90,
+            ],
+            "RailroadCrossing's Lua field offsets",
+        ),
     ];
     for (rva, bytes, what) in code {
         assert_eq!(
@@ -417,6 +445,14 @@ fn assert_netread_data(image: &[u8], pe: &PeHeaders) {
     assert_eq!(
         (layout::CONSTRUCTION_X, layout::CONSTRUCTION_Y),
         (0x88, 0x8c)
+    );
+    assert_eq!(
+        (
+            layout::RAILROAD_CROSSING_SIZE,
+            layout::CROSSING_NODES,
+            layout::CROSSING_TYPE_INDEX
+        ),
+        (0x40, 0x00, 0x30)
     );
 }
 

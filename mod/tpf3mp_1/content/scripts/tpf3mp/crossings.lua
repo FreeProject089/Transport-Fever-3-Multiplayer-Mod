@@ -336,4 +336,20 @@ function crossings.rows(a, nodes)
 	return rows, points
 end
 
+-- The names of the level crossing types `indices` (as the hook's part
+-- read gives them, crates/tpf3mp-hook/src/netread.rs), `{ [index] = file }`,
+-- for the hook's crossing rows. Raises for a type with no name: a row never
+-- takes the game's own index (D8).
+function crossings.names(a, indices)
+	local out = {}
+	for _, index in ipairs(indices or {}) do
+		local ok, name = pcall(a.res.railroadCrossingTypeRep.getName, index)
+		if not ok or type(name) ~= "string" or name == "" then
+			error("level crossing type " .. tostring(index) .. " has no name", 0)
+		end
+		out[index] = name
+	end
+	return out
+end
+
 return crossings
