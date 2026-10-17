@@ -505,7 +505,11 @@ protected folder such as Program Files.
   there. The company window shows your company's own rank and permits.
 - **Roads, tracks, stations and depots.** Build them with the game's own
   street, track and construction tools: every player's game builds them
-  together, a moment after your click, and your company pays as usual. A
+  together, a moment after your click, and your company pays as usual.
+  After the room builds a segment, choose the next start point. Continuing
+  automatically from that segment is available for controlled testing with
+  `TPF3MP_TOOL_CONTINUE=1`; it is off by default pending an input-cancellation
+  check in the real game. A
   station or depot placed by a road is joined to it, as in single player.
   Street stops, on one side or both, go on with the stop tool; the stop
   goes where your cursor is on the road. The road tools tab works too:
