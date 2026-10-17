@@ -121,41 +121,34 @@ function geom.parameterAt(a, ta, b, tb, x, y)
 	return u, math.sqrt(d2(u))
 end
 
--- How near a signal's place on the edge it stood on the edge that takes it
--- runs, in three dimensions; how alike their directions there are (the
--- dot of their unit tangents); and how far from that edge's ends it is,
--- horizontally: a signal at the new node would stand on either piece.
-geom.FOLLOW_TOL = 0.5
-geom.FOLLOW_DOT = 0.995
-geom.FOLLOW_END = 1.0
+-- How near, in three dimensions, an end of the edge that takes a signal is
+-- the same end of the edge it stood on, and how alike their directions
+-- there are (the dot of their unit tangents).
+geom.CONTINUE_TOL = 0.5
+geom.CONTINUE_DOT = 0.995
 
--- Whether the edge `to` runs along the edge `from` (both { a, b, ta, tb })
--- where a signal stands on `from` at parameter `p`, the same way. Returns
--- the parameter on `to`, or nil and why not. Every game computes it alike
--- (geom.parameterAt; sqrt only).
-function geom.follows(from, p, to)
-	if type(p) ~= "number" or p ~= p or p < 0 or p > 1 then return nil, "a signal's place off its edge" end
-	local q = geom.hermitePos(from.a, from.ta, from.b, from.tb, p)
-	local u = geom.parameterAt(to.a, to.ta, to.b, to.tb, q[1], q[2])
-	local r = geom.hermitePos(to.a, to.ta, to.b, to.tb, u)
-	local dx, dy, dz = r[1] - q[1], r[2] - q[2], r[3] - q[3]
-	if dx * dx + dy * dy + dz * dz > geom.FOLLOW_TOL * geom.FOLLOW_TOL then
-		return nil, "a signal onto an edge that does not run where it stood"
+-- Whether the edge `to` continues the edge `from` (both { a, b, ta, tb })
+-- from one of its ends, the same way: it starts where `from` starts, or
+-- ends where it ends, in the same direction there. So the track tool keeps
+-- a signal on a track it cuts (seen on build 40420, 2026-10-17): on the
+-- piece that goes on from its old track's end, the one before the cut or
+-- the one after it, even where the tool moved a node near the cut and the
+-- signal now stands past it; the game places it on that piece. Returns
+-- true, or nil and why not. Every game computes it alike (sqrt only).
+function geom.continues(from, to)
+	local function near(p, q)
+		local dx, dy, dz = p[1] - q[1], p[2] - q[2], p[3] - q[3]
+		return dx * dx + dy * dy + dz * dz <= geom.CONTINUE_TOL * geom.CONTINUE_TOL
 	end
-	for _, e in ipairs({ to.a, to.b }) do
-		local ex, ey = r[1] - e[1], r[2] - e[2]
-		if ex * ex + ey * ey < geom.FOLLOW_END * geom.FOLLOW_END then
-			return nil, "a signal where its track is cut"
-		end
+	local function aligned(t1, t2)
+		local n1 = math.sqrt(t1[1] * t1[1] + t1[2] * t1[2] + t1[3] * t1[3])
+		local n2 = math.sqrt(t2[1] * t2[1] + t2[2] * t2[2] + t2[3] * t2[3])
+		if n1 == 0 or n2 == 0 then return false end
+		return (t1[1] * t2[1] + t1[2] * t2[2] + t1[3] * t2[3]) / (n1 * n2) >= geom.CONTINUE_DOT
 	end
-	local t1 = geom.hermiteTangent(from.a, from.ta, from.b, from.tb, p)
-	local t2 = geom.hermiteTangent(to.a, to.ta, to.b, to.tb, u)
-	local n1 = math.sqrt(t1[1] * t1[1] + t1[2] * t1[2] + t1[3] * t1[3])
-	local n2 = math.sqrt(t2[1] * t2[1] + t2[2] * t2[2] + t2[3] * t2[3])
-	if n1 == 0 or n2 == 0 then return nil, "a signal on an edge with no direction" end
-	local dot = (t1[1] * t2[1] + t1[2] * t2[2] + t1[3] * t2[3]) / (n1 * n2)
-	if dot < geom.FOLLOW_DOT then return nil, "a signal onto an edge that runs another way" end
-	return u
+	if near(from.a, to.a) and aligned(from.ta, to.ta) then return true end
+	if near(from.b, to.b) and aligned(from.tb, to.tb) then return true end
+	return nil, "a signal onto an edge that does not go on from its track"
 end
 
 -- Nearest point of the curve to the cursor's forward viewing ray. The

@@ -612,8 +612,9 @@ protected folder such as Program Files.
   multiplayer yet" and build nothing: the tool says why. A track started
   or ended between a track's signals keeps each signal on its piece of the
   cut track once its two-player check passes (`splitSignals`); until then
-  it says "splitSignals awaits two-player game acceptance". A waypoint on
-  the cut track still stops the build.
+  it says "splitSignals awaits two-player game acceptance". Mods' signals
+  go too; a waypoint on the cut track still stops the build, and so does a
+  cut where the tool places a new signal itself (near a node it moves).
 
 ## Playtesting before the game is out
 

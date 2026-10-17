@@ -974,10 +974,6 @@ function apply.ownJunctions(polyline)
 	return junctions.without(polyline.junctions, ownNodes, ownEdges)
 end
 
--- The game's own track signals' constructions, its own resources in their
--- folder (as tpf3mp/engine.lua's capture): a waypoint, or a mod's signal,
--- is never kept on another edge.
-local SIGNAL_FOLDER = "::/infrastructure/signal/"
 -- How near where a kept signal stood, along its track, the signal of its
 -- construction there is (as a PlaceSignals' removed one).
 local KEPT_TOLERANCE = 0.25
@@ -998,8 +994,9 @@ end
 -- The signals the polyline's links keep from the edges it removes
 -- (action::KeptSignal), each found on its removal's edge as the world
 -- stands, one for one, and each checked as the capture checked it: a track
--- signal of the game's own, the acting company's or no company's, on a
--- link of track that runs where it stands, the same way (geom.follows).
+-- signal, no waypoint (its signal list says, as tpf3mp/engine.lua's capture
+-- reads it), the acting company's or no company's, on a link of track that
+-- goes on from one of its old track's ends, the same way (geom.continues).
 -- Anything missing or ambiguous refuses the whole build, in every game
 -- alike. Returns { link, entity, kind, pos } for each.
 local function keptSignals(polyline, removalEdges, network, at, dangling)
@@ -1021,9 +1018,6 @@ local function keptSignals(polyline, removalEdges, network, at, dangling)
 			if r == nil or e == nil then error(what .. ": no such removal", 0) end
 			local own = link.kind and link.kind.network or network
 			if r.network ~= "Track" or own ~= "Track" then error(what .. ": not on track", 0) end
-			if type(kept.model) ~= "string" or kept.model:sub(1, #SIGNAL_FOLDER) ~= SIGNAL_FOLDER then
-				error(what .. ": a signal it does not keep: " .. tostring(kept.model), 0)
-			end
 			-- The place is from the removal's `a` end; this game's edge may
 			-- run from its `b`.
 			local ea = arr(r.ends.a)
@@ -1041,19 +1035,26 @@ local function keptSignals(polyline, removalEdges, network, at, dangling)
 					best, bestComp = o[1], c
 				end
 			end
-			if best == nil then error(what .. ": no " .. kept.model .. " where it is kept", 0) end
+			if best == nil then error(what .. ": no " .. tostring(kept.model) .. " where it is kept", 0) end
+			local list = api.engine.getComponent(best, C.SIGNAL_LIST)
+			local signals = list and list.signals or {}
+			if #signals == 0 then error(what .. ": a signal with no signal list", 0) end
+			for i = 1, #signals do
+				local kind = signals[i].type
+				if type(kind) ~= "number" or kind == api.type.Signal.Type.WAYPOINT then
+					error(what .. ": a waypoint, which lines name, kept on another edge", 0)
+				end
+			end
 			mine(e.id, "track")
 			mine(best, "signal")
 			-- Checked along the removal as the room names it, from its `a`
 			-- end, so every game decides alike whichever way its own edge
 			-- runs.
-			local from, p = e, bestComp.param
-			if flipped then
-				from, p = { a = e.b, b = e.a, ta = scaled(e.tb, -1), tb = scaled(e.ta, -1) }, 1 - p
-			end
+			local from = e
+			if flipped then from = { a = e.b, b = e.a, ta = scaled(e.tb, -1), tb = scaled(e.ta, -1) } end
 			local to = { a = at[link.from + 1], b = at[link.to + 1], ta = arr(link.tangent0), tb = arr(link.tangent1) }
-			local u, why = geom.follows(from, p, to)
-			if u == nil then error(what .. ": " .. why, 0) end
+			local ok, why = geom.continues(from, to)
+			if not ok then error(what .. ": " .. why, 0) end
 			seen[best] = true
 			local pos
 			local t = bestComp.transf
@@ -1080,7 +1081,7 @@ local function settleKept(carried)
 		if c.pos and t and type(t[13]) == "number" then
 			local dx, dy, dz = t[13] - c.pos[1], t[14] - c.pos[2], t[15] - c.pos[3]
 			local moved = math.sqrt(dx * dx + dy * dy + dz * dz)
-			if moved > geom.FOLLOW_TOL then
+			if moved > 0.5 then
 				log(string.format("kept signal %d moved %.2f m in the build", c.entity, moved))
 			end
 			if farthest == nil or moved > farthest then farthest = moved end

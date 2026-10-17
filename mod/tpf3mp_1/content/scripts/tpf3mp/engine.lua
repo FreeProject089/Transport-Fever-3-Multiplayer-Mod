@@ -233,13 +233,6 @@ local function segment(seg)
 	return e
 end
 
--- The game's own track signals' constructions: its own resources ("::/"),
--- in their folder. A waypoint is an edge object of the same type (SIGNAL)
--- and lines name it; a mod's signal ("<mod>::/...") may be anything.
--- Neither moves onto another edge until a room has shown it does what the
--- game does.
-local SIGNAL_FOLDER = "::/infrastructure/signal/"
-
 -- A removed edge's geometry, as geom.lua takes it: the tangents the
 -- proposal lists for it, else its own.
 local function removedGeometry(r, posOf)
@@ -257,17 +250,29 @@ local function removedGeometry(r, posOf)
 end
 
 -- Where along the removed edge `r` its signal `entity` stands, and its
--- construction; or raises.
+-- construction; or raises. A waypoint is an edge object of the same type
+-- (SIGNAL), and lines name it: it never moves onto another edge. The game
+-- tells it by its signal list (SIGNAL_LIST: each signal's type, a
+-- Signal.Type, WAYPOINT 2 on build 40420), whatever its construction, a
+-- mod's included.
 local function signalOn(entity)
-	local c
-	pcall(function() c = api.engine.getComponent(entity, api.type.ComponentType.EDGE_OBJECT) end)
+	local C = api.type.ComponentType
+	local c, signals, waypoint
+	pcall(function()
+		c = api.engine.getComponent(entity, C.EDGE_OBJECT)
+		signals = get(api.engine.getComponent(entity, C.SIGNAL_LIST), "signals")
+		waypoint = api.type.Signal.Type.WAYPOINT
+	end)
 	local p, model = c and get(c, "param"), c and get(c, "edgeObjectConstruction")
 	if type(p) ~= "number" or type(model) ~= "string" or model == "" then
 		error("a signal it cannot read", 0)
 	end
-	if model:sub(1, #SIGNAL_FOLDER) ~= SIGNAL_FOLDER then
-		if model:find("waypoint", 1, true) then error("a build that moves a waypoint", 0) end
-		error("a build that moves a signal it does not know: " .. model, 0)
+	local each = signals ~= nil and list(signals) or {}
+	if #each == 0 or type(waypoint) ~= "number" then error("a signal it cannot read", 0) end
+	for _, s in ipairs(each) do
+		local kind = get(s, "type")
+		if type(kind) ~= "number" then error("a signal it cannot read", 0) end
+		if kind == waypoint then error("a build that moves a waypoint", 0) end
 	end
 	return p, model
 end
@@ -279,9 +284,10 @@ end
 -- one it replaces (tpf3mp/apply.lua).
 -- A signal also moves onto another track the build makes where the track
 -- it stood on is cut (a track started or ended between its signals): the
--- new track runs where the signal stands, the same way (geom.follows). The
--- edge that takes it says which, by the removal, the place along it and its
--- construction (`kept`, action::KeptSignal), as the tool decided.
+-- piece that goes on from one of its old track's ends, the same way
+-- (geom.continues), where the tool put it. The edge that takes it says
+-- which, by the removal, the place along it and its construction (`kept`,
+-- action::KeptSignal), as the tool decided.
 -- Anything else is refused: a new stop or signal, one dropped, a stop or a
 -- waypoint carried onto another edge. `connection` true for a
 -- construction's streets, which keep no signal on another edge (every
@@ -351,9 +357,9 @@ function engine.keptInPlace(capture, connection)
 				local p, model = signalOn(o[1])
 				geometry[src.k] = geometry[src.k] or removedGeometry(r, posOf)
 				to = to or { a = posOf(e.node0), b = posOf(e.node1), ta = e.tangent0, tb = e.tangent1 }
-				if not (to.a and to.b) then error("a signal's new track has no place here", 0) end
-				local u, why = geom.follows(geometry[src.k], p, to)
-				if u == nil then error(why, 0) end
+				if not (to.a and to.b and to.ta and to.tb) then error("a signal's new track has no place here", 0) end
+				local ok, why = geom.continues(geometry[src.k], to)
+				if not ok then error(why, 0) end
 				claimed[o[1]] = true
 				e.kept[#e.kept + 1] = { removal = src.k - 1, at = p, model = model }
 			end

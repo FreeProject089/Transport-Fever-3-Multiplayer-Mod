@@ -11,12 +11,14 @@
 -- local two-game acceptance on build 40408, 2026-10-06 (runs
 -- run-1006-225251 and run-1006-230635; docs/MODS.md).
 -- Signals kept on the pieces of a track cut between them (splitSignals:
--- a track started or ended there, Link.kept) wait for a two-player game
--- that shows the game moves each signal onto its piece where it stood.
+-- a track started or ended there, Link.kept) passed local two-game
+-- acceptance on build 40420, 2026-10-17 (run-1017-024110, Japan_2: two
+-- cuts by a moved node, each signal applied in both games and moved
+-- 0.00 m, every checkpoint's free-id fingerprint equal).
 -- Subsidies passed local two-game acceptance on build 40408, 2026-10-07:
 -- investigation/TPF3_SUBSIDIES_2026-10-07.md.
 local acceptance = { subsidies = true, rename = true, waypoints = false, terraform = true, bridges = true, perks = false, preservation = false, signals = true,
-    splitSignals = false }
+    splitSignals = true }
 
 function acceptance.check(action)
     local feature

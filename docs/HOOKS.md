@@ -3320,8 +3320,9 @@ is the edge rebuilt in place, and every game's build gives it the objects
 of the edge it replaces under their own entities (`engine.keptInPlace`,
 `networkInto`); a stop moved onto another edge is refused. The same rule
 lets the road and track tools build through an edge with a stop on it. A
-track signal may also move onto the piece of a track the build cuts where
-that piece runs where it stands (`Link::kept`, BUILDING.md).
+track signal (not a waypoint) may also move onto the piece of a track
+the build cuts that goes on from one of its old track's ends, where the
+tool put it (`Link::kept`, BUILDING.md).
 
 A track's catenary and type travel the same way, as far as the game's
 scripts say (build 40408's `construction_react_util.tl`: the

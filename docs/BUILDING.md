@@ -692,17 +692,26 @@ positions, the originator's decisions included:
   schema 27): each by its removal's number, its place along that edge
   from the removal's `a` end, and its construction. A track started or
   ended between a track's signals cuts that track in two, and each signal
-  goes with the piece the tool put it on. Every game finds the one signal
-  of that construction within 0.25 m of that place on the removed edge,
-  checks it is the game's own track signal (not a waypoint, which lines
-  name, nor a mod's), the acting company's or no company's, and that the
-  piece runs where it stands, the same way (`geom.follows`: within 0.5 m
-  in three dimensions, tangents within about 6 degrees, not within 1 m of
-  the cut), and lists it on that piece under its own entity; anything
-  missing or ambiguous refuses the build in every game. After the build
-  each kept signal must still exist (else the room's replay stops) and is
-  said in the log if it moved. Behind `acceptance.lua`'s `splitSignals`
-  until a two-player game shows the game puts the signal where it stood;
+  goes with the piece the tool put it on: the piece that goes on from one
+  of its old track's ends. Near a node the tool moves that node onto the
+  cut and redraws the track through it, and may keep a signal on the piece
+  before the cut that now stands past it (seen on build 40420,
+  2026-10-17); the game places it on that piece, so the room follows the
+  tool. Every game finds the one signal of that construction within 0.25 m
+  of that place on the removed edge, checks it is no waypoint (lines name
+  waypoints; its signal list says, `SIGNAL_LIST`, `Signal.Type.WAYPOINT`,
+  whatever its construction: a mod's signal goes like the game's own), the
+  acting company's or no company's, and that the piece starts where its
+  old track started or ends where it ended, the same way there
+  (`geom.continues`: within 0.5 m in three dimensions, tangents within
+  about 6 degrees), and lists it on that piece under its own entity;
+  anything missing or ambiguous refuses the build in every game. After
+  the build each kept signal must still exist (else the room's replay
+  stops), and how far it moved is said in the log. A cut where the tool
+  adds a new signal itself (`edgeObjectsToAdd`, seen where it redraws the
+  track around a moved node) stays refused. Behind `acceptance.lua`'s
+  `splitSignals` until a two-player game shows every game puts the signal
+  alike;
 - `removals`: existing edges the build removes, of either network, by their
   ends: an upgrade's, a span the build passes under, the stretch the tool
   rebuilds around a new junction or crossing. A split parent is no removal;
