@@ -95,6 +95,33 @@ function data()
 	-- The headquarters lines last logged in this state, by company id: a
 	-- line is logged again only when it changed (tpf3mp/companies.lua).
 	local toldHeadquarters = {}
+	-- What applying the room's actions cost since the last checkpoint, for
+	-- the log there: each kind's count, total and longest (tpf3mp/apply.lua,
+	-- apply.lastCost), and every registry.sync around them. os.clock: the
+	-- elapsed time on Windows, the process's CPU time on Linux and macOS;
+	-- nothing read from it reaches the world.
+	local function wallClock()
+		local ok, t = pcall(function() return os.clock() end)
+		if ok and type(t) == "number" then return t end
+		return nil
+	end
+	local applyCost = { kinds = {}, order = {}, n = 0, ms = 0, syncs = 0, syncMs = 0 }
+	local function costOf(kind, ms)
+		if type(ms) ~= "number" then return end
+		local k = applyCost.kinds[kind]
+		if k == nil then
+			k = { n = 0, ms = 0, max = 0 }
+			applyCost.kinds[kind] = k
+			applyCost.order[#applyCost.order + 1] = kind
+		end
+		k.n, k.ms = k.n + 1, k.ms + ms
+		if ms > k.max then k.max = ms end
+		applyCost.n, applyCost.ms = applyCost.n + 1, applyCost.ms + ms
+	end
+	local function synced(t0)
+		local t1 = wallClock()
+		if t0 and t1 then applyCost.syncs, applyCost.syncMs = applyCost.syncs + 1, applyCost.syncMs + (t1 - t0) * 1000 end
+	end
 	-- Events subscribed to from this state.
 	local subscribed = false
 	-- Says what a prospection did (below).
@@ -536,7 +563,9 @@ function data()
 			if work.actions or work.begin or work.monthly or work.sample or work.loanInit or work.loanRefresh then
 				local saved = state:get()
 				if type(saved) ~= "table" then saved = {} end
+				local s0 = wallClock()
 				local reg, _, failed = registry.sync(saved.registry)
+				synced(s0)
 				-- The room's companies: begun at its first update, as the
 				-- registry, the same in every game (tpf3mp/companies.lua).
 				local roster = companies.ensure(saved.companies, api)
@@ -586,6 +615,8 @@ function data()
 						seal = type(seal) == "table" and seal or nil,
 						actionIndex = i,
 					})
+					local spent = apply.lastCost
+					costOf(next(action) or "?", spent and spent.ms)
 					if uncertain then
 						-- The native command may already have changed this world.
 						-- Do not persist a registry guessed from its unreadable result
@@ -613,7 +644,9 @@ function data()
 					-- registry found it.
 					local kind = ok and apply.CREATES[name] or nil
 					local fresh
+					local y0 = wallClock()
 					reg, fresh = registry.sync(reg, (kind and made) and { [kind] = { made } } or nil)
+					synced(y0)
 					local entity = (kind or keeps) and made or nil
 					for _, f in ipairs((kind and not entity) and fresh or {}) do
 						if f[1] == kind then entity = f[3] break end
@@ -742,6 +775,17 @@ function data()
 				end
 				local ok, why = l:lanes(read)
 				if not ok then l:log("the lanes were not taken: " .. tostring(why)) end
+				if applyCost.n > 0 then
+					local kinds = {}
+					for _, kind in ipairs(applyCost.order) do
+						local k = applyCost.kinds[kind]
+						kinds[#kinds + 1] = string.format("%s %d/%.1f/%.1f", kind, k.n, k.ms, k.max)
+					end
+					l:log(string.format("actions since the last checkpoint: %d applied in %.1f ms (kind n/total/longest ms: %s),"
+						.. " registry.sync %.1f ms over %d calls", applyCost.n, applyCost.ms, table.concat(kinds, ", "),
+						applyCost.syncMs, applyCost.syncs))
+				end
+				applyCost = { kinds = {}, order = {}, n = 0, ms = 0, syncs = 0, syncMs = 0 }
 				-- The subsidy script's offers and subsidies, said in the log
 				-- whenever they changed since the last checkpoint this state
 				-- saw: each with its number, kind, times and terms
