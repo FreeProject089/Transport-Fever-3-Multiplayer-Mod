@@ -1,7 +1,7 @@
-# The project's decisions and its plan are the owner's: a pull request
-# that changes them needs the owner's approval (dev's protection,
-# tools/github/protect-branches.sh; AGENTS.md "Before starting a task").
-/docs/DECISIONS.md @Juliansgith
-/docs/PLAN.md @Juliansgith
-/.github/CODEOWNERS @Juliansgith
-/tools/github/protect-branches.sh @Juliansgith
+# Either code owner can satisfy GitHub's required review for these files.
+# Project decision changes still need Juliansgith's approval; see AGENTS.md
+# "Before starting a task". Code ownership does not grant repository admin.
+/docs/DECISIONS.md @Juliansgith @silver2127
+/docs/PLAN.md @Juliansgith @silver2127
+/.github/CODEOWNERS @Juliansgith @silver2127
+/tools/github/protect-branches.sh @Juliansgith @silver2127
