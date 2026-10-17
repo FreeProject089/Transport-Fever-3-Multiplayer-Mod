@@ -417,6 +417,22 @@ Dev C:
 
 - [ ] Roads with lane connections, tram lanes and ramps; track types and
   underground segments.
+- [ ] *Added, proposed (for the owner):* level crossing types. A type
+  picked in a crossing's window was dropped in a room without a word
+  (2026-10-16). Built: the hook reads the window's type-only map shape, and
+  its preparatory path forms `SetCrossingType` (action schema 27): the
+  crossing by its nodes' places, the type by its file; the player is told
+  when it is refused; the network lane reads every crossing's type. The PR
+  author reported staged Japan_2 two-player runs on 2026-10-17, but ordinary-
+  start acceptance is not established here, so `acceptance.lua`'s `crossings`
+  gate remains off. The ordinary window may emit a Rebuild even for a plain
+  type swap; the normal UI flow remains unimplemented and refused unless the
+  native proposal has the type-only map shape. Window rebuilds that map nodes
+  while changing segments or junctions are refused because the type-only
+  action cannot prove or reproduce those changes. Open: ordinary-start
+  two-player acceptance and the type the road and track tools pick for a new
+  crossing (`rcType`), not carried ([HOOKS.md](HOOKS.md), "Level crossing
+  types").
 - [ ] Landmarks, built once: the second on the same turn is refused and
   pays nothing.
 - [ ] Warehouses, specialised terminals, maintenance facilities, noise

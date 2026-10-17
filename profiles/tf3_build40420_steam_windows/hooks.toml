@@ -169,6 +169,48 @@ offset = 18
 prologue = "E8"
 required = false
 
+# The level crossing window's type selection (UI::react RailroadCrossingComp,
+# `<lambda_5>` thunk 0x28a4ca0 -> sub_28a35a0): after
+# UpdateRailRoadCrossingProposal (0x28a41c0), the CanAfford check and the
+# WorldBuildProposal factory 0x9f0000 (playerInitiated 1), `call factory;
+# nop; lea rcx,[rsp+0x50]; mov [rsp+0x20],rcx; lea r9,[rsp+0x60];
+# mov r8,rax; lea rdx,[rsp+0x40]; mov rcx,r14; call Add` (0x28a386c). Add
+# returns to this + 5 (0x28a3871); the hook reads the crossing's new type
+# there (crates/tpf3mp-hook/src/crossings.rs). tpfre on this build: one
+# match. Without it the window's change stays refused, as before.
+[[target]]
+name = "RailroadCrossingComp/type selection Add call"
+signature = "E8 ?? ?? ?? ?? 90 48 8D 4C 24 50 48 89 4C 24 20 4C 8D 4C 24 60 4C 8B C0 48 8D 54 24 40 49 8B CE E8 ?? ?? ?? ??"
+offset = 32
+prologue = "E8"
+required = false
+
+# UpdateRailRoadCrossingProposal's (0x28a41c0) insert of the crossing into
+# its proposal's crossing -> type map: `lea rcx,[r15+0xd0]; lea r8,
+# [rbp+0xc18]; lea rdx,[rsp+0x50]; call insert; mov rcx,[rax];
+# mov eax,[rbp+0xc38]; mov [rcx+0x14],eax` (call at 0x28a42cf). The insert
+# (sub_567540, unordered_map<int,int>::try_emplace) has 11 byte-identical
+# twins, so the hook follows this call to it; the room's replay fills its
+# carrier with it (crates/tpf3mp-hook/src/crossings.rs). One match.
+[[target]]
+name = "UpdateRailRoadCrossingProposal/crossing map insert"
+signature = "49 8D 8F D0 00 00 00 4C 8D 85 18 0C 00 00 48 8D 54 24 50 E8 ?? ?? ?? ?? 48 8B 08 8B 85 38 0C 00 00 89 41 14"
+offset = 19
+prologue = "E8"
+required = false
+
+# The StreetProposal constructor (sub_4c7c80) building the proposal's two
+# std::unordered_map<int,int> (sub_28b250): node2rcType at +0x90, the
+# crossing window's crossing -> type at +0xd0 (`add rcx,0x90; call; nop;
+# lea rcx,[rdi+0xd0]; call; nop`, 0x4c7ce6). One match on this build; the
+# crossing reader needs both offsets where they were.
+[[target]]
+name = "StreetProposal/level crossing maps"
+signature = "48 81 C1 90 00 00 00 E8 ?? ?? ?? ?? 90 48 8D 8F D0 00 00 00 E8 ?? ?? ?? ?? 90"
+offset = 0
+prologue = "48 81 C1 90 00 00 00"
+required = false
+
 # UI::StreetTerminalBuilder::MousePressed's call of CommandList::Add
 # (0x5954e8, in 0x594f50, whose lambda's RTTI names
 # "UI::StreetTerminalBuilder::MousePressed(UI::CRendererComponent *)"):

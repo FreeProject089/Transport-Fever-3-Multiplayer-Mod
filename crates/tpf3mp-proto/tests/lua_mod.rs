@@ -530,7 +530,7 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          dump = nil, dumped = {} }
 tpf3mp_native = {
     copy = function(text) HOOK.copied = text return true end,
-    version = 14,
+    version = 15,
     note = function(key, value)
         HOOK.notes = HOOK.notes or {}
         if value == nil then return HOOK.notes[key] end
@@ -885,7 +885,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 14; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 15; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -978,7 +978,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 14, command = print, log = print })
+             why({ version = 15, command = print, log = print })
              return out",
         )
         .eval()
@@ -1181,7 +1181,7 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 14 }
+             local native = { version = 15 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
                                   'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
                                   'status', 'chat', 'say', 'takeReplay', 'replayed', 'scanned' }) do
@@ -2171,13 +2171,22 @@ tpf3mp_native.part = function(n, k, kind)
     if n == nil then return { mode = PART_MODE or 'on', parts = PLAN_PARTS or 10, stride = PLAN_STRIDE or 1 } end
     PART_CALLS[#PART_CALLS + 1] = n .. '/' .. k .. '/' .. kind
     if PART_FAIL then return { mode = 'on', why = PART_FAIL } end
-    return { mode = PART_MODE or 'on', ms = 1, timing = 'fake', lights = {}, deferred = {} }
+    -- A hook from before it read the crossings hands no crossingTypes.
+    if PART_OLD then return { mode = PART_MODE or 'on', ms = 1, timing = 'fake', lights = {}, deferred = {} } end
+    return { mode = PART_MODE or 'on', ms = 1, timing = 'fake', lights = {}, deferred = {},
+             crossingTypes = PART_CROSSINGS or {} }
 end
-tpf3mp_native.partTexts = function(n, k, kind, preferences, lights, deferred, rows)
+tpf3mp_native.partTexts = function(n, k, kind, preferences, lights, deferred, rows, crossingTypes)
     PART_TEXTS[#PART_TEXTS + 1] = n .. '/' .. k .. '/' .. kind
     if PART_TEXTS_FAIL then return nil, nil, PART_TEXTS_FAIL end
     local net, cons = '1:' .. NATIVE_TEXT, '1:cons'
     if kind == 'constructions' then net = nil else cons = nil end
+    -- The crossings' types as the Lua named them, on a junctions turn.
+    if kind == 'junctions' then
+        local names = {}
+        for _, index in ipairs(PART_CROSSINGS or {}) do names[#names + 1] = tostring(crossingTypes and crossingTypes[index]) end
+        net = net .. '|crossings ' .. table.concat(names, ',')
+    end
     if rows then return net, cons, { 'row' }, { 'con@0,0' } end
     return net, cons
 end
@@ -2258,6 +2267,13 @@ fn rolling_checks_read_native_parts_in_turn_and_fail_closed() {
         f.load("PART_FAIL='no pool' ROLL_STEP(13,false)")
             .exec()
             .is_err()
+    );
+    // Fail closed: a junctions turn whose hook hands no crossings' types
+    // (one from before it read them) checks no crossings, so it holds.
+    let old = game("ROLL_STEP(1,false)");
+    assert!(
+        old.load("PART_OLD=true ROLL_STEP(2,false)").exec().is_err(),
+        "a part without its crossings"
     );
     let g = game("for s=1,3 do ROLL_STEP(s,false) end tpf3mp_native.part=nil");
     assert!(g.load("ROLL_STEP(4,false)").exec().is_err());
@@ -15339,6 +15355,7 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             { Preserve = { building = { file = 'b.con', at = { x = 0, y = 0, z = 0 } }, index = 0, preserved = true } },
             { Perk = { Greenify = { industry = 0 } } },
             { Perk = { Marketing = { town = 0, duration_ms = 1, line_cost_factor = 0.5, cost = 1 } } },
+            { SetCrossingType = { nodes = { { x = 0, y = 0, z = 0 } }, crossing_type = 'c.rcr' } },
         }
         for _, action in ipairs(actions) do
             local sent, reason = link:command(action)
@@ -15347,10 +15364,9 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             assert(not applied and why:find('awaits two%-player game acceptance'), tostring(why))
         end
         assert(#HOOK.commands == 0)
-        -- Renaming and recolouring (investigation/TPF3_RENAME_2026-10-07.md),
-        -- subsidies (investigation/TPF3_SUBSIDIES_2026-10-07.md) and line
-        -- waypoints (2026-10-16) passed two-player game acceptance: neither
-        -- port refuses them for it any more, whatever else it finds wrong.
+        -- Rename/recolour, subsidies and line waypoints passed two-player
+        -- acceptance; the crossing channel remains gated pending ordinary-
+        -- start two-player acceptance.
         local accepted = {
             { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
             { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
@@ -17144,4 +17160,439 @@ fn a_cut_tracks_signal_a_game_cannot_keep_refuses_the_build() {
     // The same signal kept twice.
     let (a, b) = both(KEPT_300, &format!("{KEPT_301}, {KEPT_301}"));
     refused(&a, &b, "", "where it is kept");
+}
+
+/// Two level crossings, each on two nodes, and a street node above one of
+/// them (a bridge): the crossing types the game offers here, the owners of
+/// the crossings' roads and tracks, and the hook's carrier of a crossing's
+/// type, which the game's build retypes it with.
+const FAKE_CROSSINGS: &str = r#"
+api.type.ComponentType.BASE_NODE = 30
+api.type.ComponentType.RAILROAD_CROSSING = 31
+api.type.ComponentType.PLAYER_OWNED = 32
+api.type.ComponentType.BASE_EDGE = 33
+-- The crossings' segments, by their ends: 900 and 901 meet at the
+-- crossing's nodes and reach out to 650 and 651.
+EDGE_ENDS = { [900] = { node0 = 650, node1 = 701 }, [901] = { node0 = 700, node1 = 651 },
+              [910] = { node0 = 710, node1 = 711 }, [911] = { node0 = 711, node1 = 712 } }
+api.type.SimpleProposal.new = function() return { constructionsToAdd = {}, streetProposal = {} } end
+NODE_AT = { [700] = { x = 18, y = 20, z = 1 }, [701] = { x = 10, y = 20, z = 1 },
+            [710] = { x = 500, y = 0, z = 0 }, [711] = { x = 508, y = 0, z = 0 },
+            [720] = { x = 10, y = 20, z = 9 } }
+CROSSINGS = { [800] = { nodes = { 700, 701 }, edges = { 900, 901 }, typeIndex = 3 },
+              [810] = { nodes = { 710, 711 }, edges = { 910, 911 }, typeIndex = 3 } }
+OWNERS = { [911] = 77 }
+TYPES = { [3] = 'railroad_crossing/era_a_eu.rcr', [5] = 'railroad_crossing/era_c_eu.rcr', [6] = 'hidden.rcr' }
+RETYPES = true
+api.res = api.res or {}
+api.res.railroadCrossingTypeRep = {
+    getName = function(i) return TYPES[i] end,
+    find = function(name) for i, n in pairs(TYPES) do if n == name then return i end end return -1 end,
+    isVisible = function(i) return i ~= 6 end,
+}
+local previous = api.engine.getComponent
+api.engine.getComponent = function(e, kind)
+    if kind == 30 then local p = NODE_AT[e] return p and { position = p } end
+    if kind == 31 then return CROSSINGS[e] end
+    if kind == 32 then local o = OWNERS[e] return o and { player = o } end
+    if kind == 33 then return EDGE_ENDS[e] end
+    if previous then return previous(e, kind) end
+end
+api.engine.system.streetSystem = {
+    getNode2StreetEdgeMap = function() return { [700] = {}, [701] = {}, [710] = {}, [711] = {}, [720] = {} } end,
+    getNode2TrackEdgeMap = function() return { [700] = {}, [701] = {}, [710] = {}, [711] = {} } end,
+}
+api.engine.system.railRoadCrossingSystem = { getRailroadCrossingForNode = function(node)
+    for e, c in pairs(CROSSINGS) do
+        for _, n in ipairs(c.nodes) do if n == node then return e end end
+    end
+    return -1
+end }
+api.type.Proposal = api.type.Proposal or { new = function() return { carrier = true } end }
+-- The hook's carrier (crates/tpf3mp-hook/src/crossings.rs): armed with this
+-- game's crossing and type, filled at the next build's apply, where the
+-- game removes the crossing and adds it anew, of the type, under a new
+-- entity (RETYPES false: the type stays).
+tpf3mp_native.crossing = function(entity, index)
+    if entity == nil then
+        local filled = CARRIER and CARRIER.filled
+        CARRIER = nil
+        return filled
+    end
+    CARRIER = { entity = entity, index = index, filled = false }
+    return true
+end
+local send = api.cmd.sendCommand
+api.cmd.sendCommand = function(command, callback)
+    if CARRIER and not CARRIER.filled and command.proposal and command.proposal.carrier then
+        CARRIER.filled = true
+        local old = CROSSINGS[CARRIER.entity]
+        if old and RETYPES then
+            CROSSINGS[CARRIER.entity] = nil
+            CROSSINGS[CARRIER.entity + 1000] = { nodes = old.nodes, edges = old.edges, typeIndex = CARRIER.index }
+        end
+    end
+    return send(command, callback)
+end
+"#;
+
+/// The level crossing window's change, which the hook read at the click, goes
+/// to the room as the crossing's node places, sorted, and the type's file;
+/// refused (the channel gated pending ordinary-start acceptance, a crossing
+/// gone, the type it has already, or a shape the hook does not carry), the player is told
+/// in the game bar's notice, which the window itself never says.
+#[test]
+fn a_crossing_type_from_its_window_goes_to_the_room_by_its_nodes() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_CROSSINGS).exec().unwrap();
+    // The production gate is off; the fixture turns it on to exercise the
+    // type-only mechanics after checking the default refusal.
+    lua.load(
+        r#"DEFAULT = ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossings
+        ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossings = false
+        HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({}, nil, nil)
+        HOOK.built[0] = { proposal = { crossingType = true, entity = 800, type = 5 } }
+        HOOK.clicks = 1 SCRIPT.guiUpdate({}, nil, nil)
+        FIRST = HOOK.notes and HOOK.notes['tpf3mp.notice']
+        ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossings = true
+        HOOK.built[1] = { proposal = { crossingType = true, entity = 800, type = 5 } }
+        HOOK.built[2] = { proposal = { crossingType = true, entity = 800, type = 3 } }
+        HOOK.built[3] = { proposal = { crossingType = true, entity = 999, type = 5 } }
+        HOOK.built[4] = { why = "crossing window: a crossing change that rebuilds the crossing's tracks" }
+        HOOK.clicks = 5 SCRIPT.guiUpdate({}, nil, nil)"#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let on: bool = lua.load("return DEFAULT").eval().unwrap();
+    assert!(!on, "crossings is gated off by default");
+    let (first, last, sent): (String, String, String) = lua
+        .load(
+            "local c = HOOK.commands[1].SetCrossingType \
+             local nodes = {} for _, p in ipairs(c.nodes) do nodes[#nodes + 1] = p.x .. ',' .. p.y .. ',' .. p.z end \
+             return FIRST, HOOK.notes['tpf3mp.notice'], \
+                 #HOOK.commands .. ' ' .. table.concat(nodes, ' ') .. ' ' .. c.crossing_type",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        first,
+        "1\tNot in multiplayer yet: changing a level crossing's type \
+         (crossings awaits two-player game acceptance)"
+    );
+    assert_eq!(sent, "1 10,20,1 18,20,1 railroad_crossing/era_c_eu.rcr");
+    assert_eq!(
+        last,
+        "4\tNot in multiplayer yet: changing a level crossing's type \
+         (a crossing change that rebuilds the crossing's tracks)"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    for line in [
+        "stopped a build the room cannot carry: the crossing is of that type already [crossing window]",
+        "stopped a build the room cannot carry: the crossing is gone [crossing window]",
+    ] {
+        assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
+    }
+}
+
+/// Every game finds the one crossing on exactly the nodes named, checks the
+/// acting company may change it, gives it the type through the game's own
+/// proposal and reads it back; a crossing elsewhere, another company's, an
+/// unknown type or one the game did not take is refused alike.
+#[test]
+fn every_game_gives_the_same_crossing_its_type() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_CROSSINGS).exec().unwrap();
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossings = true")
+        .exec()
+        .unwrap();
+    lua.load(
+        r#"local function set(nodes, name) return { SetCrossingType = { nodes = nodes, crossing_type = name } } end
+        local here = { { x = 10, y = 20.0004, z = 1 }, { x = 18, y = 20, z = 1.2 } }
+        local other = { { x = 500, y = 0, z = 0 }, { x = 508, y = 0, z = 0 } }
+        HOOK.room = true UPDATE({}, STATE, 0.2)
+        HOOK.batch = {
+            set(here, 'railroad_crossing/era_c_eu.rcr'),
+            set(here, 'railroad_crossing/era_c_eu.rcr'),
+            set({ { x = 10, y = 20, z = 1 } }, 'railroad_crossing/era_a_eu.rcr'),
+            set(other, 'railroad_crossing/era_c_eu.rcr'),
+            set(here, 'railroad_crossing/nowhere.rcr'),
+            set(here, 'hidden.rcr') }
+        UPDATE({}, STATE, 0.2)
+        RETYPES = false
+        HOOK.batch = { set(here, 'railroad_crossing/era_a_eu.rcr') }
+        UPDATE({}, STATE, 0.2)"#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let done: String = lua
+        .load(
+            "local why = {} for _, a in ipairs(HOOK.applied) do \
+                 why[#why + 1] = tostring(a.ok) .. ':' .. tostring(a.why) end \
+             local built = 0 for _, c in ipairs(SENT) do if c.proposal and c.proposal.carrier then built = built + 1 end end \
+             return CROSSINGS[1800].typeIndex .. ' ' .. CROSSINGS[810].typeIndex .. ' ' .. built \
+                 .. ' | ' .. table.concat(why, ' | ')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        done,
+        "5 3 2 | true:nil | true:nil | false:the crossing is not there \
+         | false:the level crossing's road or track belongs to another company \
+         | false:no crossing type railroad_crossing/nowhere.rcr \
+         | false:crossing type hidden.rcr is not offered here \
+         | false:the game did not change the crossing's type"
+    );
+}
+
+/// What each game reads may differ in the last digits, the owner may not
+/// read, and a build may fail: a crossing's nodes match one to one within
+/// the tolerance whatever order they sort in; an owner that does not read is
+/// refused, not taken for no one's; and the hook is never left armed with a
+/// crossing for a later build of the room's.
+#[test]
+fn a_crossing_is_matched_node_for_node_and_never_left_armed() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_CROSSINGS).exec().unwrap();
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossings = true")
+        .exec()
+        .unwrap();
+    lua.load(
+        r#"-- Named at x 10 for both nodes; this game has one at 10.001, so it
+        -- sorts the other first.
+        NODE_AT[730] = { x = 10.001, y = 50, z = 1 }
+        NODE_AT[731] = { x = 10, y = 58, z = 1 }
+        CROSSINGS[820] = { nodes = { 730, 731 }, edges = { 920 }, typeIndex = 3 }
+        local streets, tracks = api.engine.system.streetSystem.getNode2StreetEdgeMap,
+            api.engine.system.streetSystem.getNode2TrackEdgeMap
+        api.engine.system.streetSystem.getNode2StreetEdgeMap = function()
+            local m = streets() m[730] = {} m[731] = {} return m end
+        api.engine.system.streetSystem.getNode2TrackEdgeMap = function()
+            local m = tracks() m[730] = {} m[731] = {} return m end
+        -- An owner whose field does not read.
+        local component = api.engine.getComponent
+        api.engine.getComponent = function(e, kind)
+            if kind == 32 and e == 901 and UNREADABLE then
+                return setmetatable({}, { __index = function() error('no player here') end })
+            end
+            return component(e, kind)
+        end
+        local function set(nodes, name) return { SetCrossingType = { nodes = nodes, crossing_type = name } } end
+        local here = { { x = 10, y = 20, z = 1 }, { x = 18, y = 20, z = 1 } }
+        local shifted = { { x = 10, y = 50, z = 1 }, { x = 10, y = 58, z = 1 } }
+        HOOK.room = true UPDATE({}, STATE, 0.2)
+        HOOK.batch = { set(shifted, 'railroad_crossing/era_c_eu.rcr') }
+        UPDATE({}, STATE, 0.2)
+        UNREADABLE = true
+        HOOK.batch = { set(here, 'railroad_crossing/era_c_eu.rcr') }
+        UPDATE({}, STATE, 0.2)
+        UNREADABLE = false
+        -- The context fails before anything is armed; the build fails once
+        -- armed: either way nothing stays armed, and the next action builds.
+        local new = api.type.Context.new
+        api.type.Context.new = function() error('no context') end
+        HOOK.batch = { set(here, 'railroad_crossing/era_c_eu.rcr') }
+        UPDATE({}, STATE, 0.2)
+        api.type.Context.new = new
+        ARMED_AFTER_CONTEXT = CARRIER ~= nil
+        REFUSE = true
+        HOOK.batch = { set(here, 'railroad_crossing/era_c_eu.rcr') }
+        UPDATE({}, STATE, 0.2)
+        REFUSE = false
+        ARMED_AFTER_REFUSAL = CARRIER ~= nil
+        HOOK.batch = { set(here, 'railroad_crossing/era_c_eu.rcr') }
+        UPDATE({}, STATE, 0.2)"#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let done: String = lua
+        .load(
+            "local why = {} for _, a in ipairs(HOOK.applied) do \
+                 why[#why + 1] = tostring(a.ok) .. ':' .. tostring(a.why) end \
+             return CROSSINGS[1820].typeIndex .. ' ' .. CROSSINGS[1800].typeIndex .. ' ' \
+                 .. tostring(ARMED_AFTER_CONTEXT) .. ' ' .. tostring(ARMED_AFTER_REFUSAL) \
+                 .. ' | ' .. (table.concat(why, ' | '):gsub('[^ |:]+%.rs:%d+:%d+: ', ''))",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        done,
+        "5 5 false false | true:nil \
+         | false:the owner of the level crossing's road or track does not read \
+         | false:no context | false:the proposal collides | true:nil"
+    );
+}
+
+/// A window rebuild includes segment and possibly junction changes that a
+/// type-only replay cannot preserve, so even an otherwise matching crossing
+/// is refused and the player is told why.
+#[test]
+fn the_window_s_rebuild_of_a_crossing_is_refused() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_CROSSINGS).exec().unwrap();
+    lua.load(
+        r#"ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossings = true
+        HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({}, nil, nil)
+        HOOK.built[0] = { proposal = { crossingType = true, type = 5, nodes = { 701, 700 }, removed = { 900, 901 },
+            junctions = { 650, 701 } } }
+        HOOK.built[1] = { proposal = { crossingType = true, type = 5, nodes = { 700 }, removed = { 900 } } }
+        HOOK.built[2] = { proposal = { crossingType = true, type = 5, nodes = { 700, 701 }, removed = { 911 } } }
+        HOOK.built[3] = { proposal = { crossingType = true, type = 5, nodes = { 700, 710 }, removed = { 900 } } }
+        HOOK.built[4] = { proposal = { crossingType = true, type = 5, nodes = { 700, 701 }, removed = { 900 },
+            junctions = { 651 } } }
+        HOOK.clicks = 5 SCRIPT.guiUpdate({}, nil, nil)"#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let commands: usize = lua
+        .load("return #HOOK.commands")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(commands, 0);
+    let notice: String = lua
+        .load("return HOOK.notes['tpf3mp.notice']")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(
+        notice.contains("a crossing rebuild also changes segments or junctions"),
+        "{notice}"
+    );
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    let reason = "stopped a build the room cannot carry: a crossing rebuild also changes segments or junctions and is not carried [crossing window]";
+    assert_eq!(
+        logged.iter().filter(|line| line.as_str() == reason).count(),
+        5,
+        "{logged:?}"
+    );
+}
+
+/// Level crossings' types are in the network lane, so two games whose
+/// crossings differ split at the next checkpoint: each crossing by its
+/// nodes' places and its type by its file, whatever the engine numbers them,
+/// whether the engine lists the crossings or they are found from the nodes on
+/// both a street and a track; a tile reads its own crossings only, and each
+/// row is placed in a part, with the junctions.
+#[test]
+fn level_crossings_types_are_in_the_network_lane() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_CROSSINGS).exec().unwrap();
+    let out: Vec<String> = lua
+        .load(
+            r#"local L = ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua')
+            local C = ug_require('tpf3mp_1::/scripts/tpf3mp/crossings.lua')
+            -- No edges in this lane but the crossings' rows.
+            api.engine.system.streetSystem.getNode2SegmentMap = function() return {} end
+            -- The engine lists the crossings.
+            api.engine.getEntitiesWithComponent = function(kind)
+                if kind == 31 then local out = {} for e in pairs(CROSSINGS) do out[#out + 1] = e end return out end
+                return {}
+            end
+            local rows = C.rows(api)
+            local listed = C.listed
+            local lane = L.read(api)[L.NETWORK]
+            -- It refuses: found from the nodes instead, the same rows.
+            api.engine.getEntitiesWithComponent = function(kind)
+                if kind == 31 then error('Cannot loop over this component type') end
+                return {}
+            end
+            local byNodes = C.rows(api)
+            local byNodesListed = C.listed
+            -- Another type: another lane.
+            CROSSINGS[800].typeIndex = 5
+            local retyped = L.read(api)[L.NETWORK]
+            CROSSINGS[800].typeIndex = 3
+            -- The same world numbered otherwise: the same lane.
+            local renumbered = {}
+            for e, c in pairs(CROSSINGS) do
+                renumbered[e + 5000] = { nodes = c.nodes, edges = c.edges, typeIndex = c.typeIndex }
+            end
+            local before = CROSSINGS
+            CROSSINGS = renumbered
+            local again = L.read(api)[L.NETWORK]
+            CROSSINGS = before
+            -- A tile's nodes: its crossings only.
+            local tile = C.rows(api, { [700] = true, [999] = true })
+            -- A lookup that fails, or a type with no name, fails the read: never
+            -- a crossing left out, never a type by its index.
+            local lookup = api.engine.system.railRoadCrossingSystem.getRailroadCrossingForNode
+            api.engine.system.railRoadCrossingSystem.getRailroadCrossingForNode = function() error('busy') end
+            local okLookup, whyLookup = pcall(C.rows, api, { [700] = true })
+            api.engine.system.railRoadCrossingSystem.getRailroadCrossingForNode = lookup
+            TYPES[3] = nil
+            local okName, whyName = pcall(C.rows, api, { [700] = true })
+            TYPES[3] = 'railroad_crossing/era_a_eu.rcr'
+            assert(not okLookup and whyLookup == 'the crossing on node 700 does not read', tostring(whyLookup))
+            assert(not okName and whyName == 'the type of level crossing 800 has no name', tostring(whyName))
+            assert(lane ~= 'err' and retyped ~= 'err', tostring(lane))
+            return { table.concat(rows, ' || '), listed, byNodesListed,
+                tostring(table.concat(byNodes, ' || ') == table.concat(rows, ' || ')),
+                tostring(lane ~= retyped), tostring(lane == again), table.concat(tile, ' || '),
+                L.rowKind(L.NETWORK, rows[1]), tostring(L.rowPart(L.NETWORK, rows[1], 10)),
+                tostring(L.rowPart(L.NETWORK, rows[2], 10)) }"#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        out[0],
+        "crossing:10000,20000,1000;18000,20000,1000|railroad_crossing/era_a_eu.rcr \
+         || crossing:500000,0,0;508000,0,0|railroad_crossing/era_a_eu.rcr"
+    );
+    assert_eq!(out[1], "listed 2");
+    assert_eq!(out[2], "by nodes 2");
+    assert_eq!(out[3], "true", "both listings give the same rows");
+    assert_eq!(out[4], "true", "a crossing's type is in the lane");
+    assert_eq!(out[5], "true", "no entity id is");
+    assert_eq!(
+        out[6],
+        "crossing:10000,20000,1000;18000,20000,1000|railroad_crossing/era_a_eu.rcr"
+    );
+    assert_eq!(out[7], "junctions");
+    // By the first node's millimetres in cells of 256 m: (0, 0) and (1, 0).
+    assert_eq!(out[8], "0");
+    assert_eq!(out[9], "1");
+}
+
+/// Where the hook reads the parts, it reads their level crossings too; this
+/// Lua names their types (`part`'s `crossingTypes`, `partTexts`' eighth
+/// argument), so two games whose crossing's type differs split there, and a
+/// type with no name stops the check rather than going by its index.
+#[test]
+fn rolling_parts_name_the_level_crossings_the_hook_reads() {
+    let game = |name: &str| {
+        let lua = rolling_game();
+        lua.load(FAKE_PARTS).exec().unwrap();
+        lua.load(format!(
+            r#"PART_CROSSINGS = {{ 3 }}
+            api.res = api.res or {{}}
+            api.res.railroadCrossingTypeRep = {{ getName = function(i)
+                if i == 3 then return {name:?} end
+            end }}"#
+        ))
+        .exec()
+        .unwrap();
+        lua
+    };
+    let read = |lua: &Lua| -> Vec<String> {
+        lua.load(
+            "for s=1,11 do ROLL_STEP(s,false) end local r=ROLL_STEP(12,true) \
+             local out={} for n=0,6 do out[#out+1]=r[n] end return out",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(lua)))
+    };
+    let (a, b) = (read(&game("crossing/a.rcr")), read(&game("crossing/b.rcr")));
+    assert_ne!(a[0], b[0], "the crossing's type is in the network history");
+    assert_eq!(a[1..], b[1..], "and in nothing else");
+    assert_eq!(
+        read(&game("crossing/a.rcr")),
+        a,
+        "the same world, the same history"
+    );
+    // No name: the check stops on the junctions turn (the second update).
+    let nameless = game("");
+    assert!(
+        nameless
+            .load("ROLL_STEP(1,false) ROLL_STEP(2,false)")
+            .exec()
+            .is_err()
+    );
 }

@@ -74,6 +74,10 @@
 //!   why. `terrain()` disarms, and answers whether a build was filled
 //!   (`nil` when none was armed). Optional in the contract: a hook without
 //!   it applies no terraform.
+//! - `crossing(entity, type)`: likewise, arms the next build with level
+//!   crossing `entity` taking type `type` ([`crate::crossings`]): `true`, or
+//!   `nil` and why; `crossing()` disarms and answers whether a build was
+//!   filled. Optional: a hook without it sets no crossing's type.
 //! - `applied(index, ok, entity, why)`: in a game script's `postUpdate`,
 //!   after applying the batch's action `index` (from 1): whether it went,
 //!   what it made, if anything, and why not. For one of the player's own,
@@ -158,7 +162,7 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 14.0;
+pub const VERSION: f64 = 15.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
@@ -858,6 +862,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"chainPoll", native_chain_poll),
                 (b"chainSeen", native_chain_seen),
                 (b"terrain", native_terrain),
+                (b"crossing", native_crossing),
                 (b"applied", native_applied),
                 (b"results", native_results),
                 (b"status", native_status),
@@ -2265,7 +2270,7 @@ unsafe extern "C-unwind" fn native_part(l: State) -> c_int {
     let ms = started.elapsed().as_secs_f64() * 1000.0;
     // SAFETY: as above.
     unsafe {
-        (api.createtable)(l, 0, 7);
+        (api.createtable)(l, 0, 8);
         let table = (api.gettop)(l);
         push_str(api, l, b"mode");
         push_str(api, l, mode.name().as_bytes());
@@ -2293,6 +2298,13 @@ unsafe extern "C-unwind" fn native_part(l: State) -> c_int {
                 push_str(api, l, b"deferred");
                 push_numbers(api, l, part.deferred.iter().map(|n| *n as f64));
                 (api.rawset)(l, table);
+                // The level crossings' types, for the game's Lua to name.
+                let mut types: Vec<i32> = part.crossings.iter().map(|c| c.type_index).collect();
+                types.sort_unstable();
+                types.dedup();
+                push_str(api, l, b"crossingTypes");
+                push_numbers(api, l, types.into_iter().map(f64::from));
+                (api.rawset)(l, table);
             }
             Err(why) => {
                 push_str(api, l, b"why");
@@ -2307,15 +2319,17 @@ unsafe extern "C-unwind" fn native_part(l: State) -> c_int {
     1
 }
 
-/// `partTexts(n, k, kind, preferences, lights, deferred, rows)`: in the
-/// same update, after `part(n, k, kind)`: the two static lanes' texts
-/// (`nil` for a lane the kind does not read) of the part it
-/// read ([`crate::netread::part_texts`]; none of another part or update),
-/// the junctions' names from the two
-/// tables (`{ [value] = name }`, `{ [type] = name }`, as the game's Lua
-/// names them) and `deferred` the Lua's rows of the junctions the part left
-/// to it: `network, constructions` (`count:hash` each), with `rows` true
-/// also their sorted rows, two lists; or `nil, nil` and why.
+/// `partTexts(n, k, kind, preferences, lights, deferred, rows,
+/// crossingTypes)`: in the same update, after `part(n, k, kind)`: the two
+/// static lanes' texts (`nil` for a lane the kind does not read) of the
+/// part it read ([`crate::netread::part_texts`]; none of another part or
+/// update), the junctions' names from the two tables (`{ [value] = name }`,
+/// `{ [type] = name }`, as the game's Lua names them), `deferred` the
+/// Lua's rows of the junctions the part left to it, and the level
+/// crossings' types' names (`{ [index] = file }`, of `part`'s
+/// `crossingTypes`; none for none): `network, constructions` (`count:hash`
+/// each), with `rows` true also their sorted rows, two lists; or `nil,
+/// nil` and why.
 unsafe extern "C-unwind" fn native_part_texts(l: State) -> c_int {
     let Some(api) = API.get() else {
         return 0;
@@ -2323,7 +2337,7 @@ unsafe extern "C-unwind" fn native_part_texts(l: State) -> c_int {
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let mut nodes = 0;
         // SAFETY: Lua calls this with its own state; its arguments are on it.
-        let (n, k, kinds, preferences, lights, deferred, rows) = unsafe {
+        let (n, k, kinds, preferences, lights, deferred, rows, crossing_types) = unsafe {
             if (api.gettop)(l) < 6 {
                 return Err("no part, names or rows given".to_owned());
             }
@@ -2336,7 +2350,16 @@ unsafe extern "C-unwind" fn native_part_texts(l: State) -> c_int {
                 read(api, l, 5, 0, &mut nodes)?,
                 read(api, l, 6, 0, &mut nodes)?,
                 (api.gettop)(l) >= 7 && (api.type_of)(l, 7) == 1 && (api.toboolean)(l, 7) != 0,
+                if (api.gettop)(l) >= 8 && (api.type_of)(l, 8) != TNIL {
+                    Some(read(api, l, 8, 0, &mut nodes)?)
+                } else {
+                    None
+                },
             )
+        };
+        let crossing_types = match &crossing_types {
+            Some(types) => names(types)?,
+            None => std::collections::HashMap::new(),
         };
         crate::netread::part_texts(
             (n, k, kinds),
@@ -2344,6 +2367,7 @@ unsafe extern "C-unwind" fn native_part_texts(l: State) -> c_int {
             &names(&preferences)?,
             &names(&lights)?,
             &rows_of(&deferred)?,
+            &crossing_types,
             rows,
         )
     }))
@@ -2780,6 +2804,46 @@ unsafe fn number_arg(api: &LuaApi, l: State, index: c_int) -> Option<f64> {
         let mut is_number = 0;
         let value = (api.tonumberx)(l, index, &mut is_number);
         (is_number != 0).then_some(value)
+    }
+}
+
+/// `crossing(entity, type)`: arms the next build the room's actions send
+/// with level crossing `entity` taking type `type` (this game's index);
+/// `crossing()` disarms and answers whether a build was filled
+/// ([`crate::crossings`]).
+unsafe extern "C-unwind" fn native_crossing(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    // SAFETY: Lua calls this with its own state, on its thread; its
+    // arguments are on it; a C function's stack has LUA_MINSTACK free slots.
+    unsafe {
+        if (api.gettop)(l) < 1 || (api.type_of)(l, 1) == TNIL {
+            match crate::crossings::disarm() {
+                Some(filled) => (api.pushboolean)(l, c_int::from(filled)),
+                None => (api.pushnil)(l),
+            }
+            return 1;
+        }
+        let whole = |n: Option<f64>| {
+            n.filter(|v| v.fract() == 0.0 && *v >= 0.0 && *v <= f64::from(i32::MAX))
+                .map(|v| v as i32)
+        };
+        let outcome = match (whole(number_arg(api, l, 1)), whole(number_arg(api, l, 2))) {
+            (Some(entity), Some(kind)) => crate::crossings::arm(entity, kind),
+            _ => Err("a crossing and a type are whole numbers".to_owned()),
+        };
+        match outcome {
+            Ok(()) => {
+                (api.pushboolean)(l, 1);
+                1
+            }
+            Err(why) => {
+                (api.pushnil)(l);
+                push_str(api, l, why.as_bytes());
+                2
+            }
+        }
     }
 }
 
@@ -3867,6 +3931,7 @@ my_timetables";
             junctions: Vec::new(),
             deferred: Vec::new(),
             constructions: Vec::new(),
+            crossings: Vec::new(),
             component_bit_entity_slots_scanned: 0,
             timing: String::new(),
         };
@@ -3904,6 +3969,38 @@ my_timetables";
                 .run("return tpf3mp_native.partTexts(5, 2, 'all', {}, {}, { 'x' })")
                 .unwrap()
                 .contains("junctions left")
+        );
+        // A level crossing takes its type's name from the eighth argument;
+        // without it the part has no text. With it, the crossings' own text
+        // follows the network's, and the rows hold the crossing's.
+        let crossed = || {
+            let mut p = part(2, Some(9));
+            p.crossings = vec![crate::netread::Crossing {
+                head: "crossing:1000,2000,0;9000,2000,0".into(),
+                type_index: 7,
+            }];
+            p
+        };
+        crate::netread::keep_part(Some(crossed()));
+        assert!(
+            script
+                .run(texts)
+                .unwrap()
+                .contains("unknown level crossing type")
+        );
+        crate::netread::keep_part(Some(crossed()));
+        let named = script
+            .run(
+                "local net, cons, rows = tpf3mp_native.partTexts(5, 2, 'all', {}, {}, {}, true, \
+                     { [7] = 'crossing/c.rcr' }) \
+                 return net .. ' ' .. table.concat(rows, ' || ')",
+            )
+            .unwrap();
+        assert!(named.starts_with("1:"), "{named}");
+        assert!(named.contains("|crossings 1:"), "{named}");
+        assert!(
+            named.contains("crossing:1000,2000,0;9000,2000,0|crossing/c.rcr"),
+            "{named}"
         );
         crate::seeds::command_step(previous);
     }
@@ -4137,7 +4234,7 @@ my_timetables";
                  type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
                  type(tpf3mp_native.dump), type(tpf3mp_native.dumped), type(tpf3mp_native.note)"
             ),
-            Ok("14|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("15|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();

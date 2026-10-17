@@ -483,12 +483,18 @@ protected folder such as Program Files.
 - **Bridge and tunnel types.** Click a bridge or tunnel and pick another
   type, or none, in its window as usual: it is rebuilt in every player's
   game. A stop on it stays where it was.
+- **Level crossing types.** The preparatory route supports only a native
+  type-only map proposal. The ordinary window may emit a rebuild even for a
+  type swap; that UI flow is not carried and remains refused, as do rebuilds
+  that change segments or junction settings. `crossings` stays gated off
+  pending ordinary-start two-player acceptance. New crossings' types picked
+  in the road or track tool are not carried.
 - **Line waypoints.** Add waypoints to a line's route in the line
   manager as usual: the line is changed in every player's game, each
   waypoint on the same lane or, for an aircraft, at the same place.
 - **Industry Greenification marketing campaigns and Historic
   Preservation.**
-  These new channels are refused pending a two-player game acceptance run.
+  These channels remain refused pending a two-player game acceptance run.
   Their mechanics are implemented but are not enabled for play yet; see
   [COVERAGE.md](COVERAGE.md).
 - **Prospecting.** Prospect for resources near a town from the

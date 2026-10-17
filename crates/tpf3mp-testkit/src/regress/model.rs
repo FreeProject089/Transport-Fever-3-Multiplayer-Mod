@@ -668,6 +668,7 @@ impl State {
             Action::Paint(_) => Ok(()),
             // Trees and rocks: the model keeps no assets.
             Action::PlantAssets(_) => Ok(()),
+            Action::SetCrossingType(_) => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }

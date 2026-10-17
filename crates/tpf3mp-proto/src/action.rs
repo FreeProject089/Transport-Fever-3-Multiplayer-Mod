@@ -104,6 +104,9 @@ pub const MAX_WAYPOINTS: usize = 32;
 /// Most industry types one prospection may find. Build 40408's economy has
 /// at most a handful per cargo.
 pub const MAX_INDUSTRY_TYPES: usize = 32;
+/// Most nodes one level crossing names. TF3 builds a crossing on the two
+/// ends of its connector.
+pub const MAX_CROSSING_NODES: usize = 8;
 
 /// A resource file name as the game lists it, such as
 /// `street/standard/town_medium_new.lua` or a vehicle's `.mdl`.
@@ -1466,6 +1469,39 @@ pub struct Preservation {
     pub preserved: bool,
 }
 
+/// A level crossing's type, chosen in the crossing's window (the native
+/// `RailroadCrossingComp`, whose build maps the crossing to the type: docs/
+/// HOOKS.md, "Level crossing types"). Appended under schema version 27.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrossingType {
+    /// The crossing, by the places of all its nodes, sorted and each once:
+    /// a crossing whose nodes are not exactly these is another one.
+    pub nodes: BoundedVec<Pos, MAX_CROSSING_NODES>,
+    /// The type, by its resource file (`railroadCrossingTypeRep`'s name),
+    /// never its index, which each game assigns as it loads.
+    pub crossing_type: ResName,
+}
+
+impl CrossingType {
+    /// Refuses a crossing named by no node, by unsorted or repeated ones, or
+    /// a type with no name.
+    pub fn validate(&self) -> Result<(), ActionError> {
+        if self.nodes.is_empty() {
+            return Err(ActionError::Crossing("a crossing with no node"));
+        }
+        let key = |p: &Pos| (p.x, p.y, p.z);
+        if self.nodes.windows(2).any(|w| key(&w[0]) >= key(&w[1])) {
+            return Err(ActionError::Crossing(
+                "nodes not sorted, or one named twice",
+            ));
+        }
+        if self.crossing_type.as_str().is_empty() {
+            return Err(ActionError::Crossing("a type with no name"));
+        }
+        Ok(())
+    }
+}
+
 /// One player action.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Action {
@@ -1536,6 +1572,9 @@ pub enum Action {
     /// An asset brush stroke (`AssetStroke`). Appended under schema version
     /// 27, after `Paint`.
     PlantAssets(AssetStroke),
+    /// A level crossing's type ([`CrossingType`]). Appended after the other
+    /// unreleased schema-27 actions; earlier action tags stay fixed.
+    SetCrossingType(CrossingType),
 }
 
 #[derive(Debug, Error)]
@@ -1574,6 +1613,10 @@ pub enum ActionError {
     /// A two-sided stop removal that does not carry one same-construction pair.
     #[error("invalid bulldoze: {0}")]
     Bulldoze(&'static str),
+    /// A [`CrossingType`] naming no node, a node twice or out of order, or
+    /// no type.
+    #[error("invalid level crossing: {0}")]
+    Crossing(&'static str),
 }
 
 impl Action {
@@ -1608,6 +1651,7 @@ impl Action {
             Action::PlaceSignals(_) => "PlaceSignals",
             Action::Paint(_) => "Paint",
             Action::PlantAssets(_) => "PlantAssets",
+            Action::SetCrossingType(_) => "SetCrossingType",
         }
     }
 
@@ -1665,6 +1709,7 @@ impl Action {
                     Err(ActionError::Paint("a mask cell that is not 0 or 1"))
                 };
             }
+            Self::SetCrossingType(crossing) => return crossing.validate(),
             _ => return Ok(()),
         };
         for (i, change) in changes.iter().enumerate() {
@@ -2194,6 +2239,15 @@ mod tests {
                 0, 0, 0, 0, 2, 0, 0, // Street, (0, 0, 0), (1, 0, 0)
                 2, 0, 2, 0, 1, b's', 0, 1, 0, 1, b's', // two stops, (0, 1, 0) and (0, -1, 0)
             ]
+        );
+        // The next schema-27 top-level tag carries a level crossing's type.
+        let crossing = Action::SetCrossingType(CrossingType {
+            nodes: BoundedVec::new(vec![pos(0, 0, 0), pos(1, 0, 0)]).unwrap(),
+            crossing_type: Text::new("c").unwrap(),
+        });
+        assert_eq!(
+            crossing.to_payload().unwrap().as_bytes(),
+            [27, 27, 2, 0, 0, 0, 2, 0, 0, 1, b'c']
         );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),

@@ -623,12 +623,12 @@ then places along the track (Auto Signals) go as one `PlaceSignals`
 
 What an intent's payload carries: `tpf3mp_proto::action`, version
 `ACTION_SCHEMA_VERSION` (**27**; combines station access, company perks
-and preservation, plus named stops and gated asset removal; 26 adds a
-signal's settings to `PlaceStop` and `PlaceSignals`; schema 27 adds `Paint`,
-`PlantAssets`, `Bulldoze::EdgeObjects`, and link fields after `precedence`:
-edge-end positions, then signals kept from a cut track (`position0`,
-`position1`, and `kept`; see "Edge ends" below). Version 27 is one combined
-layout and has not been released. This
+and preservation, plus named stops and gated asset removal. Schema 26 adds a
+signal's settings to `PlaceStop` and `PlaceSignals`; the unreleased schema
+27 combines `Paint`, `PlantAssets`, `Bulldoze::EdgeObjects`, `SetCrossingType`,
+and link fields after `precedence`: edge-end positions, then signals kept
+from a cut track (`position0`, `position1`, and `kept`; see "Edge ends"
+below). This is one combined layout and has not been released. This
 integration combines the existing
 junction schema with the selected vehicle, depot, demolition, precedence
 and gated action additions described in [COVERAGE.md](COVERAGE.md).
@@ -696,7 +696,13 @@ appended.
 | `Preserve` | a town building's Historic Preservation checkbox: the construction it stands in, by file and position, its index in that construction's town buildings, and whether it is preserved. Gated off (`acceptance.lua`, `preservation`) |
 | `Paint` | a terrain paint stroke: the materials grid (first texel, columns, rows, run-length values, 255 unchanged) and its mask grid, the same way; a large stroke goes as several, a band of whole rows each. Behind `acceptance.lua`'s `paint` (schema 27) |
 | `PlantAssets` | an asset brush stroke: the model files it uses, the groups it replaces (first asset and count) and the groups it builds, each asset its model's index and its matrix (`Transform`). Behind `acceptance.lua`'s `assets` (schema 27) |
+| `SetCrossingType` | preparatory type-only replay for a level crossing picked in its window: the crossing by the places of all its nodes (sorted, each once), the type by its resource file. The mechanics path finds the one crossing on exactly those nodes, checks ownership, fills the crossing map through an empty build and reads the type back. `acceptance.lua` keeps `crossings` off pending ordinary-start two-player acceptance. Window rebuilds that map nodes while changing segments or junction settings are refused; this action cannot prove or reproduce those changes. |
 | `PlaceSignals` | signals a mod's script places along existing tracks after its player's signal (Auto Signals): each track by its ends (node 0 first), each new signal's place along it from that end and side, each removed signal's place and construction; the new signals' construction, one-way and settings once. Every game rebuilds all the tracks in one proposal, or none. Behind `acceptance.lua`'s `signals` |
+
+The ordinary crossing window may emit a rebuild even for a plain type swap.
+The normal UI flow is therefore not carried unless the native proposal has
+the separate type-only map shape; matching segment counts does not establish
+that its geometry or junction settings are unchanged.
 
 **Polylines.** A road or track build is a polyline: the tool's proposal by
 positions, the originator's decisions included:
