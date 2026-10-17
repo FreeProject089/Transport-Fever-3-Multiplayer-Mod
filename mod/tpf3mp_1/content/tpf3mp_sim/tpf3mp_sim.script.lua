@@ -83,8 +83,8 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Per Lua state: tried once, then kept.
-	local tried, link, apply, lanes, capture, registry, companies, progression, modbuild, previews =
-		false, nil, nil, nil, nil, nil, nil, nil, nil, nil
+	local tried, link, apply, lanes, capture, registry, companies, progression, modbuild, previews, toolchain =
+		false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 	-- Whether this state is applying the room's actions (in postUpdate);
 	-- the scripts' follow-up builds in the GUI's state, and whether their
 	-- wrapper is on there (tpf3mp/modbuild.lua).
@@ -95,6 +95,33 @@ function data()
 	-- The headquarters lines last logged in this state, by company id: a
 	-- line is logged again only when it changed (tpf3mp/companies.lua).
 	local toldHeadquarters = {}
+	-- What applying the room's actions cost since the last checkpoint, for
+	-- the log there: each kind's count, total and longest (tpf3mp/apply.lua,
+	-- apply.lastCost), and every registry.sync around them. os.clock: the
+	-- elapsed time on Windows, the process's CPU time on Linux and macOS;
+	-- nothing read from it reaches the world.
+	local function wallClock()
+		local ok, t = pcall(function() return os.clock() end)
+		if ok and type(t) == "number" then return t end
+		return nil
+	end
+	local applyCost = { kinds = {}, order = {}, n = 0, ms = 0, syncs = 0, syncMs = 0 }
+	local function costOf(kind, ms)
+		if type(ms) ~= "number" then return end
+		local k = applyCost.kinds[kind]
+		if k == nil then
+			k = { n = 0, ms = 0, max = 0 }
+			applyCost.kinds[kind] = k
+			applyCost.order[#applyCost.order + 1] = kind
+		end
+		k.n, k.ms = k.n + 1, k.ms + ms
+		if ms > k.max then k.max = ms end
+		applyCost.n, applyCost.ms = applyCost.n + 1, applyCost.ms + ms
+	end
+	local function synced(t0)
+		local t1 = wallClock()
+		if t0 and t1 then applyCost.syncs, applyCost.syncMs = applyCost.syncs + 1, applyCost.syncMs + (t1 - t0) * 1000 end
+	end
 	-- Events subscribed to from this state.
 	local subscribed = false
 	-- Says what a prospection did (below).
@@ -261,16 +288,28 @@ function data()
 	-- its resource file (the hook reads it from the click's proposal,
 	-- node2rcType: crates/tpf3mp-hook/src/crossings.rs, decode_tool; docs/
 	-- HOOKS.md, "Level crossing types"), so every game lays them as the
-	-- player's tool would. Only a click the hook read as picking no type goes
-	-- as it is. A type that does not read, a hook that cannot tell, and a
-	-- type picked while acceptance.lua's `crossingTypes` is off stop the
-	-- build, and the player is told: sent without it, every game would lay
-	-- another type than the player picked.
+	-- player's tool would. While acceptance.lua's `crossingTypes` is off,
+	-- the build goes without it, as before the channel. Once on, only a
+	-- click the hook read as picking no type goes as it is: a type that
+	-- does not read and a hook that cannot tell stop the build, and the
+	-- player is told, since every game would lay another type than theirs.
 	local TOOL_CROSSING = "a level crossing type picked in the build tool"
 	local acceptanceModule = nil
 	local function toolCrossing(l, click, seen)
 		local build = seen.action.BuildRoad or seen.action.BuildTrack
 		local kind, why = l:toolCrossing(click)
+		if acceptanceModule == nil then
+			local ok, m = pcall(ug_require, MOD .. "::/scripts/tpf3mp/acceptance.lua")
+			acceptanceModule = ok and type(m) == "table" and m or false
+		end
+		-- While the channel awaits its acceptance, the build goes as before
+		-- it: without the type, each game laying the engine's own.
+		if not (acceptanceModule and acceptanceModule.crossingTypes == true) then
+			if type(kind) == "number" then
+				l:log("the build's level crossing type is left out: crossingTypes awaits two-player game acceptance")
+			end
+			return seen
+		end
 		local function refused(reason)
 			return { why = reason, shape = seen.shape, tell = TOOL_CROSSING }
 		end
@@ -284,13 +323,6 @@ function data()
 		if not crossingsModule then return refused("the crossings module does not load") end
 		local named, name = pcall(crossingsModule.typeName, kind)
 		if not named then return refused(tostring(name)) end
-		if acceptanceModule == nil then
-			local ok, m = pcall(ug_require, MOD .. "::/scripts/tpf3mp/acceptance.lua")
-			acceptanceModule = ok and type(m) == "table" and m or false
-		end
-		if not (acceptanceModule and acceptanceModule.crossingTypes == true) then
-			return refused("crossingTypes awaits two-player game acceptance")
-		end
 		build.crossing_type = name
 		return seen
 	end
@@ -301,6 +333,35 @@ function data()
 		local said = {}
 		for i, a in ipairs(actions) do
 			said[i] = "terraform handed to the room: " .. capture.terraformSummary(a.Terraform)
+				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
+		end
+		return { actions = actions, said = said, shape = "terrain tool" }
+	end
+
+	-- The snapshot of a terrain painter's click: the Paint actions the hook
+	-- made of its stroke (tpf3mp_native.built: `{ paint = { a1, a2, ... } }`),
+	-- one a band of rows.
+	local function paintEdit(built)
+		local actions = built.paint
+		if type(actions) ~= "table" or #actions == 0 then
+			return { why = "the terrain painter's stroke read as nothing", shape = "terrain tool" }
+		end
+		local said = {}
+		for i, a in ipairs(actions) do
+			said[i] = "paint handed to the room: " .. capture.paintSummary(a.Paint)
+				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
+		end
+		return { actions = actions, said = said, shape = "terrain tool" }
+	end
+
+	-- The snapshot of an asset brush's click: its PlantAssets actions
+	-- (tpf3mp/capture.lua, capture.assetStroke), from the stroke the hook read.
+	local function assetEdit(built)
+		local actions, why = capture.assetStroke(built.assets)
+		if not actions then return { why = "the asset brush's stroke: " .. tostring(why), shape = "terrain tool" } end
+		local said = {}
+		for i, a in ipairs(actions) do
+			said[i] = "asset brush handed to the room: " .. capture.assetSummary(a.PlantAssets)
 				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
 		end
 		return { actions = actions, said = said, shape = "terrain tool" }
@@ -450,6 +511,10 @@ function data()
 				-- so a mod without them still builds through the room.
 				local okPreviews, previewsModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/previews.lua")
 				previews = okPreviews and type(previewsModule) == "table" and previewsModule or nil
+				-- The street and track tools continue from what the room
+				-- built (tpf3mp/toolchain.lua): optional too.
+				local okChain, chainModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/toolchain.lua")
+				toolchain = okChain and type(chainModule) == "table" and chainModule or nil
 				registry = registryModule
 				companies = companiesModule
 				progression = progressionModule
@@ -608,7 +673,9 @@ function data()
 			if work.actions or work.begin or work.monthly or work.sample or work.loanInit or work.loanRefresh then
 				local saved = state:get()
 				if type(saved) ~= "table" then saved = {} end
+				local s0 = wallClock()
 				local reg, _, failed = registry.sync(saved.registry)
+				synced(s0)
 				-- The room's companies: begun at its first update, as the
 				-- registry, the same in every game (tpf3mp/companies.lua).
 				local roster = companies.ensure(saved.companies, api)
@@ -658,6 +725,8 @@ function data()
 						seal = type(seal) == "table" and seal or nil,
 						actionIndex = i,
 					})
+					local spent = apply.lastCost
+					costOf(next(action) or "?", spent and spent.ms)
 					if uncertain then
 						-- The native command may already have changed this world.
 						-- Do not persist a registry guessed from its unreadable result
@@ -685,7 +754,9 @@ function data()
 					-- registry found it.
 					local kind = ok and apply.CREATES[name] or nil
 					local fresh
+					local y0 = wallClock()
 					reg, fresh = registry.sync(reg, (kind and made) and { [kind] = { made } } or nil)
+					synced(y0)
 					local entity = (kind or keeps) and made or nil
 					for _, f in ipairs((kind and not entity) and fresh or {}) do
 						if f[1] == kind then entity = f[3] break end
@@ -814,6 +885,17 @@ function data()
 				end
 				local ok, why = l:lanes(read)
 				if not ok then l:log("the lanes were not taken: " .. tostring(why)) end
+				if applyCost.n > 0 then
+					local kinds = {}
+					for _, kind in ipairs(applyCost.order) do
+						local k = applyCost.kinds[kind]
+						kinds[#kinds + 1] = string.format("%s %d/%.1f/%.1f", kind, k.n, k.ms, k.max)
+					end
+					l:log(string.format("actions since the last checkpoint: %d applied in %.1f ms (kind n/total/longest ms: %s),"
+						.. " registry.sync %.1f ms over %d calls", applyCost.n, applyCost.ms, table.concat(kinds, ", "),
+						applyCost.syncMs, applyCost.syncs))
+				end
+				applyCost = { kinds = {}, order = {}, n = 0, ms = 0, syncs = 0, syncMs = 0 }
 				-- The subsidy script's offers and subsidies, said in the log
 				-- whenever they changed since the last checkpoint this state
 				-- saw: each with its number, kind, times and terms
@@ -947,11 +1029,16 @@ function data()
 			if previews and handled < clicks then previews.hidden(l) end
 			while handled < clicks do
 				local seen = snapshots[handled]
+				local ticket = nil
 				-- The module editor's click: its build as the hook read it,
 				-- whatever preview another tool showed before.
 				local native, whyNot = l:built(handled)
 				if type(native) == "table" and native.terrain ~= nil then
 					seen = terraformEdit(native)
+				elseif type(native) == "table" and native.paint ~= nil then
+					seen = paintEdit(native)
+				elseif type(native) == "table" and native.assets ~= nil then
+					seen = assetEdit(native)
 				elseif native == nil and type(whyNot) == "string" and whyNot:find("terrain tool: ", 1, true) == 1 then
 					-- The painter's, the asset brush's, or a stroke that did not read.
 					seen = { why = whyNot, shape = "terrain tool" }
@@ -971,13 +1058,14 @@ function data()
 						if ok then
 							l:log(seen.said[i])
 						else
-							l:log("the player's terraform was not handed to the room: " .. tostring(why))
+							l:log("the player's terrain stroke was not handed to the room: " .. tostring(why))
 							break
 						end
 					end
 				elseif seen and seen.action then
 					local ok, why = l:command(seen.action)
 					if ok then
+						ticket = why
 						l:log("handed the player's build to the room"
 							.. (seen.shape and (" [" .. seen.shape .. "]") or ""))
 						if seen.upgrade then l:log("upgrade handed to the room: " .. seen.upgrade) end
@@ -991,12 +1079,19 @@ function data()
 						.. ((seen and seen.shape) and (" [" .. seen.shape .. "]") or ""))
 					if seen and seen.tell then tell(l, seen.why, seen.tell) end
 				end
+				-- The street or track tool continues from what the room
+				-- builds for this click, if it was handed over (the hook
+				-- knows whether it was that tool's).
+				l:chainClick(handled, ticket)
 				snapshots[handled] = nil
 				handled = handled + 1
 			end
 			for count in pairs(snapshots) do
 				if count < handled then snapshots[count] = nil end
 			end
+			-- The edge the room built for the last street or track click,
+			-- checked in this state each frame (tpf3mp/toolchain.lua).
+			if toolchain then toolchain.frame(l, api) end
 		end,
 
 		handleEvent = function(_params, state, _src, id, name, param)

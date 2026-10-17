@@ -44,10 +44,17 @@ subsidies, with their settlement between companies
 passed two-player acceptance on 2026-10-07 and are enabled. Bridge/tunnel window rebuilds, gated at
 capture behind `bridges`, passed it on 2026-10-11 and are enabled
 ([the validation record](../investigation/TPF3_BRIDGE_TUNNEL_WINDOW_2026-10-11.md)). Industry Greenification and marketing campaigns
-remain gated at both submission and replay behind `perks`. Historic Preservation is likewise gated behind `preservation`. A level crossing's type from its window is behind `crossings`, on since the two-player game of 2026-10-17 (the network lane reads every crossing's type), and the type the road and track tools' toolbar picks for a new crossing (`crossing_type` on `BuildRoad`/`BuildTrack`) behind `crossingTypes`, on since its two-player game of 2026-10-17. Mechanics fixtures explicitly enable a channel
-only in their own Lua state. Enable a channel only after ordinary two-player
-acceptance demonstrates matching outcomes, ownership and money. The gate
-file is part of the installed-mod fingerprint.
+remain gated at both submission and replay behind `perks`. Historic Preservation
+is likewise gated behind `preservation`. A level crossing's type from its
+window remains gated behind `crossings`; the PR author reported staged Japan_2
+two-player runs on 2026-10-17, but ordinary-start acceptance is not established
+here. The type-only mechanics fixtures explicitly enable the channel in their
+own Lua state, and the crossing-window rebuild fixture proves segment/junction
+rebuilds are refused. The type the road and track tools' toolbar picks for a
+new crossing (`crossing_type` on `BuildRoad`/`BuildTrack`) is behind
+`crossingTypes` (off; staged two-game runs on 2026-10-17 passed, ordinary-start acceptance not yet). Enable a channel only after ordinary two-player
+acceptance demonstrates matching outcomes, ownership and money. The gate file
+is part of the installed-mod fingerprint.
 
 ## Deliberately excluded
 
@@ -69,7 +76,11 @@ the 2026-10-02 two-game height-brush validation: raise, lower, smooth,
 flatten and heightmap produced matching native ground. The validation
 record distinguishes complete comparison windows from runs with missing
 probe samples; oversized replay bands still have fixture-only coverage.
-Terrain paint and asset brushes remain refused. The track tools travel as
+Terrain paint (`Paint`, action schema 27) and the asset brush
+(`PlantAssets`, schema 27) passed local two-player acceptance on build 40420
+on 2026-10-16 and are enabled: strokes of several sizes, large ones in
+bands, and tree strokes of 78 and 124 trees, each applied alike in both
+games. The track tools travel as
 `BuildTrack`, as the road modifiers do, and each upgrade is logged.
 
 The existing junction gate remains off pending its own game acceptance.
@@ -82,8 +93,9 @@ and tool company selection, refreshed Lua APIs, room-company map markers,
 stop/station ownership and names, and station entrance junction filtering.
 The current branch-pruning algorithm and all existing acceptance gates stay.
 The line-viewer probe remains diagnostic; it does not repair invalid route data.
-Trees and rocks can be removed through the room only with
-`TPF3MP_TREE_BULLDOZE=1`; they are still disabled by default.
+Trees and rocks removed with the bulldozer passed local two-player
+acceptance on build 40420 on 2026-10-16 and go through the room by default
+(`TPF3MP_TREE_BULLDOZE=0` turns them off).
 Lua fixtures and native helper/static-profile checks cover this integration;
 no fresh ordinary two-player game acceptance is claimed.
 

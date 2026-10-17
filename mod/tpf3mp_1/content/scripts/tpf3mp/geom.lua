@@ -121,6 +121,36 @@ function geom.parameterAt(a, ta, b, tb, x, y)
 	return u, math.sqrt(d2(u))
 end
 
+-- How near, in three dimensions, an end of the edge that takes a signal is
+-- the same end of the edge it stood on, and how alike their directions
+-- there are (the dot of their unit tangents).
+geom.CONTINUE_TOL = 0.5
+geom.CONTINUE_DOT = 0.995
+
+-- Whether the edge `to` continues the edge `from` (both { a, b, ta, tb })
+-- from one of its ends, the same way: it starts where `from` starts, or
+-- ends where it ends, in the same direction there. So the track tool keeps
+-- a signal on a track it cuts (seen on build 40420, 2026-10-17): on the
+-- piece that goes on from its old track's end, the one before the cut or
+-- the one after it, even where the tool moved a node near the cut and the
+-- signal now stands past it; the game places it on that piece. Returns
+-- true, or nil and why not. Every game computes it alike (sqrt only).
+function geom.continues(from, to)
+	local function near(p, q)
+		local dx, dy, dz = p[1] - q[1], p[2] - q[2], p[3] - q[3]
+		return dx * dx + dy * dy + dz * dz <= geom.CONTINUE_TOL * geom.CONTINUE_TOL
+	end
+	local function aligned(t1, t2)
+		local n1 = math.sqrt(t1[1] * t1[1] + t1[2] * t1[2] + t1[3] * t1[3])
+		local n2 = math.sqrt(t2[1] * t2[1] + t2[2] * t2[2] + t2[3] * t2[3])
+		if n1 == 0 or n2 == 0 then return false end
+		return (t1[1] * t2[1] + t1[2] * t2[2] + t1[3] * t2[3]) / (n1 * n2) >= geom.CONTINUE_DOT
+	end
+	if near(from.a, to.a) and aligned(from.ta, to.ta) then return true end
+	if near(from.b, to.b) and aligned(from.tb, to.tb) then return true end
+	return nil, "a signal onto an edge that does not go on from its track"
+end
+
 -- Nearest point of the curve to the cursor's forward viewing ray. The
 -- terrain hit lies beyond elevated track, so projecting that hit vertically
 -- onto the track can move a signal tens of metres along a bridge.

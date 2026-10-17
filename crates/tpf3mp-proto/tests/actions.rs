@@ -9,15 +9,16 @@ use proptest::{collection::vec, prelude::*, sample::Index};
 use tpf3mp_proto::{
     BoundedVec, MAX_PAYLOAD, Payload, Text,
     action::{
-        ACTION_SCHEMA_VERSION, Action, ActionError, AssignLine, Bulldoze, BuyVehicle, CompanyId,
-        CompanyOp, ConsistPart, ConstructionBuild, ConstructionRef, CreateLine, CrossingType,
-        Decoration, EdgeEnds, EdgeKind, EdgeObjectKind, EdgeRef, EditLine, Fraction, LineChange,
-        LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp, LoanTerms, MAX_EDGES,
-        MAX_VERTICES, Network, NewSignal, NodeRef, OldSignal, Param, ParamValue, PlaceSignals,
-        PlaceStop, Polyline, Pos, Pos2, Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild,
-        SignalEdge, StationId, StopRules, Structure, SubsidyOp, SubsidyRef, Tangent, Terminal,
-        Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir, VehicleChange,
-        VehicleId, VehicleOp, Vertex,
+        ACTION_SCHEMA_VERSION, Action, ActionError, AssetStroke, AssignLine, Bulldoze, BuyVehicle,
+        CompanyId, CompanyOp, ConsistPart, ConstructionBuild, ConstructionRef, CreateLine,
+        CrossingType, Decoration, EdgeEnds, EdgeKind, EdgeObjectAt, EdgeObjectKind, EdgeRef,
+        EditLine, Fraction, LineChange, LineData, LineId, LineStop, Link, Load, LoadMode, LoanOp,
+        LoanTerms, MAX_EDGES, MAX_VERTICES, Network, NewSignal, NodeRef, OldSignal, PaintGrid,
+        PaintRun, Param, ParamValue, PlaceSignals, PlaceStop, PlacedAsset, Polyline, Pos, Pos2,
+        Prospect, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, SignalEdge, StationId,
+        StopRules, Structure, SubsidyOp, SubsidyRef, Tangent, Terminal, Terraform, TerrainCell,
+        TerrainPaint, Tint, TownId, TrackBuild, Tram, Transform, UnitDir, VehicleChange, VehicleId,
+        VehicleOp, Vertex,
     },
     lua,
 };
@@ -78,6 +79,9 @@ fn polyline() -> Polyline {
         list(vec![
             Link {
                 precedence: None,
+                position0: None,
+                position1: None,
+                kept: BoundedVec::default(),
 
                 from: 0,
                 to: 1,
@@ -100,6 +104,9 @@ fn polyline() -> Polyline {
             },
             Link {
                 precedence: None,
+                position0: None,
+                position1: None,
+                kept: BoundedVec::default(),
 
                 from: 1,
                 to: 2,
@@ -278,6 +285,22 @@ fn samples() -> Vec<Action> {
             },
             at: pos(45_000, 3_000, 0),
             model: text("station/street/bus_stop.mdl"),
+        }),
+        Action::Bulldoze(Bulldoze::EdgeObjects {
+            edge: EdgeRef {
+                network: Network::Street,
+                ends: ends(pos(10, 0, 0), pos(90_000, 0, 0)),
+            },
+            objects: list(vec![
+                EdgeObjectAt {
+                    at: pos(45_000, 3_000, 0),
+                    model: text("stations/street/small_stops/small_new_twosided.con"),
+                },
+                EdgeObjectAt {
+                    at: pos(45_000, -3_000, 0),
+                    model: text("stations/street/small_stops/small_new_twosided.con"),
+                },
+            ]),
         }),
         Action::BuildConstruction(ConstructionBuild {
             file: text("station/rail/modular_station/modular_station.con"),
@@ -600,6 +623,22 @@ fn samples() -> Vec<Action> {
                 },
             ]),
         }),
+        Action::Paint(TerrainPaint {
+            materials: PaintGrid::new(-1, 2, 2, 1, list(vec![PaintRun { value: 3, count: 2 }]))
+                .unwrap(),
+            mask: None,
+        }),
+        Action::PlantAssets(AssetStroke {
+            models: list(vec![text("tree.con")]),
+            removed: BoundedVec::empty(),
+            groups: list(vec![list(vec![PlacedAsset {
+                model: 0,
+                transform: Transform {
+                    basis: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                    origin: pos(1, 0, 0),
+                },
+            }])]),
+        }),
         Action::SetCrossingType(CrossingType {
             nodes: list(vec![
                 pos(-4_000, 120_500, 3_250),
@@ -720,6 +759,52 @@ fn a_vehicle_sold_on_arrival_at_its_depot_is_refused_on_the_wire_and_in_lua() {
     assert_eq!(Action::from_payload(&payload).unwrap(), good);
 }
 
+#[test]
+fn a_two_sided_stop_bulldoze_requires_two_refs_for_one_construction() {
+    let action = |objects: Vec<EdgeObjectAt>| {
+        Action::Bulldoze(Bulldoze::EdgeObjects {
+            edge: EdgeRef {
+                network: Network::Street,
+                ends: ends(pos(0, 0, 0), pos(10_000, 0, 0)),
+            },
+            objects: list(objects),
+        })
+    };
+    let object = |x, model| EdgeObjectAt {
+        at: pos(x, 0, 0),
+        model: text(model),
+    };
+    let malformed = [
+        action(vec![]),
+        action(vec![object(2_000, "stations/street/twosided.con")]),
+        action(vec![
+            object(2_000, "stations/street/twosided.con"),
+            object(2_000, "stations/street/twosided.con"),
+        ]),
+        action(vec![
+            object(2_000, "stations/street/twosided.con"),
+            object(2_000, "stations/street/other.con"),
+        ]),
+    ];
+    for bad in malformed {
+        assert!(bad.validate().is_err());
+        assert!(bad.to_payload().is_err());
+        let wire = postcard::to_stdvec(&(ACTION_SCHEMA_VERSION, &bad)).unwrap();
+        assert!(Action::from_payload(&Payload::new(wire).unwrap()).is_err());
+        assert!(lua::action_from_lua(&lua::action_to_lua(&bad).unwrap()).is_err());
+    }
+
+    let good = action(vec![
+        object(2_000, "stations/street/twosided.con"),
+        object(8_000, "stations/street/twosided.con"),
+    ]);
+    assert!(good.validate().is_ok());
+    assert_eq!(
+        Action::from_payload(&good.to_payload().unwrap()).unwrap(),
+        good
+    );
+}
+
 /// A train's replacement: its locomotive kept, turned, and a new coach
 /// behind it.
 fn replacement() -> ReplaceVehicle {
@@ -773,13 +858,13 @@ fn check(bytes: &[u8]) {
 #[test]
 fn every_variant_round_trips() {
     let samples = samples();
-    // Every top-level variant is sampled: postcard tags them 0..=25.
+    // Every top-level variant is sampled: postcard tags them 0..=27.
     let mut tags: Vec<u8> = samples
         .iter()
         .map(|action| postcard::to_stdvec(action).unwrap()[0])
         .collect();
     tags.dedup();
-    assert_eq!(tags, (0..=25).collect::<Vec<u8>>());
+    assert_eq!(tags, (0..=27).collect::<Vec<u8>>());
 
     for action in samples {
         let bytes = postcard::to_stdvec(&action).unwrap();

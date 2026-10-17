@@ -50,6 +50,11 @@ pub const MAX_CONNECTIONS: usize = 256;
 pub const MAX_PHASES: usize = 64;
 /// Most edges one action removes or bulldozes.
 pub const MAX_EDGES: usize = 256;
+/// How far an edge's own end may lie from its vertex, in millimetres, on
+/// each axis ([`Link::position0`] or [`Link::position1`], schema 27). The
+/// track tool starts a track on a street's tram lane, 2 m beside the street's
+/// end node (build 40420); the widest street's outer lane is well within this.
+pub const MAX_END_OFFSET: i32 = 32_000;
 /// Most town buildings one bulldoze of streets removes with them.
 pub const MAX_BUILDINGS: usize = 64;
 /// Most assets removed by one action.
@@ -73,6 +78,19 @@ pub const MAX_LINE_STOPS: usize = 256;
 /// Most cells in one terraform stroke. TPF2's largest measured, a smooth, was
 /// 83 by 59.
 pub const MAX_TERRAIN_CELLS: usize = 8192;
+/// Most model files one [`AssetStroke`] names: a brush paints a handful of
+/// kinds of tree or rock.
+pub const MAX_STROKE_MODELS: usize = 64;
+/// Most asset groups one [`AssetStroke`] replaces, and most it adds.
+pub const MAX_STROKE_GROUPS: usize = 256;
+/// Most assets one group an [`AssetStroke`] adds holds. A stroke's groups
+/// measured 1 to 11 trees each on build 40420.
+pub const MAX_GROUP_ASSETS: usize = 512;
+/// Most runs in one [`PaintGrid`]. A paint stroke's grid is the brush's
+/// bounding box of 1 m texels, mostly unchanged: a few runs a row (TPF2's
+/// strokes packed about 30 to 1, `tpf2-multiplayer`'s `terrain_assets.inl`).
+/// The hook cuts a larger stroke into bands of rows, each its own action.
+pub const MAX_PAINT_RUNS: usize = 4096;
 /// Most compartments of one vehicle.
 pub const MAX_COMPARTMENTS: usize = 16;
 /// Most cargo types a stop's loading rules list.
@@ -369,6 +387,34 @@ pub struct Link {
     /// set none.
     #[serde(default)]
     pub precedence: Option<Precedence>,
+    /// Where the edge itself ends at `from`, when that is not its vertex
+    /// (TF3's `BaseEdge.position0`); none where it is. The track tool
+    /// starts a track laid onto a street's end on the street's tram lane,
+    /// beside the node, and only there does the game join the tram lane to
+    /// the track (build 40420, schema 27).
+    #[serde(default)]
+    pub position0: Option<Pos>,
+    /// The same at `to` (`BaseEdge.position1`).
+    #[serde(default)]
+    pub position1: Option<Pos>,
+    /// The signals this edge takes from an edge the build removes, as the
+    /// tool moved them: a track split where a signal stands, the signal on
+    /// the piece it stood on (schema 27). Empty for an edge that takes
+    /// none, or that rebuilds a removed edge in place, which takes all its
+    /// objects.
+    #[serde(default)]
+    pub kept: BoundedVec<KeptSignal, MAX_EDGE_SIGNALS>,
+}
+
+/// A signal an edge takes from an edge the build removes: the one signal of
+/// this construction on the polyline's removal number `removal` (from 0)
+/// within a quarter of a metre of `at`, its place along that edge from the
+/// removal's `a` end. None, or more than one, refuses the whole build.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptSignal {
+    pub removal: u16,
+    pub at: Fraction,
+    pub model: ResName,
 }
 
 /// A street's precedence at its two ends, the game's own values.
@@ -419,6 +465,10 @@ pub enum PolylineError {
     NoSuchVertex(usize),
     #[error("link {0} joins a vertex to itself")]
     Loop(usize),
+    #[error("link {0} ends too far from its vertex")]
+    EndTooFar(usize),
+    #[error("link {0} keeps a signal of a removal the polyline does not have, or off its edge")]
+    KeptSignal(usize),
 }
 
 impl Polyline {
@@ -438,6 +488,22 @@ impl Polyline {
             }
             if link.from == link.to {
                 return Err(PolylineError::Loop(index));
+            }
+            let ends = [(link.from, link.position0), (link.to, link.position1)];
+            for (vertex, end) in ends {
+                let Some(end) = end else { continue };
+                let at = vertices[usize::from(vertex)].pos;
+                let far = |a: i32, b: i32| {
+                    (i64::from(a) - i64::from(b)).abs() > i64::from(MAX_END_OFFSET)
+                };
+                if far(end.x, at.x) || far(end.y, at.y) || far(end.z, at.z) {
+                    return Err(PolylineError::EndTooFar(index));
+                }
+            }
+            if link.kept.iter().any(|k| {
+                usize::from(k.removal) >= removals.len() || !(0..=1_000_000).contains(&k.at.0)
+            }) {
+                return Err(PolylineError::KeptSignal(index));
             }
         }
         Ok(Self {
@@ -539,6 +605,25 @@ pub enum Bulldoze {
     /// Trees and other assets taken out of their asset group, which every
     /// game builds again from its own copy without them (schema 25).
     Assets(AssetRemoval),
+    /// The stops one bulldozer click removes from one edge together: both
+    /// of a two-sided stop (schema 27). Each is the stop of its model on
+    /// the edge nearest its `at`, every one a different object; every game
+    /// rebuilds the edge once without them.
+    EdgeObjects {
+        edge: EdgeRef,
+        objects: BoundedVec<EdgeObjectAt, MAX_REMOVED_STOPS>,
+    },
+}
+
+/// Most stops one bulldoze of an edge's objects removes: a two-sided stop's.
+pub const MAX_REMOVED_STOPS: usize = 2;
+
+/// A stop, signal or waypoint on an edge: its construction's file and where
+/// it stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeObjectAt {
+    pub at: Pos,
+    pub model: ResName,
 }
 
 /// One asset of an asset group: its model's file and where it stands,
@@ -1055,6 +1140,149 @@ impl TryFrom<TerraformFields> for Terraform {
     }
 }
 
+/// A run of `count` cells of one value, row by row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaintRun {
+    pub value: u8,
+    pub count: u32,
+}
+
+/// One of a paint stroke's grids: its first cell and size in the grid's
+/// own cells, and its values as runs that fill it exactly. Decoding checks
+/// that they do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PaintGridFields")]
+pub struct PaintGrid {
+    pub x0: i32,
+    pub y0: i32,
+    pub columns: u32,
+    pub rows: u32,
+    pub runs: BoundedVec<PaintRun, MAX_PAINT_RUNS>,
+}
+
+#[derive(Deserialize)]
+struct PaintGridFields {
+    x0: i32,
+    y0: i32,
+    columns: u32,
+    rows: u32,
+    runs: BoundedVec<PaintRun, MAX_PAINT_RUNS>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("runs of {cells} cells do not fill a grid of {columns} by {rows}")]
+pub struct PaintGridError {
+    pub cells: u64,
+    pub columns: u32,
+    pub rows: u32,
+}
+
+impl PaintGrid {
+    pub fn new(
+        x0: i32,
+        y0: i32,
+        columns: u32,
+        rows: u32,
+        runs: BoundedVec<PaintRun, MAX_PAINT_RUNS>,
+    ) -> Result<Self, PaintGridError> {
+        let cells: u64 = runs.iter().map(|r| u64::from(r.count)).sum();
+        let empty_run = runs.iter().any(|r| r.count == 0);
+        if columns == 0 || rows == 0 || empty_run || cells != u64::from(columns) * u64::from(rows) {
+            return Err(PaintGridError {
+                cells,
+                columns,
+                rows,
+            });
+        }
+        Ok(Self {
+            x0,
+            y0,
+            columns,
+            rows,
+            runs,
+        })
+    }
+
+    /// Every cell's value, row by row.
+    pub fn cells(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity((self.columns as usize) * (self.rows as usize));
+        for run in self.runs.iter() {
+            out.extend(std::iter::repeat_n(run.value, run.count as usize));
+        }
+        out
+    }
+}
+
+impl TryFrom<PaintGridFields> for PaintGrid {
+    type Error = PaintGridError;
+
+    fn try_from(f: PaintGridFields) -> Result<Self, PaintGridError> {
+        Self::new(f.x0, f.y0, f.columns, f.rows, f.runs)
+    }
+}
+
+/// One asset the asset brush places: its model, by its index in the
+/// stroke's `models` from 0, and its world matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacedAsset {
+    pub model: u16,
+    pub transform: Transform,
+}
+
+/// An asset group a stroke replaces, named as the asset bulldozer names
+/// one: its first asset and how many it holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetGroupRef {
+    pub first: AssetRef,
+    pub count: u32,
+}
+
+/// An asset brush stroke (trees, rocks, bushes: `UI::ProposalAction`, as
+/// the terrain tools): the groups it replaces, and the groups it builds,
+/// each its assets (the ones a replaced group kept among them). Every game
+/// removes the same groups and builds the same ones. Appended under schema
+/// version 27.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetStroke {
+    pub models: BoundedVec<ResName, MAX_STROKE_MODELS>,
+    pub removed: BoundedVec<AssetGroupRef, MAX_STROKE_GROUPS>,
+    pub groups: BoundedVec<BoundedVec<PlacedAsset, MAX_GROUP_ASSETS>, MAX_STROKE_GROUPS>,
+}
+
+impl AssetStroke {
+    /// Whether it does something, and names only models it lists.
+    pub fn validate(&self) -> Result<(), ActionError> {
+        if self.removed.is_empty() && self.groups.is_empty() {
+            return Err(ActionError::Assets("a stroke that changes nothing"));
+        }
+        if self.groups.iter().any(|g| g.is_empty()) {
+            return Err(ActionError::Assets("a group of no assets"));
+        }
+        let models = self.models.len();
+        if self
+            .groups
+            .iter()
+            .flat_map(|g| g.iter())
+            .any(|a| usize::from(a.model) >= models)
+        {
+            return Err(ActionError::Assets(
+                "an asset of a model the stroke does not name",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A terrain paint stroke (the terrain painter, `UI::ProposalAction`) as
+/// the grids the game computed: each texel's material (255 leaves it as it
+/// is), and the mask grid beside it, each cell 0 or 1, where the stroke had
+/// one. Appended under schema version 27.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerrainPaint {
+    pub materials: PaintGrid,
+    pub mask: Option<PaintGrid>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompanyOp {
     Create {
@@ -1355,8 +1583,14 @@ pub enum Action {
     /// (`PlaceSignals`). Appended under schema version 26: the variants
     /// before it keep their bytes.
     PlaceSignals(PlaceSignals),
-    /// A level crossing's type ([`CrossingType`]). Appended under schema
-    /// version 27.
+    /// A terrain paint stroke (`TerrainPaint`). Appended under schema
+    /// version 27: the variants before it keep their bytes.
+    Paint(TerrainPaint),
+    /// An asset brush stroke (`AssetStroke`). Appended under schema version
+    /// 27, after `Paint`.
+    PlantAssets(AssetStroke),
+    /// A level crossing's type ([`CrossingType`]). Appended after the other
+    /// unreleased schema-27 actions; earlier action tags stay fixed.
     SetCrossingType(CrossingType),
 }
 
@@ -1387,6 +1621,15 @@ pub enum ActionError {
     /// place off its edge.
     #[error("invalid signals: {0}")]
     Signals(&'static str),
+    /// A [`TerrainPaint`] whose mask holds more than bits.
+    #[error("invalid paint: {0}")]
+    Paint(&'static str),
+    /// An [`AssetStroke`] that changes nothing or names a model it lacks.
+    #[error("invalid asset stroke: {0}")]
+    Assets(&'static str),
+    /// A two-sided stop removal that does not carry one same-construction pair.
+    #[error("invalid bulldoze: {0}")]
+    Bulldoze(&'static str),
     /// A [`CrossingType`] naming no node, a node twice or out of order, or
     /// no type.
     #[error("invalid level crossing: {0}")]
@@ -1423,14 +1666,33 @@ impl Action {
             Action::Preserve(_) => "Preserve",
             Action::CalendarSpeed { .. } => "CalendarSpeed",
             Action::PlaceSignals(_) => "PlaceSignals",
+            Action::Paint(_) => "Paint",
+            Action::PlantAssets(_) => "PlantAssets",
             Action::SetCrossingType(_) => "SetCrossingType",
         }
     }
 
-    /// Validate what the wire's bounds do not: the relationships within a
-    /// junction, and no vehicle sent to be sold on arrival
-    /// ([`ActionError::SellOnArrival`]).
+    /// Validate relationships the wire's bounds do not: a two-sided stop
+    /// removal's pair, the relationships within a junction, and no vehicle
+    /// sent to be sold on arrival ([`ActionError::SellOnArrival`]).
     pub fn validate(&self) -> Result<(), ActionError> {
+        if let Self::Bulldoze(Bulldoze::EdgeObjects { objects, .. }) = self {
+            if objects.len() != 2 {
+                return Err(ActionError::Bulldoze(
+                    "a two-sided stop removal must name both objects",
+                ));
+            }
+            if objects[0] == objects[1] {
+                return Err(ActionError::Bulldoze(
+                    "a two-sided stop removal must name distinct objects",
+                ));
+            }
+            if objects[0].model != objects[1].model {
+                return Err(ActionError::Bulldoze(
+                    "a two-sided stop removal must name one construction",
+                ));
+            }
+        }
         let changes = match self {
             Self::CalendarSpeed { millis_per_day } if *millis_per_day > i32::MAX as u32 => {
                 return Err(ActionError::CalendarSpeed);
@@ -1458,6 +1720,18 @@ impl Action {
                 None => return Ok(()),
             },
             Self::PlaceSignals(signals) => return signals.validate(),
+            Self::PlantAssets(stroke) => return stroke.validate(),
+            Self::Paint(paint) => {
+                let bits = paint
+                    .mask
+                    .as_ref()
+                    .is_none_or(|mask| mask.runs.iter().all(|r| r.value <= 1));
+                return if bits {
+                    Ok(())
+                } else {
+                    Err(ActionError::Paint("a mask cell that is not 0 or 1"))
+                };
+            }
             Self::SetCrossingType(crossing) => return crossing.validate(),
             _ => return Ok(()),
         };
@@ -1524,6 +1798,9 @@ mod tests {
     fn link(from: u16, to: u16) -> Link {
         Link {
             precedence: None,
+            position0: None,
+            position1: None,
+            kept: BoundedVec::default(),
 
             from,
             to,
@@ -1568,6 +1845,59 @@ mod tests {
             Err(PolylineError::Loop(1))
         );
         assert!(Polyline::new(vertices(2), links(vec![link(1, 0)]), BoundedVec::empty()).is_ok());
+        // A kept signal names one of the polyline's removals, on its edge.
+        let keeping = |removal, at| Link {
+            kept: BoundedVec::new(vec![KeptSignal {
+                removal,
+                at: Fraction(at),
+                model: Text::new("s").unwrap(),
+            }])
+            .unwrap(),
+            ..link(0, 1)
+        };
+        let one = || {
+            BoundedVec::new(vec![EdgeRef {
+                network: Network::Track,
+                ends: EdgeEnds {
+                    a: pos(0, 0, 0),
+                    b: pos(1, 0, 0),
+                },
+            }])
+            .unwrap()
+        };
+        assert_eq!(
+            Polyline::new(vertices(2), links(vec![keeping(0, 0)]), BoundedVec::empty()),
+            Err(PolylineError::KeptSignal(0))
+        );
+        assert_eq!(
+            Polyline::new(vertices(2), links(vec![keeping(1, 0)]), one()),
+            Err(PolylineError::KeptSignal(0))
+        );
+        assert_eq!(
+            Polyline::new(vertices(2), links(vec![keeping(0, 1_000_001)]), one()),
+            Err(PolylineError::KeptSignal(0))
+        );
+        assert!(Polyline::new(vertices(2), links(vec![keeping(0, 1_000_000)]), one()).is_ok());
+    }
+
+    #[test]
+    fn a_link_ends_near_its_vertex() {
+        let links = |list| BoundedVec::new(list).unwrap();
+        // Vertex 1 is at (1000, 0, 0): an end 2 m beside it, on a street's
+        // tram lane, is the track tool's; one 40 m off is no edge's end.
+        let mut beside = link(0, 1);
+        beside.position1 = Some(pos(1000, -2000, 0));
+        assert!(Polyline::new(vertices(2), links(vec![beside]), BoundedVec::empty()).is_ok());
+        let mut far = link(0, 1);
+        far.position0 = Some(pos(0, 0, MAX_END_OFFSET + 1));
+        assert_eq!(
+            Polyline::new(
+                vertices(2),
+                links(vec![link(0, 1), far]),
+                BoundedVec::empty()
+            ),
+            Err(PolylineError::EndTooFar(1))
+        );
     }
 
     #[test]
@@ -1676,10 +2006,35 @@ mod tests {
                 0, 1, 2, 0, 0, 2, 0, 0, 0, // 0 -> 1, tangents, Structure::Ground
                 0, // the build's own kind
                 0, 0, 0, 0, 0, // no decorations, lock, ownership, lanes or precedence
+                0, 0, // no edge end offset at either vertex
+                0, // no kept signals (schema 27)
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
                 0, // no junction changes
                 1, 1, b'c', // crossing type Some("c"), schema 28
+            ]
+        );
+        // Final schema 27 link order after precedence: position0, position1, kept.
+        let keeping = Link {
+            position0: Some(pos(1, -2, 3)),
+            position1: Some(pos(4, 5, 6)),
+            kept: BoundedVec::new(vec![KeptSignal {
+                removal: 1,
+                at: Fraction(750_000),
+                model: Text::new("s").unwrap(),
+            }])
+            .unwrap(),
+            ..link(0, 1)
+        };
+        assert_eq!(
+            postcard::to_stdvec(&keeping).unwrap()[15..],
+            [
+                1, 2, 3, 6, // Some(position0): (1, -2, 3)
+                1, 8, 10, 12, // Some(position1): (4, 5, 6)
+                1,  // one kept signal
+                1,  // removal 1
+                0xe0, 0xc6, 0x5b, // at 750,000, zigzag varint
+                1, b's', // its construction
             ]
         );
         // Appended with Prospect under schema version 7: the variants
@@ -1842,14 +2197,82 @@ mod tests {
             signals.to_payload().unwrap().as_bytes(),
             [28, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
         );
-        // Appended under schema version 27: a level crossing's type.
+        // Schema 27 appends the terrain and asset actions, then the
+        // two-sided stop removal within Bulldoze. Earlier tags stay fixed.
+        let paint = Action::Paint(TerrainPaint {
+            materials: PaintGrid::new(
+                -1,
+                2,
+                2,
+                1,
+                BoundedVec::new(vec![PaintRun { value: 3, count: 2 }]).unwrap(),
+            )
+            .unwrap(),
+            mask: None,
+        });
+        assert_eq!(
+            paint.to_payload().unwrap().as_bytes(),
+            [28, 25, 1, 4, 2, 1, 1, 3, 2, 0]
+        );
+        let plant = Action::PlantAssets(AssetStroke {
+            models: BoundedVec::new(vec![Text::new("t").unwrap()]).unwrap(),
+            removed: BoundedVec::empty(),
+            groups: BoundedVec::new(vec![
+                BoundedVec::new(vec![PlacedAsset {
+                    model: 0,
+                    transform: Transform {
+                        basis: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                        origin: pos(1, 0, 0),
+                    },
+                }])
+                .unwrap(),
+            ])
+            .unwrap(),
+        });
+        assert_eq!(
+            plant.to_payload().unwrap().as_bytes(),
+            [
+                28, 26, 1, 1, b't', 0, 1, 1, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 2, 0, 0
+            ]
+        );
+        let stops = Action::Bulldoze(Bulldoze::EdgeObjects {
+            edge: EdgeRef {
+                network: Network::Street,
+                ends: EdgeEnds {
+                    a: pos(0, 0, 0),
+                    b: pos(1, 0, 0),
+                },
+            },
+            objects: BoundedVec::new(vec![
+                EdgeObjectAt {
+                    at: pos(0, 1, 0),
+                    model: Text::new("s").unwrap(),
+                },
+                EdgeObjectAt {
+                    at: pos(0, -1, 0),
+                    model: Text::new("s").unwrap(),
+                },
+            ])
+            .unwrap(),
+        });
+        assert_eq!(
+            stops.to_payload().unwrap().as_bytes(),
+            [
+                28, // schema version
+                2,  // Action::Bulldoze
+                4,  // Bulldoze::EdgeObjects
+                0, 0, 0, 0, 2, 0, 0, // Street, (0, 0, 0), (1, 0, 0)
+                2, 0, 2, 0, 1, b's', 0, 1, 0, 1, b's', // two stops, (0, 1, 0) and (0, -1, 0)
+            ]
+        );
+        // The next schema-27 top-level tag carries a level crossing's type.
         let crossing = Action::SetCrossingType(CrossingType {
             nodes: BoundedVec::new(vec![pos(0, 0, 0), pos(1, 0, 0)]).unwrap(),
             crossing_type: Text::new("c").unwrap(),
         });
         assert_eq!(
             crossing.to_payload().unwrap().as_bytes(),
-            [28, 25, 2, 0, 0, 0, 2, 0, 0, 1, b'c']
+            [28, 27, 2, 0, 0, 0, 2, 0, 0, 1, b'c']
         );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),

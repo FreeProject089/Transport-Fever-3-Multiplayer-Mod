@@ -1232,6 +1232,34 @@ money, ran in the game script's `postUpdate`.
 Every other action is refused with a line in `hook.log`, the same on every
 game, so the worlds stay alike. The native build tools come next.
 
+#### What applying an action costs
+
+Applying another player's build runs in this game's step, so a slow one
+stutters the game of everyone who watches it. The game script logs, from
+Lua's `os.clock` (nothing of it reaches the world; it is the elapsed time
+on Windows, but the process's CPU time on Linux and macOS, where the game's
+other threads count too):
+
+```
+mod: applying BuildRoad took 680.0 ms: nodes Street 1x 14.0 ms (4964), verdict 1x 15.0 ms, commands 1x 28.0 ms, junctions 1x 590.0 ms
+mod: actions since the last checkpoint: 2 applied in 160.0 ms (kind n/total/longest ms: BuildConstruction 2/160.0/88.0), registry.sync 0.0 ms over 4 calls
+```
+
+The first for each action that took at least 20 ms (`apply.SLOW_MS`), by
+part (`tpf3mp/apply.lua`, `apply.costText`): `nodes <network>` a read of
+a whole network (its nodes), `near <network>` a preview's octree lookup of
+nodes (the edges found; docs/BUILDING.md), `constructionAt` the search of every
+construction (how many), `junctions` the junction settings it keeps,
+`verdict` the game's `makeProposalData`, `refresh` and `regenerate` the
+game's own proposals for a construction, and `commands` every command it
+sent. The second at each checkpoint, by kind of action. A preview of
+another member's build is made the same way in the GUI (`tpf3mp/previews.lua`),
+and every 10 s while any arrive:
+
+```
+mod: build previews in the last 10.0 s: made 25 in 1396.0 ms (longest 158.0) [BuildRoad: nodes Street 1x 133.0 ms (4945)], drawn 25 in 405.0 ms (longest 29.0), retried 0 in 0.0 ms (longest 0.0)
+```
+
 ### The room's world
 
 A room plays its owner's world. On a server that keeps worlds, the owner
@@ -2971,9 +2999,18 @@ construction's window its edits:
   distance between track centres (`StreetTemplate.trackDistance`, the
   edge's `distance`): without it the game laid no shared ballast bed or
   catenary with the tracks beside it, and the ground showed between them
-  (seen 2026-10-02, tracks laid side by side in a room). A build that
-  moves or removes an edge with a stop or signal on it, or that places
-  stops, signals or constructions, is refused.
+  (seen 2026-10-02, tracks laid side by side in a room). Each edge ends
+  where the tool ended it (`BaseEdge.position0`, `position1`), which need
+  not be its node: a track laid onto the free end of a street with tram
+  tracks starts on the street's tram lane, 2 m beside the node, and only
+  so does the game join them for trams (build 40420; docs/BUILDING.md,
+  "Edge ends"). Built from the node's centre, the track ended in a buffer
+  stop in every game of the room (2026-10-15); the schema-27 edge ends fix
+  passed two-game acceptance on build 40420. A build that moves or removes
+  an edge with a stop or signal on it, or that places stops, signals or
+  constructions, is refused, except a track cut between its signals where
+  every existing non-waypoint signal is declared and kept on its continuing
+  piece (`Link::kept`, BUILDING.md; `splitSignals`).
 - **The bulldozer** (`bulldozer`): its proposal removes one construction
   (with the construction's own entrance edge and node) or edges of one
   network (with the nodes they leave on their own). It becomes a
@@ -2992,9 +3029,11 @@ construction's window its edits:
   proposal, every edge it adds such a join, travels as the build it is: a
   `BuildRoad` or `BuildTrack` of the joining edge between the existing
   far nodes, with the removed edges (each in its own network) and nodes
-  as its removals, as a road modifier's build travels. A stop or signal
-  on a joined edge, or town buildings the bulldozer takes with it, are
-  refused.
+  as its removals, as a road modifier's build travels. Capture accounts for
+  every removed edge: it must pair with a join or be the known track stub
+  attached to the joined node, with its removed far node a degree-one track
+  endpoint. An unrelated extra removal is refused. A stop or signal on a
+  joined edge, or town buildings the bulldozer takes with it, are refused.
   A town building is a construction like any (one that lists its
   `townBuildings`) and goes the same way. A town street's proposal lists
   the town buildings along it in `toRemove` too; they travel beside the
@@ -3014,9 +3053,9 @@ construction's window its edits:
   (full and thin instances): what a replay of it would have to build.
   On build 13090a8 the rebuilt group read as plain models: each a model's
   file (`::/assets/...`) and its world matrix, none thin, one construction
-  of no file and no desc type, for a group of thin instances. With
-  `TPF3MP_TREE_BULLDOZE=1` in the player's game (the hook's `trees()`),
-  that proposal travels as a `Bulldoze::Assets`: the group by its first
+  of no file and no desc type, for a group of thin instances. Unless
+  `TPF3MP_TREE_BULLDOZE=0` is set in the player's game (the hook's
+  `trees()`), that proposal travels as a `Bulldoze::Assets`: the group by its first
   asset and how many it holds, the assets taken out by model and position,
   and which way the tool turned them (read off its matrices; a rebuilt
   group that holds any asset the group did not, turns a thin one
@@ -3054,8 +3093,15 @@ construction's window its edits:
   rebuilt without it, the stop named by its edge, where it stands and its
   construction (the `EDGE_OBJECT` component's `transf` and
   `edgeObjectConstruction`), a `Bulldoze::EdgeObject`; the replay puts it
-  in `edgeObjectsToRemove`. Removing a signal, or an edge with a stop or
-  signal on it, is refused.
+  in `edgeObjectsToRemove`. Both stops of a two-sided stop, which one
+  click removes, go as one `Bulldoze::EdgeObjects` (schema 27): two stops
+  of one construction, one on each side, else refused. A track removed
+  with signals on it goes as `Bulldoze::Edges` when the proposal's
+  `edgeObjectsToRemove` are exactly the signals on its removed tracks
+  (each type `SIGNAL`, listed once, no construction removed with them);
+  the replay removes the tracks with those signals and refuses a stop or
+  another company's signal on them. An edge with a stop on it is
+  refused.
 - **The stop tool** (`streetTerminalBuilder`): a stop on a street. The
   tool queues a `WorldBuildProposal` (command 52 from
   `UI::StreetTerminalBuilder`, found statically), which the hook's gate
@@ -3205,6 +3251,86 @@ construction's window its edits:
   the model name `modelRep` gives is the one `EdgeObject.model` takes, and
   that the tool's click is `playerInitiated`.
 
+**The street and track tools' continuation is test-only**
+(`TPF3MP_TOOL_CONTINUE=1`) until an ordinary-start real-game check covers
+input cancellation and native track direction. With the default setting,
+the game leaves the tool at its normal start-point picker after the room
+builds a segment. With the opt-in, the tools continue from that segment,
+as they do from the one just built in single player
+(`crates/tpf3mp-hook/src/toolchain.rs`, `scripts/tpf3mp/toolchain.lua`).
+Read on 40420 with tpfre (the same code, at the same places, on 40408 and
+40418): one click of either tool, `UI::StreetBuilder::UpdateEngine`
+(0x588c60), sets the tool's busy byte (`+0x9e0`), queues the build with a
+callback (`UpdateEngine::<lambda_1>`, inline in its `std::function`: the
+tool at `+8`, the start point the next segment takes at `+0x10`, the
+clicked end at `+0x1c`, and two settings bytes at `+0x28` and `+0x29`),
+then resets the tool's proposal, start point and all (`ResetProposal`,
+0x575650). The callback (0x56d7f0) clears the busy byte, and continues
+only when the command's result (`+0x30`, the apply's bool, 0x9e3473) is
+set: it finds, in the payload's vector of built edges (`+0x18`, 0x350
+bytes each: the edge, its two nodes, both ends and both tangents, real ids
+once applied: 0x25fc980, 0x25fe200), the edge whose end equals the clicked
+end, and calls the tool's "start here" (0x570a30) with a
+`SnapPointBaseEdge` there and, when the end node has exactly one edge of
+the tool's network, the edge's direction. In a room the click's build is
+refused at its apply, so the result is unset and the player picked a start
+point after every segment (reported 2026-10-15).
+
+The hook does the callback's part later, from what the room built, and
+never hands the callback a result of its own:
+1. At the click, the add's detour reads the callback as `UpdateEngine`
+   built it (busy byte 1, functor inline) and keeps that one click; a
+   later click of the street or track tool replaces it. A script's build
+   (a mod's follow-up, `playerInitiated` too) leaves it, and picking
+   another tool closes this one.
+2. The mod's `guiUpdate` tells the hook the ticket it handed the click to
+   the room with (`chainClick`), or that it handed nothing over.
+3. While the room's actions are applied, each build's edges are copied out
+   of its payload after the apply, and kept once that ticket's action is
+   reported applied (`applied`); a refused or failed one drops the click.
+4. Each GUI frame (`chainPoll`), the built edge that ends within 5 mm of
+   the clicked end (the room carries millimetres) is checked in the GUI's
+   own state: that edge, with those nodes, its end where the room put it,
+   which also shows that state has the room's build. Its end node's
+   street and other edges are counted (`getNodeSegments`, `chainSeen`).
+5. At the tool's next frame (the `UI::StreetBuilder::Step` pre-hook of
+   the tools' player), if the tool is not busy, has no start point of the
+   player's, keeps its settings and their continue byte, the edge exists in
+   the tool's engine (`ecs::Engine::EntityExists`, which `StartAt`'s
+   revision read asserts) and the GUI saw it a frame ago at most, the hook
+   calls the tool's "start here" with the start point and direction the
+   callback would have built.
+
+The click is dropped, and the tool left as the game left it, when the
+player starts a segment (even one let go again before the room built),
+the native builder resets its proposal after the click was captured,
+the tool misses frames (closed), the room
+refuses or does not apply the build or applies it without such an edge,
+the game leaves the room, or 15 s pass. The direction rule is the
+game's, counted in the GUI's state as the game counts it, with one
+difference: the game counts the other network's edges that also have
+`BaseEdge`'s field `+0x90` clear, the hook all of them. (Whether the
+click's end snapped to something does not matter: a track snapped to a
+street beside it, as a guide, still goes on in its direction.)
+A right-click while the click waits passes through the tool's own input
+handler with no start point (`UI::StreetBuilder` vf2, 0x581479..0x5814d7).
+The native proposal-reset detour now drops a kept click if that path resets
+the builder; continuation remains off even with test opt-in if this detour
+fails to install. Closing the tool also drops it after missed frames. Whether
+the parent handler can leave the tool open without resetting remains to be
+checked in game, so default continuation stays off. "Closed" is three GUI frames without the
+tool's frame, counted from the click's own; a tool closed and opened
+again faster than that is not seen.
+Profile targets, all optional: `StreetBuilder::UpdateEngine/Add call`,
+`/capture` (whose signature holds every offset of the tool and the
+callback read), `StreetBuilder::UpdateEngine callback/result scan` and
+`/snap` (the result's and the start point's layout),
+`UI::StreetBuilder::StartAt` and `ecs::Engine::EntityExists`; install
+checks each call between them. Without any of them, or without the
+`Step` pre-hook (`TPF3MP_HOOK_TOOL_COMPANY=0`), the tools wait for a
+start point after each segment, and hook.log says why once
+(`street tool: ...`).
+
 A refusal shows its reason in the tool, and the log has each new reason
 with the proposal's shape (`the room cannot carry this ... build`); every
 build handed to the room is logged with its shape too. The upgrade, bus
@@ -3329,7 +3455,10 @@ places in the same direction as a removed one, listing exactly its objects,
 is the edge rebuilt in place, and every game's build gives it the objects
 of the edge it replaces under their own entities (`engine.keptInPlace`,
 `networkInto`); a stop moved onto another edge is refused. The same rule
-lets the road and track tools build through an edge with a stop on it.
+lets the road and track tools build through an edge with a stop on it. A
+track signal (not a waypoint) may also move onto the piece of a track
+the build cuts that goes on from one of its old track's ends, where the
+tool put it (`Link::kept`, BUILDING.md).
 
 A track's catenary and type travel the same way, as far as the game's
 scripts say (build 40408's `construction_react_util.tl`: the
@@ -3415,7 +3544,8 @@ worked. That startup failure has not been diagnosed. A rejoined game's
 speed row showed 1x while the room was paused; pause then play resumed it.
 
 Full acceptance is still pending. Keep `junctions.strict_junctions` off in
-the normal mod. In matching disposable test mod copies, turn it on and:
+the normal mod; with it off only the junction window's double slip switch
+goes (BUILDING.md, "Junction edits"). In matching disposable test mod copies, turn it on and:
 
 1. Start two games through the launcher into one room and the same save.
    Use the actual tools to toggle crosswalks, lane turns and traffic lights;
@@ -3467,6 +3597,11 @@ crossing's edge is found in the street graph's index (`sub_b4e690`):
   the type at +0x90: the map Lua's `SimpleStreetProposal.node2rcType`
   converts to (`sub_10c6750`).
 
+The ordinary window may use the rebuild shape even for a plain type swap.
+That UI flow is unimplemented and refused unless the proposal has the
+separate type-only map shape. Seeing the type-only shape in a fixture does
+not establish that the normal click uses it.
+
 `crates/tpf3mp-hook/src/crossings.rs` tells the window's `Add` call by its
 return address (`RailroadCrossingComp/type selection Add call`) and reads
 its proposal there, where the profile also finds both maps where they were
@@ -3474,14 +3609,14 @@ its proposal there, where the profile also finds both maps where they were
 call; lea rcx,[rdi+0xd0]`). The map is MSVC's: a sentinel list node at +8
 and the size at +0x10; each node next, previous, key (+0x10), value
 (+0x14). The reader walks the list to exactly its size, every link
-answered by its back link, no key twice. Both shapes are read, and
-nothing else: no node added or removed, no edge object, construction or
-junction. The first is one crossing in +0xd0 and no segment; the second
-(the one a click on Japan_2 took, 2026-10-16) as many segments laid again
-as removed, each an existing one, and the crossing's nodes in +0x90, all
-of one type (at most 16 segments and 8 nodes). Any other is refused with
-why. A recognised click always keeps an answer (the crossing and type,
-the nodes, type and segments, or `crossing window: ` and why), so the
+answered by its back link, no key twice. The only carried shape is one
+crossing in +0xd0, with no segments, nodes, edge objects, constructions or
+junction changes. A window rebuild maps nodes to the type in +0x90 and lays
+segments again; it may also replace junction settings. The hook refuses
+every such rebuild, even when the segment counts match, because a type-only
+action cannot reproduce those changes and the captured data does not prove
+equivalence. Other shapes are refused too. A recognised click always keeps
+an answer (the crossing and type, or `crossing window: ` and why), so the
 GUI never hands another tool's preview for it.
 
 The GUI half of the game script (`tpf3mp_sim`) makes the action
@@ -3489,13 +3624,10 @@ The GUI half of the game script (`tpf3mp_sim`) makes the action
 nodes, sorted by whole millimetres, and the type by its resource file
 (`railroadCrossingTypeRep.getName`; an index differs between games). A
 crossing gone, a type not offered here, or the type it has already is
-refused. For the rebuild, the crossing is the one its nodes belong to
-(`getRailroadCrossingForNode`): every node named is that crossing's,
-every one of its nodes is named, and every segment laid again ends at
-one of them (on Japan_2 the street leading onto the crossing, 2026-10-17),
-every junction laid again at an end of one of those. Either shape becomes the same action: every game replays it
-the one way below, whichever way the window built it here. Whatever is
-not handed to the room, the player is told in the
+refused. `crossings.capture` refuses any native proposal with `nodes`,
+`removed` or `junctions`: the window's rebuild changes more than the type,
+and the type-only action cannot preserve its segments or junction settings.
+The player is told in the
 game bar ("Not in multiplayer yet: changing a level crossing's type",
 why in brackets), through the note `tpf3mp.notice`, which the game bar
 plugin shows.
@@ -3529,14 +3661,17 @@ carrier with anything else in it is refused, and so is the build. The
 crossing is then read back by its first node: of the old type, the action
 is refused (alike in every game); of another type, or gone, the replay
 stops (`replayFatal`). The crossing gets a new entity, which the room
-never names: the next action finds it by its nodes again.
+never names: the next action finds it by its nodes again. This type-only
+path is preparatory and mechanics-tested with fixtures; production acceptance
+keeps it disabled by default.
 
-Refused in the sender and in every replay until `acceptance.lua`'s
-`crossings` is turned on after a two-player game. Not covered: what the
-window's rebuild does beyond the type (it lays the crossing's segments
-again; the replay does not); the cost (the window checks the player can afford
-the change; the carrier is built with the game's cost as any build of the
-room's, unchecked against the window's; each game logs what the company paid, `the company paid N`).
+Refused in the sender and every replay while `acceptance.lua`'s `crossings`
+is false. The PR author's report names staged Japan_2 two-player runs from
+2026-10-17, but ordinary-start acceptance is not established here; keep the
+gate off until that evidence is verified. Not covered: the cost (the window
+checks the player can afford the change; the carrier is built with the game's
+cost as any build of the room's, unchecked against the window's; each game
+logs what the company paid, `the company paid N`).
 
 **The tools' toolbar type.** The road and track tools (one native class,
 `UI::StreetBuilder`) take the toolbar's `rcType` (a concrete type: the
@@ -3567,10 +3702,10 @@ street or track click's `BuildRoad` or `BuildTrack` the type by its
 resource file (`crossing_type`, action schema 28), the type checked
 visible here. Only a click read as picking no type goes as it is: a
 reading that is refused, a type not offered, a click with nothing kept, a
-reading the profile cannot make, a hook without `toolCrossing`, and a type
-picked while `crossingTypes` is off all stop the build, and the player is
-told ("Not in multiplayer yet: a level crossing type picked in the build
-tool"), since every game would otherwise lay another type than theirs.
+reading the profile cannot make, and a hook without `toolCrossing` all
+stop the build while `crossingTypes` is on, and the player is told ("Not
+in multiplayer yet: a level crossing type picked in the build tool"),
+since every game would otherwise lay another type than theirs.
 
 Every game's replay (`apply.lua`, `buildNetwork`) resolves the type by
 name first (one not offered refuses the build before anything is sent,
@@ -3590,14 +3725,15 @@ crossing laid anew of another type than the toolbar's, or one extended
 that lost its own, is logged ("took type"), not refused: the build went,
 and the network lane of the room's world checks reads every crossing's
 type, so games that laid different types are found there. Behind
-`acceptance.lua`'s `crossingTypes` (while it is off, the GUI refuses a
-build with a type and a replay refuses one that carries it), on since the
-two-player game of 2026-10-17 (Japan_2, run `crossing-tool-1017b`: a
-track across a road by the guest, a road across a track by the host, and
-one of the preselected type, each crossing of the picked type in both
-games, read back as expected, 20 paired rolling world checks equal). Not
-covered:
-a construction's or another tool's click whose proposal maps crossing
+`acceptance.lua`'s `crossingTypes`, off: while it is, the GUI sends such a
+build without the type, as before the channel, and a replay refuses one
+that carries it. Staged two-game runs on Japan_2 passed on 2026-10-17
+(`crossing-tool-1017b`: a track across a road, a road across a track and
+one of the preselected type, each of the picked type in both games, 20
+paired rolling world checks equal; `crossing-tool-1017c`: a parallel
+track keeping the existing crossing's type, a bridge carrying none, 19
+equal); ordinary-start acceptance is not yet recorded.
+Not covered: a construction's or another tool's click whose proposal maps crossing
 nodes (read, never carried; none is known); the preview the other members
 see (sent before the click, without the type); the cost of a type (the
 replay builds at the game's cost for its proposal).
@@ -3813,10 +3949,29 @@ its click, but the GUI's sender
 refuses the actions (`terraform awaits two-player game acceptance`), and
 so would every game's replay; nothing is armed and no carrier is filled.
 
-The painter's and the asset brush's clicks are stopped with
-`terrain tool: click N cannot go to the room: terrain paint: the room
-does not carry it yet` (or `the asset brush: ...`), and the GUI's
-`stopped a build the room cannot carry: terrain tool: ...`.
+The painter's click is stopped the same way, and its stroke read at
+the same call (`paint: click N queued ...`): the materials grid (a byte a
+texel, 255 where the stroke leaves one as it is) and the mask grid, a
+`vector<bool>` of 32-bit words with its count of bits just past it
+(`MASK_BITS`, 0x28 into the grid, as TPF2's `Grid<bool>`). The hook cuts
+it into `Paint` actions of whole rows, each within 4,096 runs (materials
+and mask together), run-length packed; every game arms the hook with one
+(`tpf3mp_native.terrain(t)`, the action's body) and sends the empty
+carrier, whose materials and mask grids the hook fills.
+
+The asset brush's click is stopped too, and its stroke read there
+(`asset brush: click N queued ...`): the groups it removes (`toRemove`)
+and each group it adds, a `ConstructionEntity` of no file whose
+subconstruction's models (the vector at 0x140 of the first element of the
+vector at 0xa30, each 0xa8 bytes: the model's resource name, its world
+matrix at 0x60) are its trees (seen on build 40420 with the hook's asset
+probe, 2026-10-16). The GUI names each removed group by its first asset
+and how many it holds, as the asset bulldozer does, and hands the room
+`PlantAssets` actions; every game finds its own copy of each removed group
+and builds the stroke's groups through the game's own Lua, as the
+bulldozer's replay rebuilds one (`api.type.Proposal.ConstructionEntity`,
+an autoRemovable desc, one subconstruction of the trees), for the acting
+company. A group missing or ambiguous in a game refuses the stroke there.
 
 ### The world's lanes
 
@@ -6499,8 +6654,8 @@ implementation that is absent here.
 
 The first company also gets the map's all-companies display; its selection
 and editing checks still use its own player. The line-viewer probe diagnoses
-unrendered route data and does not fix it. Tree/rock bulldozing remains opt-in
-with `TPF3MP_TREE_BULLDOZE=1`; brushes remain refused. Action schema 25 adds
+unrendered route data and does not fix it. Tree/rock bulldozing, terrain
+paint and the asset brush go through the room (2026-10-16). Action schema 25 adds
 `PlaceStop::name` and `Bulldoze::Assets` to dev's existing schema 24, without
 renumbering its perk or preservation actions. Native playtest observations
 above are the contributor's evidence; this integration has no new live-game

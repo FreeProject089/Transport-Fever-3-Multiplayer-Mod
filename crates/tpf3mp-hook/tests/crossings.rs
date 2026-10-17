@@ -109,22 +109,13 @@ fn rebuild(removed: &[i32], added: usize, types: &[(i32, i32)]) -> Image {
     m
 }
 
-/// Seen in a room on 2026-10-16: the window lays the crossing's segments
-/// again and maps its nodes to the type. It reads as the nodes, the type and
-/// the segments; a rebuild of other shapes is refused.
+/// A window rebuild maps nodes to the type while laying segments and may
+/// reset junction settings. The type-only replay cannot prove it preserves
+/// those changes, so even a well-formed rebuild is refused.
 #[test]
-fn the_window_s_rebuild_reads_as_the_crossing_s_nodes_and_type() {
-    assert_eq!(
-        decode(&rebuild(&[900, 901], 2, &[(700, 5), (701, 5)]), PROPOSAL),
-        Ok(Change::Rebuild {
-            nodes: vec![700, 701],
-            kind: 5,
-            removed: vec![900, 901],
-            junctions: vec![],
-        })
-    );
-    // Seen in a room on 2026-10-17: the junction settings at the segments'
-    // ends laid again with them, and some reset.
+fn the_window_s_rebuild_is_refused_even_with_a_matching_segment_count() {
+    // This has the observed valid shape: two segments laid again, the
+    // crossing's nodes mapped to one type, and junctions at segment ends.
     let mut m = rebuild(&[900, 901], 2, &[(700, 5), (701, 5)]);
     let configs = 0xe00;
     m.int(configs + layout::CONFIG_NODE, 701);
@@ -140,12 +131,11 @@ fn the_window_s_rebuild_reads_as_the_crossing_s_nodes_and_type() {
     m.word(PROPOSAL + layout::CONFIGS_REMOVED + 16, resets as u64 + 4);
     assert_eq!(
         decode(&m, PROPOSAL),
-        Ok(Change::Rebuild {
-            nodes: vec![700, 701],
-            kind: 5,
-            removed: vec![900, 901],
-            junctions: vec![650, 701],
-        })
+        Err("a crossing rebuild with segments or junctions is not carried".to_owned())
+    );
+    assert_eq!(
+        decode(&rebuild(&[900, 901], 2, &[(700, 5), (701, 5)]), PROPOSAL),
+        Err("a crossing rebuild with segments or junctions is not carried".to_owned())
     );
     // Junctions without a rebuild are not the window's.
     let mut m = window(&[(51_234, 5)]);
@@ -156,29 +146,14 @@ fn the_window_s_rebuild_reads_as_the_crossing_s_nodes_and_type() {
         decode(&m, PROPOSAL),
         Err("a crossing change that also changes junctions".to_owned())
     );
-    for (m, why) in [
-        (
-            rebuild(&[900, 901], 1, &[(700, 5), (701, 5)]),
-            "a crossing rebuild that does not lay its segments again one for one",
-        ),
-        (
-            rebuild(&[], 0, &[(700, 5)]),
-            "a crossing rebuild that does not lay its segments again one for one",
-        ),
-        (
-            rebuild(&[900], 1, &[(700, 5), (701, 6)]),
-            "a crossing rebuild that gives its nodes different types",
-        ),
-        (
-            rebuild(&[-1], 1, &[(700, 5)]),
-            "a crossing rebuild that removes a segment not yet built",
-        ),
-        (
-            rebuild(&[900], 1, &[]),
-            "a crossing change that lays segments and types no crossing",
-        ),
+    for m in [
+        rebuild(&[900, 901], 1, &[(700, 5), (701, 5)]),
+        rebuild(&[], 0, &[(700, 5)]),
+        rebuild(&[900], 1, &[(700, 5), (701, 6)]),
+        rebuild(&[-1], 1, &[(700, 5)]),
+        rebuild(&[900], 1, &[]),
     ] {
-        assert_eq!(decode(&m, PROPOSAL), Err(why.to_owned()));
+        assert!(decode(&m, PROPOSAL).is_err());
     }
     // Both maps at once.
     let mut m = rebuild(&[900], 1, &[(700, 5)]);
