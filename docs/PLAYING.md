@@ -535,8 +535,11 @@ protected folder such as Program Files.
   pays. Your own game changes the ground only when the room's copy of a
   stroke arrives, so while you hold the mouse down the brush works on the
   ground as it was before your last strokes came back. A stroke of more
-  than 65,536 cells (a square about 1 km across) is refused. Painting the
-  ground and the asset brush (trees, rocks) are not in multiplayer yet.
+  than 65,536 cells (a square about 1 km across) is refused.
+- **Painting the ground and planting.** Paint the ground and use the asset
+  brush (trees, rocks, bushes) as usual: every player's game paints the
+  same texels and builds the same groups of trees, a moment after each
+  stroke, and your company pays. A large stroke goes as several parts.
 - **Town buildings.** Bulldoze a town's building as usual: every player's
   game removes the same building, a moment after your click; your company
   pays the demolition, and the town's opinion of it changes as in single
@@ -544,12 +547,15 @@ protected folder such as Program Files.
   buildings along it with it, as in single player; if by the time it
   arrives the game would take another building than the ones you saw go
   (the town grew meanwhile), nothing is removed in any game and the
-  hook's log says why. Bulldozing trees and other assets is not in
-  multiplayer yet: the bulldozer says so and removes nothing.
+  hook's log says why. Bulldozing trees and rocks works the same way:
+  every game takes the same ones out of their group.
 - **Vehicles and lines.** Buy vehicles in a depot's store, make and change
   lines in the line manager, and send vehicles out, stop them or sell
   them, as usual: every player's game does it together, and your window
-  hears it a moment after your click.
+  hears it a moment after your click. On Steam build 40420, station clicks
+  made while a new line waits for the room are kept in order. On other
+  supported builds, wait for the new line to appear before adding its next
+  station; the copied line window has only been verified for build 40420.
 - **Companies.** Everyone starts in the save's own company, together. In
   the Multiplayer window you can found a company of your own, join
   another, rename or recolour yours, and dissolve it once you are its last
@@ -600,8 +606,8 @@ protected folder such as Program Files.
   depots. The room's first company is everyone's: it has no head and no
   password. The game's company window renames your company too.
 - **Terrain.** Raise, lower, smooth, flatten and the heightmap brush share
-  their height changes through the room. Terrain paint and asset brushes
-  are still refused until their own multiplayer support is validated.
+  their height changes through the room, and so do terrain paint and the
+  asset brush.
 - **Achievements.** A game with TPF3-MP active still earns achievements:
   the mod keeps them on, as the game lets a mod do. This holds even when
   the save has other mods that would switch them off.

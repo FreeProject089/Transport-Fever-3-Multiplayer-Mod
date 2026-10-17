@@ -78,6 +78,19 @@ pub const MAX_LINE_STOPS: usize = 256;
 /// Most cells in one terraform stroke. TPF2's largest measured, a smooth, was
 /// 83 by 59.
 pub const MAX_TERRAIN_CELLS: usize = 8192;
+/// Most model files one [`AssetStroke`] names: a brush paints a handful of
+/// kinds of tree or rock.
+pub const MAX_STROKE_MODELS: usize = 64;
+/// Most asset groups one [`AssetStroke`] replaces, and most it adds.
+pub const MAX_STROKE_GROUPS: usize = 256;
+/// Most assets one group an [`AssetStroke`] adds holds. A stroke's groups
+/// measured 1 to 11 trees each on build 40420.
+pub const MAX_GROUP_ASSETS: usize = 512;
+/// Most runs in one [`PaintGrid`]. A paint stroke's grid is the brush's
+/// bounding box of 1 m texels, mostly unchanged: a few runs a row (TPF2's
+/// strokes packed about 30 to 1, `tpf2-multiplayer`'s `terrain_assets.inl`).
+/// The hook cuts a larger stroke into bands of rows, each its own action.
+pub const MAX_PAINT_RUNS: usize = 4096;
 /// Most compartments of one vehicle.
 pub const MAX_COMPARTMENTS: usize = 16;
 /// Most cargo types a stop's loading rules list.
@@ -1096,6 +1109,149 @@ impl TryFrom<TerraformFields> for Terraform {
     }
 }
 
+/// A run of `count` cells of one value, row by row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaintRun {
+    pub value: u8,
+    pub count: u32,
+}
+
+/// One of a paint stroke's grids: its first cell and size in the grid's
+/// own cells, and its values as runs that fill it exactly. Decoding checks
+/// that they do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PaintGridFields")]
+pub struct PaintGrid {
+    pub x0: i32,
+    pub y0: i32,
+    pub columns: u32,
+    pub rows: u32,
+    pub runs: BoundedVec<PaintRun, MAX_PAINT_RUNS>,
+}
+
+#[derive(Deserialize)]
+struct PaintGridFields {
+    x0: i32,
+    y0: i32,
+    columns: u32,
+    rows: u32,
+    runs: BoundedVec<PaintRun, MAX_PAINT_RUNS>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("runs of {cells} cells do not fill a grid of {columns} by {rows}")]
+pub struct PaintGridError {
+    pub cells: u64,
+    pub columns: u32,
+    pub rows: u32,
+}
+
+impl PaintGrid {
+    pub fn new(
+        x0: i32,
+        y0: i32,
+        columns: u32,
+        rows: u32,
+        runs: BoundedVec<PaintRun, MAX_PAINT_RUNS>,
+    ) -> Result<Self, PaintGridError> {
+        let cells: u64 = runs.iter().map(|r| u64::from(r.count)).sum();
+        let empty_run = runs.iter().any(|r| r.count == 0);
+        if columns == 0 || rows == 0 || empty_run || cells != u64::from(columns) * u64::from(rows) {
+            return Err(PaintGridError {
+                cells,
+                columns,
+                rows,
+            });
+        }
+        Ok(Self {
+            x0,
+            y0,
+            columns,
+            rows,
+            runs,
+        })
+    }
+
+    /// Every cell's value, row by row.
+    pub fn cells(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity((self.columns as usize) * (self.rows as usize));
+        for run in self.runs.iter() {
+            out.extend(std::iter::repeat_n(run.value, run.count as usize));
+        }
+        out
+    }
+}
+
+impl TryFrom<PaintGridFields> for PaintGrid {
+    type Error = PaintGridError;
+
+    fn try_from(f: PaintGridFields) -> Result<Self, PaintGridError> {
+        Self::new(f.x0, f.y0, f.columns, f.rows, f.runs)
+    }
+}
+
+/// One asset the asset brush places: its model, by its index in the
+/// stroke's `models` from 0, and its world matrix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacedAsset {
+    pub model: u16,
+    pub transform: Transform,
+}
+
+/// An asset group a stroke replaces, named as the asset bulldozer names
+/// one: its first asset and how many it holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetGroupRef {
+    pub first: AssetRef,
+    pub count: u32,
+}
+
+/// An asset brush stroke (trees, rocks, bushes: `UI::ProposalAction`, as
+/// the terrain tools): the groups it replaces, and the groups it builds,
+/// each its assets (the ones a replaced group kept among them). Every game
+/// removes the same groups and builds the same ones. Appended under schema
+/// version 27.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetStroke {
+    pub models: BoundedVec<ResName, MAX_STROKE_MODELS>,
+    pub removed: BoundedVec<AssetGroupRef, MAX_STROKE_GROUPS>,
+    pub groups: BoundedVec<BoundedVec<PlacedAsset, MAX_GROUP_ASSETS>, MAX_STROKE_GROUPS>,
+}
+
+impl AssetStroke {
+    /// Whether it does something, and names only models it lists.
+    pub fn validate(&self) -> Result<(), ActionError> {
+        if self.removed.is_empty() && self.groups.is_empty() {
+            return Err(ActionError::Assets("a stroke that changes nothing"));
+        }
+        if self.groups.iter().any(|g| g.is_empty()) {
+            return Err(ActionError::Assets("a group of no assets"));
+        }
+        let models = self.models.len();
+        if self
+            .groups
+            .iter()
+            .flat_map(|g| g.iter())
+            .any(|a| usize::from(a.model) >= models)
+        {
+            return Err(ActionError::Assets(
+                "an asset of a model the stroke does not name",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// A terrain paint stroke (the terrain painter, `UI::ProposalAction`) as
+/// the grids the game computed: each texel's material (255 leaves it as it
+/// is), and the mask grid beside it, each cell 0 or 1, where the stroke had
+/// one. Appended under schema version 27.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerrainPaint {
+    pub materials: PaintGrid,
+    pub mask: Option<PaintGrid>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompanyOp {
     Create {
@@ -1355,6 +1511,12 @@ pub enum Action {
     /// (`PlaceSignals`). Appended under schema version 26: the variants
     /// before it keep their bytes.
     PlaceSignals(PlaceSignals),
+    /// A terrain paint stroke (`TerrainPaint`). Appended under schema
+    /// version 27: the variants before it keep their bytes.
+    Paint(TerrainPaint),
+    /// An asset brush stroke (`AssetStroke`). Appended under schema version
+    /// 27, after `Paint`.
+    PlantAssets(AssetStroke),
 }
 
 #[derive(Debug, Error)]
@@ -1384,6 +1546,12 @@ pub enum ActionError {
     /// place off its edge.
     #[error("invalid signals: {0}")]
     Signals(&'static str),
+    /// A [`TerrainPaint`] whose mask holds more than bits.
+    #[error("invalid paint: {0}")]
+    Paint(&'static str),
+    /// An [`AssetStroke`] that changes nothing or names a model it lacks.
+    #[error("invalid asset stroke: {0}")]
+    Assets(&'static str),
 }
 
 impl Action {
@@ -1416,6 +1584,8 @@ impl Action {
             Action::Preserve(_) => "Preserve",
             Action::CalendarSpeed { .. } => "CalendarSpeed",
             Action::PlaceSignals(_) => "PlaceSignals",
+            Action::Paint(_) => "Paint",
+            Action::PlantAssets(_) => "PlantAssets",
         }
     }
 
@@ -1444,6 +1614,18 @@ impl Action {
                 None => return Ok(()),
             },
             Self::PlaceSignals(signals) => return signals.validate(),
+            Self::PlantAssets(stroke) => return stroke.validate(),
+            Self::Paint(paint) => {
+                let bits = paint
+                    .mask
+                    .as_ref()
+                    .is_none_or(|mask| mask.runs.iter().all(|r| r.value <= 1));
+                return if bits {
+                    Ok(())
+                } else {
+                    Err(ActionError::Paint("a mask cell that is not 0 or 1"))
+                };
+            }
             _ => return Ok(()),
         };
         for (i, change) in changes.iter().enumerate() {
@@ -1905,6 +2087,44 @@ mod tests {
         assert_eq!(
             signals.to_payload().unwrap().as_bytes(),
             [27, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
+        );
+        // Appended under schema version 27: terrain paint, then the asset
+        // brush, take the next tags.
+        let paint = Action::Paint(TerrainPaint {
+            materials: PaintGrid::new(
+                -1,
+                2,
+                2,
+                1,
+                BoundedVec::new(vec![PaintRun { value: 3, count: 2 }]).unwrap(),
+            )
+            .unwrap(),
+            mask: None,
+        });
+        assert_eq!(
+            paint.to_payload().unwrap().as_bytes(),
+            [27, 25, 1, 4, 2, 1, 1, 3, 2, 0]
+        );
+        let plant = Action::PlantAssets(AssetStroke {
+            models: BoundedVec::new(vec![Text::new("t").unwrap()]).unwrap(),
+            removed: BoundedVec::empty(),
+            groups: BoundedVec::new(vec![
+                BoundedVec::new(vec![PlacedAsset {
+                    model: 0,
+                    transform: Transform {
+                        basis: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+                        origin: pos(1, 0, 0),
+                    },
+                }])
+                .unwrap(),
+            ])
+            .unwrap(),
+        });
+        assert_eq!(
+            plant.to_payload().unwrap().as_bytes(),
+            [
+                27, 26, 1, 1, b't', 0, 1, 1, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 2, 0, 0
+            ]
         );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),

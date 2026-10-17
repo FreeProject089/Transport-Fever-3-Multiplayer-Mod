@@ -2719,8 +2719,14 @@ unsafe extern "C-unwind" fn native_terrain(l: State) -> c_int {
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let mut nodes = 0;
             let value = read(api, l, 1, 0, &mut nodes)?;
-            let grid = crate::terrain::Grid::from_lua(&value)?;
-            crate::terrain::arm(grid);
+            // A Paint action's body names its materials; a terraform's grid
+            // names its cells.
+            let stroke = if value.get("materials").is_some() {
+                crate::terrain::Stroke::Paint(crate::terrain::Paint::from_lua(&value)?)
+            } else {
+                crate::terrain::Stroke::Heights(crate::terrain::Grid::from_lua(&value)?)
+            };
+            crate::terrain::arm(stroke);
             Ok::<(), String>(())
         }))
         .unwrap_or_else(|_| Err("reading the terrain grid failed".to_owned()));
@@ -2833,14 +2839,13 @@ unsafe extern "C-unwind" fn native_results(l: State) -> c_int {
 }
 
 /// Whether this game may hand the room the asset bulldozer's removals,
-/// trees and other assets taken out of their group: only with
-/// [`TREES_ENV`] set to `1`, for a trial of the replay (docs/HOOKS.md, "The
-/// build tools"). Read once.
+/// trees and other assets taken out of their group: yes, unless
+/// [`TREES_ENV`] is `0` (docs/HOOKS.md, "The build tools"). Read once.
 pub const TREES_ENV: &str = "TPF3MP_TREE_BULLDOZE";
 
 fn trees_on() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var(TREES_ENV).is_ok_and(|v| v == "1"))
+    *ON.get_or_init(|| std::env::var(TREES_ENV).map_or(true, |v| v != "0"))
 }
 
 /// `trees()`: whether the asset bulldozer's removals go to the room

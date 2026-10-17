@@ -69,7 +69,11 @@ the 2026-10-02 two-game height-brush validation: raise, lower, smooth,
 flatten and heightmap produced matching native ground. The validation
 record distinguishes complete comparison windows from runs with missing
 probe samples; oversized replay bands still have fixture-only coverage.
-Terrain paint and asset brushes remain refused. The track tools travel as
+Terrain paint (`Paint`, action schema 27) and the asset brush
+(`PlantAssets`, schema 27) passed local two-player acceptance on build 40420
+on 2026-10-16 and are enabled: strokes of several sizes, large ones in
+bands, and tree strokes of 78 and 124 trees, each applied alike in both
+games. The track tools travel as
 `BuildTrack`, as the road modifiers do, and each upgrade is logged.
 
 The existing junction gate remains off pending its own game acceptance.
@@ -82,8 +86,9 @@ and tool company selection, refreshed Lua APIs, room-company map markers,
 stop/station ownership and names, and station entrance junction filtering.
 The current branch-pruning algorithm and all existing acceptance gates stay.
 The line-viewer probe remains diagnostic; it does not repair invalid route data.
-Trees and rocks can be removed through the room only with
-`TPF3MP_TREE_BULLDOZE=1`; they are still disabled by default.
+Trees and rocks removed with the bulldozer passed local two-player
+acceptance on build 40420 on 2026-10-16 and go through the room by default
+(`TPF3MP_TREE_BULLDOZE=0` turns them off).
 Lua fixtures and native helper/static-profile checks cover this integration;
 no fresh ordinary two-player game acceptance is claimed.
 

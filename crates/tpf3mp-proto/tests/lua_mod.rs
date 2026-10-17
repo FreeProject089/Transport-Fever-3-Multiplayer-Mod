@@ -8510,6 +8510,90 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
     );
 }
 
+/// The asset brush through the room: the stroke as the hook read it (two
+/// new groups of firs, and the group of two at (400, 20) it replaces)
+/// goes to the room as one PlantAssets action, the replaced group named by
+/// its first tree and its count; every game removes its own copy of that
+/// group and builds the stroke's groups for the acting company, as the tool
+/// does. A game without that group refuses the stroke and builds nothing.
+#[test]
+fn the_asset_brush_plants_the_same_trees_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    lua.load(FAKE_TREES).exec().unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code).eval::<String>().unwrap_or_else(|error| {
+            panic!(
+                "{code}: {error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        })
+    };
+    lua.load(
+        "local function at(x, y) return { 0.6, 0.8, 0, 0, -0.8, 0.6, 0, 0, 0, 0, 1.25, 0, x, y, 3, 1 } end \
+         local fir = '::/assets/trees/fir.mdl' \
+         HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({}, nil, nil) \
+         HOOK.built[0] = { proposal = { assets = { removed = { 7001 }, groups = { \
+             { { model = fir, m = at(400, 20) }, { model = fir, m = at(404, 20) }, { model = fir, m = at(402, 23) } }, \
+             { { model = fir, m = at(410, 30) } } } } } } \
+         HOOK.clicks = 1 SCRIPT.guiUpdate({}, nil, nil)",
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let carried = eval(
+        "STROKE = HOOK.commands[1] local t = STROKE.PlantAssets local r = t.removed[1] \
+         local a = t.groups[1][3] \
+         return table.concat({ #HOOK.commands, #t.models, t.models[1], r.first.model, r.first.at.x, r.first.at.y, \
+             r.count, #t.groups, #t.groups[1], a.model, a.transform.origin.x, a.transform.origin.y, \
+             a.transform.basis[2], tostring(schema_check(STROKE)) }, '|')",
+    );
+    assert_eq!(
+        carried,
+        "1|1|::/assets/trees/fir.mdl|::/assets/trees/fir.mdl|400|20|2|2|3|0|402|23|0.8|true"
+    );
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(
+        logged.contains(
+            "asset brush handed to the room: 2 group(s) of 4 asset(s), replacing 1 group(s)"
+        ),
+        "{logged}"
+    );
+    // Every game: group 7001 removed, the two groups built for the company.
+    lua.load("SENT = {} HOOK.applied = {} HOOK.batch = { STROKE } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let built = eval(
+        "local a = HOOK.applied[1] local s = SENT[1] local ce = s.proposal.toAdd[1] \
+         local models = ce.construction.subconstructions[1].models local m = models[3].transf \
+         return table.concat({ tostring(a.ok) .. (a.why and (':' .. a.why) or ''), s.proposal.toRemove[1], \
+             #s.proposal.toAdd, #models, models[1].id, ce.playerEntity, s.context.player, \
+             tostring(ce.desc.autoRemovable), string.format('%.2f,%.2f,%.1f,%.1f', m[1][1], m[1][2], m[4][1], m[4][2]) }, '|')",
+    );
+    assert_eq!(
+        built,
+        "true|7001|2|3|::/assets/trees/fir.mdl|25|25|true|0.60,0.80,402.0,23.0"
+    );
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(
+        logged.contains("asset brush applied: 2 group(s) of 4 asset(s), replacing 1 group(s)"),
+        "{logged}"
+    );
+    // A game whose group differs (a tree fewer) refuses, and sends nothing.
+    lua.load(
+        "SENT = {} HOOK.applied = {} table.remove(GROUPS[7001], 2) \
+         HOOK.batch = { STROKE } UPDATE({}, STATE, 0.2)",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(
+        eval(
+            "local a = HOOK.applied[1] return tostring(a.ok) .. ':' .. tostring(a.why) .. ':' .. #SENT"
+        ),
+        "false:no asset group of 2 assets with ::/assets/trees/fir.mdl at 400.00, 20.00 here (group 1 the stroke replaces):0"
+    );
+}
+
 /// Rocks and whole groups bulldozed through the room, behind
 /// TPF3MP_TREE_BULLDOZE=1: a boulder (a full model instance) taken out of a
 /// group with a fir, the group rebuilt with the fir alone; the fir taken
@@ -14930,7 +15014,7 @@ fn a_terrain_tools_click_goes_to_the_room_as_terraform_actions() {
              {{ {CONSTRUCTION_PROPOSAL} }}) \
          HOOK.built[0] = {{ proposal = STROKE }} \
          HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil) \
-         HOOK.built[1] = {{ why = 'terrain tool: terrain paint: the room does not carry it yet' }} \
+         HOOK.built[1] = {{ why = 'terrain tool: the asset brush: the room does not carry it yet' }} \
          HOOK.clicks = 2 SCRIPT.guiUpdate({{}}, nil, nil)"
     ))
     .exec()
@@ -14950,7 +15034,7 @@ fn a_terrain_tools_click_goes_to_the_room_as_terraform_actions() {
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
     for line in [
         "terraform handed to the room: 3 by 2 cells of 4 m from cell (-10, 7), 5 changed, heights 100.00 to 105.00 m",
-        "stopped a build the room cannot carry: terrain tool: terrain paint: the room does not carry it yet [terrain tool]",
+        "stopped a build the room cannot carry: terrain tool: the asset brush: the room does not carry it yet [terrain tool]",
     ] {
         assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
     }
@@ -14989,6 +15073,82 @@ fn a_stroke_larger_than_one_action_goes_in_bands_of_whole_rows() {
             && l.contains("100 by 10 cells of 4 m from cell (5, 20)")),
         "{logged:?}"
     );
+}
+
+/// A painter's stroke as the hook hands it at the click: one Paint action
+/// of 4 by 2 texels from (-40, 28), material 3 on five of them, and its
+/// mask.
+const PAINT: &str = "{ Paint = { materials = { x0 = -40, y0 = 28, columns = 4, rows = 2, runs = { \
+    { value = 255, count = 1 }, { value = 3, count = 5 }, { value = 255, count = 2 } } }, \
+    mask = { x0 = -40, y0 = 28, columns = 4, rows = 2, runs = { \
+    { value = 0, count = 1 }, { value = 1, count = 5 }, { value = 0, count = 2 } } } } }";
+
+#[test]
+fn a_terrain_painters_click_goes_to_the_room_as_paint_actions() {
+    let (lua, _script) = engine();
+    lua.load(format!(
+        "HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({{}}, nil, nil) \
+         HOOK.built[0] = {{ proposal = {{ paint = {{ {PAINT}, {PAINT} }} }} }} \
+         HOOK.clicks = 1 SCRIPT.guiUpdate({{}}, nil, nil)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let carried: String = lua
+        .load(
+            "local p = HOOK.commands[1].Paint \
+             return table.concat({ #HOOK.commands, p.materials.x0, p.materials.columns, \
+                 #p.materials.runs, p.mask.runs[2].count }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(carried, "2|-40|4|3|5", "both bands, as the hook made them");
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    let line = "paint handed to the room: 4 by 2 texels from (-40, 28), 5 painted, a mask with 5 set (part 2 of 2)";
+    assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
+}
+
+#[test]
+fn every_game_applies_paint_through_the_hook_as_the_players_build() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_TERRAIN_HOOK).exec().unwrap();
+    lua.load(format!(
+        "HOOK.batch = {{ {PAINT} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let armed: String = lua
+        .load(
+            "local g = HOOK.grids[1] \
+             return table.concat({ #HOOK.grids, g.materials.x0, g.materials.rows, #g.mask.runs, \
+                 #SENT, tostring(SENT[1].proposal.carrier), SENT[1].context.player, tostring(HOOK.armed) }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        armed, "1|-40|2|3|1|true|25|nil",
+        "the stroke armed, the carrier sent and paid, disarmed"
+    );
+    let (ok, logged): (bool, Vec<String>) = lua
+        .load("return HOOK.applied[1].ok, HOOK.logged")
+        .eval()
+        .unwrap();
+    assert!(ok, "{logged:?}");
+    assert!(
+        logged
+            .iter()
+            .any(|l| l
+                == "paint applied: 4 by 2 texels from (-40, 28), 5 painted, a mask with 5 set"),
+        "{logged:?}"
+    );
+    // A carrier no build took fails in every game.
+    lua.load(format!(
+        "NO_FILL = true HOOK.batch = {{ {PAINT} }} UPDATE({{}}, STATE, 0.2) NO_FILL = false"
+    ))
+    .exec()
+    .unwrap();
+    let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
+    let line = "action 1 of this step was not applied: the hook filled no build with the paint";
+    assert!(logged.iter().any(|l| l == line), "{line}: {logged:?}");
 }
 
 /// The hook's `terrain`, as the game script uses it: the grid armed, and

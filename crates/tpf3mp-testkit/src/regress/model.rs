@@ -664,6 +664,10 @@ impl State {
             // Signals a mod spaces along a track: the model keeps no
             // signals' places along their edges.
             Action::PlaceSignals(_) => Ok(()),
+            // Terrain paint: the model keeps no ground textures.
+            Action::Paint(_) => Ok(()),
+            // Trees and rocks: the model keeps no assets.
+            Action::PlantAssets(_) => Ok(()),
             Action::CompanyOp(_) => unreachable!("handled above"),
         }
     }

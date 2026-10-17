@@ -236,6 +236,35 @@ function data()
 		return { actions = actions, said = said, shape = "terrain tool" }
 	end
 
+	-- The snapshot of a terrain painter's click: the Paint actions the hook
+	-- made of its stroke (tpf3mp_native.built: `{ paint = { a1, a2, ... } }`),
+	-- one a band of rows.
+	local function paintEdit(built)
+		local actions = built.paint
+		if type(actions) ~= "table" or #actions == 0 then
+			return { why = "the terrain painter's stroke read as nothing", shape = "terrain tool" }
+		end
+		local said = {}
+		for i, a in ipairs(actions) do
+			said[i] = "paint handed to the room: " .. capture.paintSummary(a.Paint)
+				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
+		end
+		return { actions = actions, said = said, shape = "terrain tool" }
+	end
+
+	-- The snapshot of an asset brush's click: its PlantAssets actions
+	-- (tpf3mp/capture.lua, capture.assetStroke), from the stroke the hook read.
+	local function assetEdit(built)
+		local actions, why = capture.assetStroke(built.assets)
+		if not actions then return { why = "the asset brush's stroke: " .. tostring(why), shape = "terrain tool" } end
+		local said = {}
+		for i, a in ipairs(actions) do
+			said[i] = "asset brush handed to the room: " .. capture.assetSummary(a.PlantAssets)
+				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
+		end
+		return { actions = actions, said = said, shape = "terrain tool" }
+	end
+
 	-- The builds scripts send from this, the game scripts' GUI state: in the
 	-- room's game, each goes to the room as the follow-up of this player's
 	-- build, or is stopped (tpf3mp/modbuild.lua). Put on once, from the
@@ -880,6 +909,10 @@ function data()
 				local native, whyNot = l:built(handled)
 				if type(native) == "table" and native.terrain ~= nil then
 					seen = terraformEdit(native)
+				elseif type(native) == "table" and native.paint ~= nil then
+					seen = paintEdit(native)
+				elseif type(native) == "table" and native.assets ~= nil then
+					seen = assetEdit(native)
 				elseif native == nil and type(whyNot) == "string" and whyNot:find("terrain tool: ", 1, true) == 1 then
 					-- The painter's, the asset brush's, or a stroke that did not read.
 					seen = { why = whyNot, shape = "terrain tool" }
@@ -892,7 +925,7 @@ function data()
 						if ok then
 							l:log(seen.said[i])
 						else
-							l:log("the player's terraform was not handed to the room: " .. tostring(why))
+							l:log("the player's terrain stroke was not handed to the room: " .. tostring(why))
 							break
 						end
 					end

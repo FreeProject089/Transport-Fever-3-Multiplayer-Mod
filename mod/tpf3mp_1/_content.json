@@ -8,6 +8,7 @@
         "gui/menu/lobby.lua",
         "gui/menu/main_page.tl",
         "gui/menu/roommods.lua",
+        "gui/line_vehicle_mgmt/manager_window.tl",
         "gui/tpf3mp/capitals.res.lua",
         "gui/tpf3mp/capitals.script.lua",
         "gui/tpf3mp/company_markers.res.lua",
