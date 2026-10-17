@@ -603,7 +603,9 @@ end
 -- A tool's proposal in one line, for the log: nodes added (+n) and removed
 -- (-n), edges added (+e) and removed (-e) with their ends, existing nodes
 -- with their positions; a construction's own nodes and edges (its frozen
--- ones) marked "*".
+-- ones) marked "*"; each edge's stops and signals ([entity:type]), the
+-- edge objects added (+o, what of the record reads) and removed (-o, what
+-- their EDGE_OBJECT says).
 function engine.describe(proposal)
 	local ok, text = pcall(function()
 		local street = get(proposal, "proposal")
@@ -626,6 +628,33 @@ function engine.describe(proposal)
 			if type(id) == "number" and id >= 0 then return tostring(id) .. at(nodePos(id)) end
 			return tostring(id)
 		end
+		-- An edge's stops and signals as its component lists them,
+		-- [entity:EdgeObjectType,...]; nothing for none.
+		local function objects(comp)
+			local parts = {}
+			for _, o in ipairs(list(comp and get(comp, "objects"))) do
+				parts[#parts + 1] = tostring(get(o, 1)) .. ":" .. tostring(get(o, 2))
+			end
+			return #parts > 0 and ("[" .. table.concat(parts, ",") .. "]") or ""
+		end
+		-- The names a game record's metatable holds (its members, where the
+		-- binding keeps them there), for a record whose fields do not read.
+		local function members(v)
+			local names = {}
+			pcall(function()
+				local mt = getmetatable(v)
+				local index = type(mt) == "table" and mt.__index
+				for _, t in ipairs({ mt, type(index) == "table" and index or nil }) do
+					if type(t) == "table" then
+						for k in pairs(t) do
+							if type(k) == "string" and k:sub(1, 2) ~= "__" then names[#names + 1] = k end
+						end
+					end
+				end
+			end)
+			table.sort(names)
+			return table.concat(names, ",")
+		end
 		for _, n in ipairs(list(get(street, "addedNodes"))) do
 			out[#out + 1] = "+n" .. tostring(n.entity) .. mark(n.entity) .. at(n.comp.position)
 		end
@@ -635,24 +664,48 @@ function engine.describe(proposal)
 		for _, s in ipairs(list(get(street, "addedSegments"))) do
 			out[#out + 1] = "+e" .. tostring(s.entity) .. mark(s.entity) .. "/" .. tostring(s.type) .. ":"
 				.. node(s.comp.node0) .. mark(s.comp.node0) .. ">" .. node(s.comp.node1) .. mark(s.comp.node1)
+				.. objects(s.comp)
 		end
 		for _, s in ipairs(list(get(street, "removedSegments"))) do
 			out[#out + 1] = "-e" .. tostring(s.entity) .. ":" .. node(s.comp.node0) .. ">" .. node(s.comp.node1)
+				.. objects(s.comp)
 		end
 		-- Stops, signals and waypoints: whatever of their fields reads.
 		for _, o in ipairs(list(get(street, "edgeObjectsToAdd"))) do
 			local fields = {}
-			for _, key in ipairs({ "resultEntity", "category", "left", "playerEntity", "edgeEntity", "param", "model", "name" }) do
+			for _, key in ipairs({ "resultEntity", "category", "left", "oneWay", "playerEntity", "edgeEntity",
+				"edge", "param", "model", "name" }) do
 				local v = get(o, key)
 				if v ~= nil then fields[#fields + 1] = key .. "=" .. tostring(v) end
 			end
+			local params = get(o, "params")
+			if params ~= nil then fields[#fields + 1] = "params=" .. ser(params) end
 			local mi = get(o, "modelInstance")
 			if mi ~= nil then
 				local t = get(mi, "transf")
 				fields[#fields + 1] = "modelId=" .. tostring(get(mi, "modelId"))
 				if t ~= nil then fields[#fields + 1] = "at=" .. at({ get(t, 13), get(t, 14), get(t, 15) }) end
 			end
+			local names = type(o) == "userdata" and members(o) or ""
+			if names ~= "" then fields[#fields + 1] = "members=" .. names end
 			out[#out + 1] = "+o{" .. table.concat(fields, " ") .. "}"
+		end
+		-- The objects it removes, by entity: what their EDGE_OBJECT says.
+		for _, e in ipairs(list(get(street, "edgeObjectsToRemove"))) do
+			local fields = {}
+			local c
+			pcall(function() c = api.engine.getComponent(e, api.type.ComponentType.EDGE_OBJECT) end)
+			if c == nil then
+				fields[1] = "no edge object"
+			else
+				for _, key in ipairs({ "edgeEntity", "param", "left", "oneWay", "edgeObjectConstruction" }) do
+					local v = get(c, key)
+					if v ~= nil then fields[#fields + 1] = key .. "=" .. tostring(v) end
+				end
+				local t = get(c, "transf")
+				if t ~= nil then fields[#fields + 1] = "at=" .. at({ get(t, 13), get(t, 14), get(t, 15) }) end
+			end
+			out[#out + 1] = "-o" .. tostring(e) .. "{" .. table.concat(fields, " ") .. "}"
 		end
 		for _, c in ipairs(list(get(proposal, "toAdd"))) do
 			local con = get(c, "construction")

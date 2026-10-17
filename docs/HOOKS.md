@@ -3197,7 +3197,12 @@ construction's window its edits:
 
 A refusal shows its reason in the tool, and the log has each new reason
 with the proposal's shape (`the room cannot carry this ... build`); every
-build handed to the room is logged with its shape too. The upgrade, bus
+build handed to the room is logged with its shape too. The shape
+(`engine.describe`) names each edge's stops and signals as its component
+lists them (`[entity:EdgeObjectType]`), each new edge object with what of
+its record reads (`+o{...}`, and its binding's member names where its
+fields do not), and each edge object removed with what its `EDGE_OBJECT`
+says (`-o<entity>{param edgeObjectConstruction at ...}`). The upgrade, bus
 lane and tram track tools stay refused until their builds are captured. Where the profile lacks the
 two targets, `clicks()` is nil and every tool stays refused.
 

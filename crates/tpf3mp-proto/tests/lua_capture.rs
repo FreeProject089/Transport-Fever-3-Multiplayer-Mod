@@ -1039,6 +1039,43 @@ fn a_track_cut_that_moves_a_signal_elsewhere_is_refused() {
     assert!(why.contains("does not go on from its track"), "{why}");
 }
 
+/// A track started close to a node of a track with signals: the tool
+/// removes the node, redraws the track through its own and lists one new
+/// signal (playtest 2026-10-17, run-1017-024110, "a build with a stop or
+/// signal"). The log says what it removes and where each signal goes: the
+/// edges' objects, the objects removed as their EDGE_OBJECT has them, and
+/// whatever of the new record reads, so a game shows whether the tool only
+/// replaces the old signal.
+#[test]
+fn a_refit_signal_is_described_with_what_it_removes() {
+    let refit = track_split("{ { 556, 2 } }", "{}", "{ { -400000000, 2 } }").replace(
+        "removedNodes = {},",
+        "removedNodes = {},
+         edgeObjectsToAdd = { { resultEntity = -400000000, category = 2, left = false, playerEntity = 3892,
+                                name = '', params = { auto_signals_distance = 400 } } },
+         edgeObjectsToRemove = { 556, 999 },",
+    );
+    let described = capture_with(
+        &refit,
+        "engine.describe({ toAdd = {}, toRemove = {}, proposal = street })",
+    )
+    .unwrap();
+    assert_eq!(
+        described,
+        LuaValue::String(
+            "+n-1(300.0,0.0,0.0) +n-2(260.0,0.0,0.0) \
+             +e-3/1:30(300.0,-30.0,0.0)>-1 +e-4/1:-1>31(300.0,30.0,0.0)[-400000000:2] +e-5/1:-1>-2 \
+             -e110:30(300.0,-30.0,0.0)>31(300.0,30.0,0.0)[556:2] \
+             +o{resultEntity=-400000000 category=2 left=false playerEntity=3892 name= \
+             params={auto_signals_distance=400}} \
+             -o556{param=0.75 edgeObjectConstruction=::/infrastructure/signal/signal_path_a.con} \
+             -o999{no edge object}"
+                .as_bytes()
+                .to_vec()
+        )
+    );
+}
+
 /// Runs the asset bulldozer's capture (`engine.captureAssets`) over three
 /// asset groups as build 40408 holds them, and returns the action table,
 /// or why it was refused. 50 holds four firs as thin instances; 51 a fir
