@@ -530,7 +530,7 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          dump = nil, dumped = {} }
 tpf3mp_native = {
     copy = function(text) HOOK.copied = text return true end,
-    version = 14,
+    version = 15,
     note = function(key, value)
         HOOK.notes = HOOK.notes or {}
         if value == nil then return HOOK.notes[key] end
@@ -885,7 +885,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 14; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 15; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -978,7 +978,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 14, command = print, log = print })
+             why({ version = 15, command = print, log = print })
              return out",
         )
         .eval()
@@ -1181,7 +1181,7 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 14 }
+             local native = { version = 15 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
                                   'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
                                   'status', 'chat', 'say', 'takeReplay', 'replayed', 'scanned' }) do
@@ -1993,6 +1993,8 @@ tpf3mp_native.part = function(n, k, kind)
     if n == nil then return { mode = PART_MODE or 'on', parts = PLAN_PARTS or 10, stride = PLAN_STRIDE or 1 } end
     PART_CALLS[#PART_CALLS + 1] = n .. '/' .. k .. '/' .. kind
     if PART_FAIL then return { mode = 'on', why = PART_FAIL } end
+    -- A hook from before it read the crossings hands no crossingTypes.
+    if PART_OLD then return { mode = PART_MODE or 'on', ms = 1, timing = 'fake', lights = {}, deferred = {} } end
     return { mode = PART_MODE or 'on', ms = 1, timing = 'fake', lights = {}, deferred = {},
              crossingTypes = PART_CROSSINGS or {} }
 end
@@ -2087,6 +2089,13 @@ fn rolling_checks_read_native_parts_in_turn_and_fail_closed() {
         f.load("PART_FAIL='no pool' ROLL_STEP(13,false)")
             .exec()
             .is_err()
+    );
+    // Fail closed: a junctions turn whose hook hands no crossings' types
+    // (one from before it read them) checks no crossings, so it holds.
+    let old = game("ROLL_STEP(1,false)");
+    assert!(
+        old.load("PART_OLD=true ROLL_STEP(2,false)").exec().is_err(),
+        "a part without its crossings"
     );
     let g = game("for s=1,3 do ROLL_STEP(s,false) end tpf3mp_native.part=nil");
     assert!(g.load("ROLL_STEP(4,false)").exec().is_err());

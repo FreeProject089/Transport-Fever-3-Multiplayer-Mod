@@ -5,7 +5,7 @@
 -- `print` one global table, so the mod prints before it looks for it:
 --
 --   tpf3mp_native = {
---     version = 14,                 -- bridge.VERSION; anything else is refused
+--     version = 15,                 -- bridge.VERSION; anything else is refused
 --     command = function(action, password), -- the player acted: an action
 --                                   -- table, for the room to order, and a
 --                                   -- company's password for joining or
@@ -142,7 +142,7 @@ local bridge = {}
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 14
+bridge.VERSION = 15
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}

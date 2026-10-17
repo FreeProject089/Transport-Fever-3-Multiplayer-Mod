@@ -880,6 +880,10 @@ local function rollingParts(api, scan, step, checkpoint)
 		local preferences, lights = junctions.names(api, read.lights)
 		local deferred = junctions.rowsOf(api, read.deferred)
 		-- The hook reads the part's level crossings; this Lua names their types.
+		-- A hook that hands none read none: never a part without its crossings.
+		if type(read.crossingTypes) ~= "table" then
+			error("part " .. k .. " of the world read no level crossings", 0)
+		end
 		local crossingTypes = crossings.names(api, read.crossingTypes)
 		local net, cons, netRows, consRows = native.partTexts(n, k, kind, preferences, lights, deferred, compare,
 			crossingTypes)

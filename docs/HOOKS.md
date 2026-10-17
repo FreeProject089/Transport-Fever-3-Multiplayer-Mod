@@ -3977,7 +3977,8 @@ not establish frame-time safety on other maps or machines.
 one batch and keeps it, and hands the Lua its light and crossing types
 (`lights`, `crossingTypes`) and the junctions left to it (`deferred`).
 `partTexts(n, k, kind, preferences, lights, deferred, rows,
-crossingTypes)`, called in the same update, answers its lanes' texts:
+crossingTypes)` (Lua bridge version 15), called in the same update,
+answers its lanes' texts:
 `count:hash`, as `summary` makes them, and `nil` for a lane the kind does
 not read. It answers only for the batch asked for, read at the room's
 current step, and only once. `part()` without arguments reports the
@@ -4009,7 +4010,8 @@ ties to even), sorted, none twice; the crossing in the part of its first
 node's millimetres, as a junction. `part` hands the game's Lua the
 crossings' type indices (`crossingTypes`), which it names
 (`crossings.names`, a type with no name failing the read) and hands back
-as `partTexts`' eighth argument. The rows are `crossing:x,y,z;x,y,z|file`,
+as `partTexts`' eighth argument; a part that hands no `crossingTypes`
+(a hook from before version 15) stops the check. The rows are `crossing:x,y,z;x,y,z|file`,
 as `crossings.rows` makes them, and the network text is the hook's own
 followed by theirs, `<count>:<hash>|crossings <count>:<hash>`; with `rows`
 the crossing rows are among the network's, so compare mode checks them
