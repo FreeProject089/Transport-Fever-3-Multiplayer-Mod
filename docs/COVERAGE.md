@@ -44,10 +44,15 @@ subsidies, with their settlement between companies
 passed two-player acceptance on 2026-10-07 and are enabled. Bridge/tunnel window rebuilds, gated at
 capture behind `bridges`, passed it on 2026-10-11 and are enabled
 ([the validation record](../investigation/TPF3_BRIDGE_TUNNEL_WINDOW_2026-10-11.md)). Industry Greenification and marketing campaigns
-remain gated at both submission and replay behind `perks`. Historic Preservation is likewise gated behind `preservation`. A level crossing's type from its window is behind `crossings`, on since the two-player game of 2026-10-17 (the network lane reads every crossing's type). Mechanics fixtures explicitly enable a channel
-only in their own Lua state. Enable a channel only after ordinary two-player
-acceptance demonstrates matching outcomes, ownership and money. The gate
-file is part of the installed-mod fingerprint.
+remain gated at both submission and replay behind `perks`. Historic Preservation
+is likewise gated behind `preservation`. A level crossing's type from its
+window remains gated behind `crossings`; the PR author reported staged Japan_2
+two-player runs on 2026-10-17, but ordinary-start acceptance is not established
+here. The type-only mechanics fixtures explicitly enable the channel in their
+own Lua state, and the crossing-window rebuild fixture proves segment/junction
+rebuilds are refused. Enable the channel only after ordinary two-player
+acceptance demonstrates matching outcomes, ownership and money. The gate file
+is part of the installed-mod fingerprint.
 
 ## Deliberately excluded
 

@@ -14435,6 +14435,7 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
             { Perk = { Greenify = { industry = 0 } } },
             { Perk = { Marketing = { town = 0, duration_ms = 1, line_cost_factor = 0.5, cost = 1 } } },
+            { SetCrossingType = { nodes = { { x = 0, y = 0, z = 0 } }, crossing_type = 'c.rcr' } },
         }
         for _, action in ipairs(actions) do
             local sent, reason = link:command(action)
@@ -14445,11 +14446,8 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
         assert(#HOOK.commands == 0)
         -- Renaming and recolouring (investigation/TPF3_RENAME_2026-10-07.md)
         -- and subsidies (investigation/TPF3_SUBSIDIES_2026-10-07.md) passed
-        -- two-player game acceptance, and a level crossing's type from its
-        -- window (2026-10-17): neither port refuses them for it any more,
-        -- whatever else it finds wrong.
+        -- two-player game acceptance; the crossing channel remains gated.
         local accepted = {
-            { SetCrossingType = { nodes = { { x = 0, y = 0, z = 0 } }, crossing_type = 'c.rcr' } },
             { Rename = { what = { Vehicle = 1 }, name = 'x' } },
             { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
             { Subsidy = { Accept = { uid = 1, kind = 'x' } } },
@@ -16002,15 +16000,15 @@ end
 
 /// The level crossing window's change, which the hook read at the click, goes
 /// to the room as the crossing's node places, sorted, and the type's file;
-/// refused (the channel awaiting its two-player test, a crossing gone, the
-/// type it has already, a shape the hook does not carry), the player is told
+/// refused (the channel gated pending ordinary-start acceptance, a crossing
+/// gone, the type it has already, or a shape the hook does not carry), the player is told
 /// in the game bar's notice, which the window itself never says.
 #[test]
 fn a_crossing_type_from_its_window_goes_to_the_room_by_its_nodes() {
     let (lua, _script) = engine();
     lua.load(FAKE_CROSSINGS).exec().unwrap();
-    // On by default since the two-player game of 2026-10-17; with the gate
-    // off, refused, and said.
+    // The production gate is off; the fixture turns it on to exercise the
+    // type-only mechanics after checking the default refusal.
     lua.load(
         r#"DEFAULT = ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossings
         ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossings = false
@@ -16028,7 +16026,7 @@ fn a_crossing_type_from_its_window_goes_to_the_room_by_its_nodes() {
     .exec()
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
     let on: bool = lua.load("return DEFAULT").eval().unwrap();
-    assert!(on, "crossings is on by default");
+    assert!(!on, "crossings is gated off by default");
     let (first, last, sent): (String, String, String) = lua
         .load(
             "local c = HOOK.commands[1].SetCrossingType \
@@ -16186,13 +16184,11 @@ fn a_crossing_is_matched_node_for_node_and_never_left_armed() {
     );
 }
 
-/// The window's rebuild (seen in a room on 2026-10-16: it lays the
-/// crossing's segments again and maps its nodes to the type) goes to the
-/// room as the same SetCrossingType, when its nodes are exactly one
-/// crossing's and what it lays again is that crossing's own; anything else
-/// is refused and said.
+/// A window rebuild includes segment and possibly junction changes that a
+/// type-only replay cannot preserve, so even an otherwise matching crossing
+/// is refused and the player is told why.
 #[test]
-fn the_window_s_rebuild_of_a_crossing_goes_to_the_room_as_its_type() {
+fn the_window_s_rebuild_of_a_crossing_is_refused() {
     let (lua, _script) = engine();
     lua.load(FAKE_CROSSINGS).exec().unwrap();
     lua.load(
@@ -16209,25 +16205,26 @@ fn the_window_s_rebuild_of_a_crossing_goes_to_the_room_as_its_type() {
     )
     .exec()
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
-    let sent: String = lua
-        .load(
-            "local c = HOOK.commands[1].SetCrossingType \
-             local nodes = {} for _, p in ipairs(c.nodes) do nodes[#nodes + 1] = p.x .. ',' .. p.y .. ',' .. p.z end \
-             return #HOOK.commands .. ' ' .. table.concat(nodes, ' ') .. ' ' .. c.crossing_type",
-        )
+    let commands: usize = lua
+        .load("return #HOOK.commands")
         .eval()
         .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
-    assert_eq!(sent, "1 10,20,1 18,20,1 railroad_crossing/era_c_eu.rcr");
+    assert_eq!(commands, 0);
+    let notice: String = lua
+        .load("return HOOK.notes['tpf3mp.notice']")
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(
+        notice.contains("a crossing rebuild also changes segments or junctions"),
+        "{notice}"
+    );
     let logged: Vec<String> = lua.load("return HOOK.logged").eval().unwrap();
-    for why in [
-        "a rebuild that leaves one of the crossing's nodes out",
-        "a rebuild that lays a segment away from the crossing",
-        "a rebuild of more than one crossing",
-        "a rebuild that changes a junction away from the crossing's segments",
-    ] {
-        let line = format!("stopped a build the room cannot carry: {why} [crossing window]");
-        assert!(logged.contains(&line), "{line}: {logged:?}");
-    }
+    let reason = "stopped a build the room cannot carry: a crossing rebuild also changes segments or junctions and is not carried [crossing window]";
+    assert_eq!(
+        logged.iter().filter(|line| line.as_str() == reason).count(),
+        5,
+        "{logged:?}"
+    );
 }
 
 /// Level crossings' types are in the network lane, so two games whose

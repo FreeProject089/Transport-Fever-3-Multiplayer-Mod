@@ -95,57 +95,15 @@ function crossings.typeIndex(name)
 	return index
 end
 
--- The crossing the window's rebuild names: its nodes all of one crossing,
--- and all of its nodes, the segments it lays again each ending at one of
--- those nodes (seen 2026-10-17: the street leading onto the crossing), and
--- the junctions it lays again each at an end of one of them (the window
--- lays their settings again for the new segments). Its entity, or raises.
-local function rebuilt(nodes, removed, junctions)
-	if type(nodes) ~= "table" or #nodes == 0 then error("a rebuild that names no node", 0) end
-	local system = api.engine.system.railRoadCrossingSystem
-	local entity
-	for _, node in ipairs(nodes) do
-		local ok, e = pcall(system.getRailroadCrossingForNode, node)
-		if not ok or type(e) ~= "number" or e < 0 then error("a rebuilt node that is no crossing's", 0) end
-		if entity ~= nil and e ~= entity then error("a rebuild of more than one crossing", 0) end
-		entity = e
-	end
-	local c = crossings.component(entity)
-	if c == nil then error("the crossing is gone", 0) end
-	local own = {}
-	for _, n in ipairs(list(c.nodes)) do own[n] = true end
-	local named = {}
-	for _, node in ipairs(nodes) do
-		if named[node] then error("a rebuild that names a node twice", 0) end
-		named[node] = true
-	end
-	for n in pairs(own) do
-		if not named[n] then error("a rebuild that leaves one of the crossing's nodes out", 0) end
-	end
-	local ends = {}
-	for _, e in ipairs(removed or {}) do
-		local ok, b = pcall(api.engine.getComponent, e, api.type.ComponentType.BASE_EDGE)
-		if not ok or b == nil then error("a rebuilt segment that does not read", 0) end
-		if not (own[b.node0] or own[b.node1]) then error("a rebuild that lays a segment away from the crossing", 0) end
-		ends[b.node0] = true
-		ends[b.node1] = true
-	end
-	for _, node in ipairs(junctions or {}) do
-		if not ends[node] then error("a rebuild that changes a junction away from the crossing's segments", 0) end
-	end
-	return entity
-end
-
 -- The window's change as the hook read it ({ crossingType = true, type =,
--- entity = }, or its rebuild: { ..., nodes = { ... }, removed = { ... } })
--- as a SetCrossingType action, or nil and why. Every game gives the
--- crossing its type the one way the replay knows (tpf3mp/apply.lua),
--- whichever way the window built it here.
+-- entity = } as a SetCrossingType action, or nil and why. Rebuilds carry
+-- `nodes`, `removed`, or `junctions`; this action cannot preserve their edge
+-- and junction changes, so they are refused even if the named crossing fits.
 function crossings.capture(native)
 	local ok, action = pcall(function()
 		local entity, index = native and native.entity, native and native.type
-		if entity == nil and native and native.nodes ~= nil then
-			entity = rebuilt(native.nodes, native.removed, native.junctions)
+		if native and (native.nodes ~= nil or native.removed ~= nil or native.junctions ~= nil) then
+			error("a crossing rebuild also changes segments or junctions and is not carried", 0)
 		end
 		local c = crossings.component(entity)
 		if c == nil then error("the crossing is gone", 0) end

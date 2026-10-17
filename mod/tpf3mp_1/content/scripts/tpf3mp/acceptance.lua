@@ -12,12 +12,10 @@
 -- run-1006-225251 and run-1006-230635; docs/MODS.md).
 -- Subsidies passed local two-game acceptance on build 40408, 2026-10-07:
 -- investigation/TPF3_SUBSIDIES_2026-10-07.md.
--- A level crossing's type from its window (SetCrossingType) passed local
--- two-game acceptance on build 40420, 2026-10-17, on Japan_2 (runs
--- crossing-carrier-1017d, crossing-rows-1017, crossing-native-1017-gate):
--- the guest's swap applied in both games, and the world checks, natively
--- compared, agreed.
-local acceptance = { subsidies = true, rename = true, waypoints = false, terraform = true, bridges = true, perks = false, preservation = false, signals = true, crossings = true }
+-- The PR author reported staged Japan_2 two-player runs (2026-10-17);
+-- ordinary-start acceptance is not established here. Keep crossings gated
+-- off until ordinary-start two-player acceptance is verified.
+local acceptance = { subsidies = true, rename = true, waypoints = false, terraform = true, bridges = true, perks = false, preservation = false, signals = true, crossings = false }
 
 function acceptance.check(action)
     local feature

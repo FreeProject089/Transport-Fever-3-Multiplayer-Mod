@@ -3462,14 +3462,14 @@ its proposal there, where the profile also finds both maps where they were
 call; lea rcx,[rdi+0xd0]`). The map is MSVC's: a sentinel list node at +8
 and the size at +0x10; each node next, previous, key (+0x10), value
 (+0x14). The reader walks the list to exactly its size, every link
-answered by its back link, no key twice. Both shapes are read, and
-nothing else: no node added or removed, no edge object, construction or
-junction. The first is one crossing in +0xd0 and no segment; the second
-(the one a click on Japan_2 took, 2026-10-16) as many segments laid again
-as removed, each an existing one, and the crossing's nodes in +0x90, all
-of one type (at most 16 segments and 8 nodes). Any other is refused with
-why. A recognised click always keeps an answer (the crossing and type,
-the nodes, type and segments, or `crossing window: ` and why), so the
+answered by its back link, no key twice. The only carried shape is one
+crossing in +0xd0, with no segments, nodes, edge objects, constructions or
+junction changes. A window rebuild maps nodes to the type in +0x90 and lays
+segments again; it may also replace junction settings. The hook refuses
+every such rebuild, even when the segment counts match, because a type-only
+action cannot reproduce those changes and the captured data does not prove
+equivalence. Other shapes are refused too. A recognised click always keeps
+an answer (the crossing and type, or `crossing window: ` and why), so the
 GUI never hands another tool's preview for it.
 
 The GUI half of the game script (`tpf3mp_sim`) makes the action
@@ -3477,13 +3477,10 @@ The GUI half of the game script (`tpf3mp_sim`) makes the action
 nodes, sorted by whole millimetres, and the type by its resource file
 (`railroadCrossingTypeRep.getName`; an index differs between games). A
 crossing gone, a type not offered here, or the type it has already is
-refused. For the rebuild, the crossing is the one its nodes belong to
-(`getRailroadCrossingForNode`): every node named is that crossing's,
-every one of its nodes is named, and every segment laid again ends at
-one of them (on Japan_2 the street leading onto the crossing, 2026-10-17),
-every junction laid again at an end of one of those. Either shape becomes the same action: every game replays it
-the one way below, whichever way the window built it here. Whatever is
-not handed to the room, the player is told in the
+refused. `crossings.capture` refuses any native proposal with `nodes`,
+`removed` or `junctions`: the window's rebuild changes more than the type,
+and the type-only action cannot preserve its segments or junction settings.
+The player is told in the
 game bar ("Not in multiplayer yet: changing a level crossing's type",
 why in brackets), through the note `tpf3mp.notice`, which the game bar
 plugin shows.
@@ -3517,16 +3514,20 @@ carrier with anything else in it is refused, and so is the build. The
 crossing is then read back by its first node: of the old type, the action
 is refused (alike in every game); of another type, or gone, the replay
 stops (`replayFatal`). The crossing gets a new entity, which the room
-never names: the next action finds it by its nodes again.
+never names: the next action finds it by its nodes again. This type-only
+path is preparatory and mechanics-tested with fixtures; production acceptance
+keeps it disabled by default.
 
-Refused in the sender and in every replay until `acceptance.lua`'s
-`crossings` is turned on after a two-player game. Not covered: what the
-window's rebuild does beyond the type (it lays the crossing's segments
-again; the replay does not); the cost (the window checks the player can afford
-the change; the carrier is built with the game's cost as any build of the
-room's, unchecked against the window's; each game logs what the company paid, `the company paid N`); the type a road or track tool's toolbar picks for a new
-crossing (`rcType`, `node2rcType` of the tool's proposal), which the
-capture of builds drops, so each game's replay picks the engine's own.
+Refused in the sender and every replay while `acceptance.lua`'s `crossings`
+is false. The PR author's report names staged Japan_2 two-player runs from
+2026-10-17, but ordinary-start acceptance is not established here; keep the
+gate off until that evidence is verified. Not covered: the cost (the window
+checks the player can afford the change; the carrier is built with the game's
+cost as any build of the room's, unchecked against the window's; each game
+logs what the company paid, `the company paid N`); the type a road or track
+tool's toolbar picks for a new crossing (`rcType`, `node2rcType` of the
+tool's proposal), which capture drops, so each game's replay picks the
+engine's own.
 ### Build previews
 
 What a player's build tool shows before the click, the road, track,
