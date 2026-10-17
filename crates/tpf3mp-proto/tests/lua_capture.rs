@@ -1240,6 +1240,37 @@ fn across_removed_node(on5: &str, six: &str, on6: &str, beyond: &str) -> String 
     )
 }
 
+/// As run-1017-refit, scaled onto track 30-31-32: the tool removes 31 and
+/// sets its own nodes -1 (y 0) before it and -8 (y 50) past it, the piece
+/// -1>-8 between them running where signal 556 stood (y 15), its new
+/// signal listed by `on`; -7 a branch off -1.
+fn across_both_sides(on: &str) -> String {
+    format!(
+        "{{ addedNodes = {{ {{ entity = -1, comp = {{ position = v(300, 0, 0) }} }},
+                          {{ entity = -8, comp = {{ position = v(300, 50, 0) }} }},
+                          {{ entity = -5, comp = {{ position = v(306, 40, 0) }} }} }},
+            addedSegments = {{
+                {{ entity = -3, type = 1, comp = {{ node0 = 30, node1 = -1,
+                    tangent0 = v(0, 30, 0), tangent1 = v(0, 30, 0), type = 0, typeIndex = -1,
+                    roadTemplate = 'track/standard.track_template', roadStyle = '', objects = {{}} }} }},
+                {{ entity = -9, type = 1, comp = {{ node0 = -1, node1 = -8,
+                    tangent0 = v(0, 50, 0), tangent1 = v(0, 50, 0), type = 0, typeIndex = -1,
+                    roadTemplate = 'track/standard.track_template', roadStyle = '', objects = {on} }} }},
+                {{ entity = -10, type = 1, comp = {{ node0 = -8, node1 = 32,
+                    tangent0 = v(0, 40, 0), tangent1 = v(0, 40, 0), type = 0, typeIndex = -1,
+                    roadTemplate = 'track/standard.track_template', roadStyle = '', objects = {{}} }} }},
+                {{ entity = -7, type = 1, comp = {{ node0 = -1, node1 = -5,
+                    tangent0 = v(0, 40, 0), tangent1 = v(6, 40, 0), type = 0, typeIndex = -1,
+                    roadTemplate = 'track/standard.track_template', roadStyle = '', objects = {{}} }} }} }},
+            removedSegments = {{
+                {{ entity = 110, type = 1, comp = {{ node0 = 30, node1 = 31,
+                    tangent0 = v(0, 60, 0), tangent1 = v(0, 60, 0), objects = {{ {{ 556, 2 }} }} }} }},
+                {{ entity = 111, type = 1, comp = {{ {BEYOND_NORTH}, objects = {{}} }} }} }},
+            removedNodes = {{ {{ entity = 31, comp = {{ position = v(300, 30, 0) }} }} }},
+            edgeObjectsToAdd = {NEW_SIGNAL}, edgeObjectsToRemove = {{ 556 }} }}"
+    )
+}
+
 const SIX_NORTH: &str =
     "node0 = -1, node1 = 32, tangent0 = v(0, 76.8, 0), tangent1 = v(0, 76.8, 0)";
 const BEYOND_NORTH: &str = "node0 = 31, node1 = 32, tangent0 = v(0, 60, 0), tangent1 = v(0, 60, 0)";
@@ -1278,6 +1309,15 @@ fn a_signal_the_tool_puts_back_across_a_removed_node_is_kept() {
         let got = capture_refit(&street).unwrap_err();
         assert!(got.contains(why), "{why}: {got}");
     };
+    // As run-1017-refit: the tool sets its own nodes on both sides of the
+    // removed node, -1 on 30-31 and -8 on 31-32, and puts the signal back
+    // on the piece between them, whose ends are no old nodes.
+    kept(across_both_sides(NEW_ON));
+    // A piece from the old track out to another place is no stretch of it.
+    refused(
+        across_both_sides(NEW_ON).replace("v(300, 50, 0) }", "v(303, 50, 0) }"),
+        "replaces a signal elsewhere",
+    );
     // On the piece before it, which starts 1.8 m past where it stood.
     refused(
         across_removed_node(NEW_ON, SIX_NORTH, "{}", BEYOND_NORTH),

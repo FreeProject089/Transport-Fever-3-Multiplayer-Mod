@@ -284,20 +284,20 @@ end
 -- old edge's other end (seen on build 40420, 2026-10-17, run-1017-033551:
 -- the signal in edgeObjectsToRemove, one record in edgeObjectsToAdd with
 -- category 2 and nothing else that reads, no model, place or settings,
--- and that piece listing it as a new entity). The piece may also be the
--- one that took over the track beyond the removed node, where the signal
--- stood just past it (run-1017-pr165-p2: the signal 8 m past the removed
--- node, the tool's own 10 m past it). Each new signal is taken as the old
--- one, kept on that piece under its own entity (keptInPlace, as a
--- split's): every game's build keeps its construction and its settings,
+-- and that piece listing it as a new entity). The piece may also run
+-- across the removed node, from the tool's own node or the old track's end
+-- before it to one past it (run-1017-pr165-p2, run-1017-refit). Each new
+-- signal is taken as the old one, kept on that piece under its own
+-- entity (keptInPlace, as a split's): every game's build keeps its
+-- construction and its settings,
 -- which the tool's record does not say. Only one for one: each record a
 -- signal on one new track edge, each removal a signal (no waypoint) on one
 -- removed track edge, each new signal on a piece that only one removed
--- signal goes onto: a piece that goes on from that signal's edge
--- (geom.continues), or either way round from another removed track edge
--- that meets it at a node the build removes, not rebuilt between the
--- signal's edge's own nodes, and that runs where the signal stood, the
--- same way (geom.runsThrough); anything else refused as before. Behind
+-- signal goes onto: a stretch of its old track (both ends on that
+-- signal's edge or on a removed track edge that meets it at a node the
+-- build removes), not rebuilt between the signal's edge's own nodes, and
+-- that runs where the signal stood, the same way (geom.runsThrough);
+-- anything else refused as before. Behind
 -- acceptance.lua's refitSignals, which only the capture asks: the room
 -- carries it as a split's Link.kept. Returns the old signals so kept, by
 -- entity.
@@ -365,24 +365,31 @@ local function refitSignals(capture, connection, posOf)
 		geometry[k] = geometry[k] or removedGeometry(capture.removed[k], posOf)
 		return geometry[k]
 	end
-	local function reversed(g)
-		local function back(t) return { -t[1], -t[2], -t[3] } end
-		return { a = g.b, b = g.a, ta = back(g.tb), tb = back(g.ta) }
-	end
-	-- Whether the piece goes on from the signal's edge, or either way round
-	-- from a removed track edge across a removed node of it.
-	local function tied(src, to)
-		if geom.continues(geometryOf(src.k), to) then return true end
+	-- Whether a place lies on the signal's old track: its edge, or a removed
+	-- track edge that meets it at a node the build removes (within
+	-- STAND_TOL, horizontally and in height).
+	local function onOldTrack(src, p)
 		local r = capture.removed[src.k]
+		local edges = { src.k }
 		for _, n in ipairs({ r.node0, r.node1 }) do
 			for _, k in ipairs(gone[n] or {}) do
-				if k ~= src.k then
-					local g = geometryOf(k)
-					if geom.continues(g, to) or geom.continues(reversed(g), to) then return true end
-				end
+				if k ~= src.k then edges[#edges + 1] = k end
 			end
 		end
+		for _, k in ipairs(edges) do
+			local g = geometryOf(k)
+			local u, d = geom.parameterAt(g.a, g.ta, g.b, g.tb, p[1], p[2])
+			local h = geom.hermitePos(g.a, g.ta, g.b, g.tb, u)[3]
+			if d <= geom.STAND_TOL and math.abs(h - p[3]) <= geom.STAND_TOL then return true end
+		end
 		return false
+	end
+	-- Whether the piece is a stretch of the signal's old track: both its
+	-- ends on it. The tool sets its own nodes on the old track about the
+	-- node it removes, before it, past it or both (run-1017-refit: one 20 m
+	-- before, one 29 m past, the signal put back on the piece between).
+	local function tied(src, to)
+		return onOldTrack(src, to.a) and onOldTrack(src, to.b)
 	end
 	-- Each new signal the one removed signal whose track goes on to its
 	-- piece, which runs where that signal stood, the same way.

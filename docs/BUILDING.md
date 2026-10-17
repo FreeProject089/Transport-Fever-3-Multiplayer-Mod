@@ -724,15 +724,15 @@ positions, the originator's decisions included:
   tool's record does not say. Only one for one (`engine.lua`
   `refitSignals`): each record a signal on one new track edge, each
   removal a signal on one removed track edge and no waypoint, each new
-  signal on a piece that only one removed signal goes onto: a piece that
-  goes on from that signal's edge (`geom.continues`), or, either way
-  round, from another removed track edge that meets it at a node the
-  build removes (the signal stood just short of the removed node, past the
-  tool's own: the piece that took over the track beyond it, seen in
-  run-1017-pr165-p2), not rebuilt between the signal's edge's own nodes,
-  and that runs where the signal stood, the same way
-  (`geom.runsThrough`); anything else is refused as a build with a stop
-  or signal. Captured only behind `acceptance.lua`'s
+  signal on a piece that only one removed signal goes onto: a stretch of
+  its old track, both ends on that signal's edge or on a removed track
+  edge that meets it at a node the build removes, within 0.5 m (the tool
+  sets its own nodes on the old track about the node it removes, before
+  it, past it or both, and may put the signal back on the piece across
+  that node; seen in run-1017-pr165-p2 and run-1017-refit), not rebuilt
+  between the signal's edge's own nodes, and that runs where the signal
+  stood, the same way (`geom.runsThrough`); anything else is refused as a
+  build with a stop or signal. Captured only behind `acceptance.lua`'s
   `refitSignals`, off until a two-player game shows every game keeps the
   signal where it stood;
 - `removals`: existing edges the build removes, of either network, by their
