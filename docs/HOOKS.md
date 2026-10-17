@@ -948,7 +948,7 @@ for the table (`bridge.find`). Its contract is in
 `mod/tpf3mp_1/content/scripts/tpf3mp/bridge.lua`; the hook's half is
 `crates/tpf3mp-hook/src/lua.rs`:
 
-- `tpf3mp_native.version`: 12. The mod refuses any other.
+- `tpf3mp_native.version`: 15. The mod refuses any other.
 - `tpf3mp_native.note(key[, value])`: a short string one of the game's Lua
   states notes for the others (at most 16 keys, 512 bytes each; "" forgets
   it); with only a key, what was noted, or nil. The GUI runs in more than
