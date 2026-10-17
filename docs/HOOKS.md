@@ -1,8 +1,7 @@
 # The native hook
 
-Acceptance status: waypoint mechanics described below are implemented but
-disabled by `tpf3mp/acceptance.lua`. They are refused on submission and
-replay until ordinary two-player game acceptance. Entity rename/recolour
+Acceptance status: line waypoints passed ordinary two-player game
+acceptance on 2026-10-16 and are enabled. Entity rename/recolour
 ([investigation/TPF3_RENAME_2026-10-07.md](../investigation/TPF3_RENAME_2026-10-07.md))
 and subsidies
 ([investigation/TPF3_SUBSIDIES_2026-10-07.md](../investigation/TPF3_SUBSIDIES_2026-10-07.md))
