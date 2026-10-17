@@ -1541,9 +1541,9 @@ function HANDLERS.Bulldoze(b)
 			.. (gone ~= "" and (" and town buildings " .. gone) or ""))
 	elseif b.EdgeObject then
 		-- A simple proposal: the game's verdict first (buildProposal).
-		return removeEdgeObject(b.EdgeObject.edge, { b.EdgeObject }, context)
+		return removeEdgeObject(b.EdgeObject.edge, { b.EdgeObject }, context, false)
 	elseif b.EdgeObjects then
-		return removeEdgeObject(b.EdgeObjects.edge, b.EdgeObjects.objects, context)
+		return removeEdgeObject(b.EdgeObjects.edge, b.EdgeObjects.objects, context, true)
 	elseif b.Assets then
 		return removeAssets(b.Assets, context)
 	else
@@ -1866,7 +1866,7 @@ end
 -- two-sided stop): for each, the object of its construction on the edge
 -- nearest where it stood, within 2 m, each a different one; the edge
 -- rebuilt once without them.
-function removeEdgeObject(edge, removed, context)
+function removeEdgeObject(edge, removed, context, twoSided)
 	if type(removed) ~= "table" then error("the bulldozer has no edge-object list", 0) end
 	local count = 0
 	for k in pairs(removed) do
@@ -1875,10 +1875,12 @@ function removeEdgeObject(edge, removed, context)
 		end
 		count = count + 1
 	end
-	if count ~= 2 or #removed ~= count then
-		error("a two-sided stop removal must name both objects", 0)
+	local expected = twoSided and 2 or 1
+	if count ~= expected or #removed ~= count then
+		if twoSided then error("a two-sided stop removal must name both objects", 0) end
+		error("a stop removal must name one object", 0)
 	end
-	if removed[1].model ~= removed[2].model then
+	if twoSided and removed[1].model ~= removed[2].model then
 		error("a two-sided stop removal must name one construction", 0)
 	end
 	local network = edge.network
@@ -1918,7 +1920,7 @@ function removeEdgeObject(edge, removed, context)
 		names[#names + 1] = tostring(ref.model) .. " " .. tostring(best)
 		resolved[#resolved + 1] = { entity = best, kind = bestKind, at = bestAt }
 	end
-	if count == 2 then
+	if twoSided then
 		local types = enum("EdgeObjectType")
 		if resolved[1].kind ~= types.STOP_LEFT and resolved[1].kind ~= types.STOP_RIGHT then
 			error("a two-sided stop removal resolved to a signal or waypoint", 0)
