@@ -14435,7 +14435,6 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
             { Perk = { Greenify = { industry = 0 } } },
             { Perk = { Marketing = { town = 0, duration_ms = 1, line_cost_factor = 0.5, cost = 1 } } },
-            { SetCrossingType = { nodes = { { x = 0, y = 0, z = 0 } }, crossing_type = 'c.rcr' } },
         }
         for _, action in ipairs(actions) do
             local sent, reason = link:command(action)
@@ -14446,9 +14445,11 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
         assert(#HOOK.commands == 0)
         -- Renaming and recolouring (investigation/TPF3_RENAME_2026-10-07.md)
         -- and subsidies (investigation/TPF3_SUBSIDIES_2026-10-07.md) passed
-        -- two-player game acceptance: neither port refuses them for it any
-        -- more, whatever else it finds wrong.
+        -- two-player game acceptance, and a level crossing's type from its
+        -- window (2026-10-17): neither port refuses them for it any more,
+        -- whatever else it finds wrong.
         local accepted = {
+            { SetCrossingType = { nodes = { { x = 0, y = 0, z = 0 } }, crossing_type = 'c.rcr' } },
             { Rename = { what = { Vehicle = 1 }, name = 'x' } },
             { VehicleOp = { vehicle = 1, change = { Recolor = { r = 1, g = 0, b = 0 } } } },
             { Subsidy = { Accept = { uid = 1, kind = 'x' } } },
@@ -16008,9 +16009,12 @@ end
 fn a_crossing_type_from_its_window_goes_to_the_room_by_its_nodes() {
     let (lua, _script) = engine();
     lua.load(FAKE_CROSSINGS).exec().unwrap();
-    // Production defaults first: refused, and said.
+    // On by default since the two-player game of 2026-10-17; with the gate
+    // off, refused, and said.
     lua.load(
-        r#"HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({}, nil, nil)
+        r#"DEFAULT = ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossings
+        ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').crossings = false
+        HOOK.room = true HOOK.clicks = 0 SCRIPT.guiUpdate({}, nil, nil)
         HOOK.built[0] = { proposal = { crossingType = true, entity = 800, type = 5 } }
         HOOK.clicks = 1 SCRIPT.guiUpdate({}, nil, nil)
         FIRST = HOOK.notes and HOOK.notes['tpf3mp.notice']
@@ -16023,6 +16027,8 @@ fn a_crossing_type_from_its_window_goes_to_the_room_by_its_nodes() {
     )
     .exec()
     .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    let on: bool = lua.load("return DEFAULT").eval().unwrap();
+    assert!(on, "crossings is on by default");
     let (first, last, sent): (String, String, String) = lua
         .load(
             "local c = HOOK.commands[1].SetCrossingType \

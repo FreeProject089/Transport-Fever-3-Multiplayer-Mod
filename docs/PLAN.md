@@ -418,7 +418,9 @@ Dev C:
   the room as `SetCrossingType` (action schema 27): the crossing by its
   nodes' places, the type by its file; the player is told when it is
   refused; the network lane reads every crossing's type. Behind
-  `acceptance.lua`'s `crossings`, off until a two-player game. Open: the type
+  `acceptance.lua`'s `crossings`, on since the two-player game of
+  2026-10-17 (Japan_2, the guest's swap in both games, world checks
+  natively compared). Open: the type
   the road and track tools pick for a new crossing (`rcType`), not
   carried ([HOOKS.md](HOOKS.md), "Level crossing types").
 - [ ] Landmarks, built once: the second on the same turn is refused and
