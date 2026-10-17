@@ -3063,8 +3063,15 @@ construction's window its edits:
   rebuilt without it, the stop named by its edge, where it stands and its
   construction (the `EDGE_OBJECT` component's `transf` and
   `edgeObjectConstruction`), a `Bulldoze::EdgeObject`; the replay puts it
-  in `edgeObjectsToRemove`. Removing a signal, or an edge with a stop or
-  signal on it, is refused.
+  in `edgeObjectsToRemove`. Both stops of a two-sided stop, which one
+  click removes, go as one `Bulldoze::EdgeObjects` (schema 27): two stops
+  of one construction, one on each side, else refused. A track removed
+  with signals on it goes as `Bulldoze::Edges` when the proposal's
+  `edgeObjectsToRemove` are exactly the signals on its removed tracks
+  (each type `SIGNAL`, listed once, no construction removed with them);
+  the replay removes the tracks with those signals and refuses a stop or
+  another company's signal on them. An edge with a stop on it is
+  refused.
 - **The stop tool** (`streetTerminalBuilder`): a stop on a street. The
   tool queues a `WorldBuildProposal` (command 52 from
   `UI::StreetTerminalBuilder`, found statically), which the hook's gate

@@ -1682,6 +1682,52 @@ local function townBuildingsRemoved(proposal, named)
 	return table.concat(ids, ",")
 end
 
+-- The signals on the tracks a removal takes away go with them, in its
+-- edgeObjectsToRemove: an edge removed with objects still on it leaves them
+-- pointing nowhere (on TPF2 that crashed every game; docs/BUILDING.md).
+-- makeSegmentsRemoveProposal answers a whole Proposal, its street part in
+-- `proposal` (as the bulldozer's own). Its list may name them already; one
+-- that names anything else refuses the removal, and one that leaves any
+-- out is given them, and must then read back exactly those, else the
+-- removal is refused too.
+local function withSignalsRemoved(proposal, signals)
+	local want, unique = {}, {}
+	for _, id in ipairs(signals) do
+		if not want[id] then unique[#unique + 1] = id end
+		want[id] = true
+	end
+	signals = unique
+	table.sort(signals)
+	local function listed()
+		local ok, out = pcall(function()
+			local l, out = proposal.proposal.edgeObjectsToRemove, {}
+			for i = 1, (l and #l or 0) do out[i] = l[i] end
+			return out
+		end)
+		if not ok or type(out) ~= "table" then
+			error("the game's removal does not say which signals it takes", 0)
+		end
+		return out
+	end
+	-- Exactly the signals, each once; or false, and raises for anything else.
+	local function exactly(l)
+		local seen = {}
+		for _, id in ipairs(l) do
+			if not want[id] then
+				error("the game would remove an edge object " .. tostring(id) .. " the bulldozer did not", 0)
+			end
+			if seen[id] then error("the game's removal names signal " .. tostring(id) .. " twice", 0) end
+			seen[id] = true
+		end
+		return #l == #signals
+	end
+	if not exactly(listed()) then
+		pcall(function() proposal.proposal.edgeObjectsToRemove = signals end)
+		if not exactly(listed()) then error("the game's removal will not take the signals on the tracks", 0) end
+	end
+	log("removing signals " .. table.concat(signals, ",") .. " with their tracks")
+end
+
 -- The bulldozer's removals, as the game makes them itself: a construction
 -- with what is its own (createProposalRemove: its entrance edge and node, as
 -- the bulldozer proposed them on build 40408; a town building alone), or
@@ -1706,21 +1752,32 @@ function HANDLERS.Bulldoze(b)
 	elseif b.Edges then
 		local network = b.Edges.network
 		local nodes = readNodes(network)
-		local ids = {}
+		local ids, signals = {}, {}
 		for k, ends in ipairs(b.Edges.edges) do
 			local e = edgeBetween(nodes, network, arr(ends.a), arr(ends.b))
 			if e == nil then error("no " .. network .. " edge to remove (" .. k .. ")", 0) end
-			if #(e.comp.objects or {}) > 0 then error("edge " .. k .. " has a stop or signal on it", 0) end
+			-- A track's signals go with it, as the bulldozer removes them; a
+			-- stop, or any object on a street, refuses it.
+			for _, o in ipairs(e.comp.objects or {}) do
+				if network ~= "Track" or o[2] ~= enum("EdgeObjectType").SIGNAL then
+					error("edge " .. k .. " has a stop on it", 0)
+				end
+				mine(o[1], "signal")
+				signals[#signals + 1] = o[1]
+			end
 			mine(e.id, "road or track")
 			ids[#ids + 1] = e.id
 		end
 		proposal = proposals.makeSegmentsRemoveProposal(ids)
+		if #signals > 0 then withSignalsRemoved(proposal, signals) end
 		local gone = townBuildingsRemoved(proposal, b.Edges.buildings or {})
 		log("removing " .. network .. " edges " .. table.concat(ids, ",")
 			.. (gone ~= "" and (" and town buildings " .. gone) or ""))
 	elseif b.EdgeObject then
 		-- A simple proposal: the game's verdict first (buildProposal).
-		return removeEdgeObject(b.EdgeObject, context)
+		return removeEdgeObject(b.EdgeObject.edge, { b.EdgeObject }, context, false)
+	elseif b.EdgeObjects then
+		return removeEdgeObject(b.EdgeObjects.edge, b.EdgeObjects.objects, context, true)
 	elseif b.Assets then
 		return removeAssets(b.Assets, context)
 	else
@@ -2060,32 +2117,113 @@ function HANDLERS.PlaceStop(stop)
 	return built
 end
 
--- A stop the bulldozer removes: the object of that construction on the
--- edge, nearest where it stood, within 2 m.
-function removeEdgeObject(ref, context)
-	local network = ref.edge.network
-	local e = stopEdge(ref.edge)
-	local best, bestD
+-- The stops the bulldozer removes from one edge (one, or both of a
+-- two-sided stop): for each, the object of its construction on the edge
+-- nearest where it stood, within 2 m, each a different one; the edge
+-- rebuilt once without them.
+function removeEdgeObject(edge, removed, context, twoSided)
+	if type(removed) ~= "table" then error("the bulldozer has no edge-object list", 0) end
+	local count = 0
+	for k in pairs(removed) do
+		if type(k) ~= "number" or k ~= math.floor(k) or k < 1 or k > 2 then
+			error("the bulldozer has a malformed edge-object list", 0)
+		end
+		count = count + 1
+	end
+	local expected = twoSided and 2 or 1
+	if count ~= expected or #removed ~= count then
+		if twoSided then error("a two-sided stop removal must name both objects", 0) end
+		error("a stop removal must name one object", 0)
+	end
+	if twoSided and removed[1].model ~= removed[2].model then
+		error("a two-sided stop removal must name one construction", 0)
+	end
+	local network = edge.network
+	local e = stopEdge(edge)
+	local taken, gone, names = {}, {}, {}
+	local edgeKinds = {}
 	for _, o in ipairs(e.comp.objects or {}) do
-		local c = api.engine.getComponent(o[1], api.type.ComponentType.EDGE_OBJECT)
-		local t = c and c.transf
-		if c and c.edgeObjectConstruction == ref.model and t then
-			local dx, dy, dz = t[13] - ref.at.x, t[14] - ref.at.y, t[15] - ref.at.z
-			local dist = dx * dx + dy * dy + dz * dz
-			if dist <= 4 and (bestD == nil or dist < bestD or (dist == bestD and o[1] < best)) then
-				best, bestD = o[1], dist
+		local id, kind = o[1], o[2]
+		if type(id) ~= "number" or id ~= math.floor(id) or id < 0 or kind == nil or edgeKinds[id] ~= nil then
+			error("the edge has an unreadable or repeated object", 0)
+		end
+		edgeKinds[id] = kind
+	end
+	local resolved = {}
+	for _, ref in ipairs(removed) do
+		local best, bestD, bestKind, bestAt
+		for _, o in ipairs(e.comp.objects or {}) do
+			local c = not taken[o[1]] and api.engine.getComponent(o[1], api.type.ComponentType.EDGE_OBJECT)
+			local t = c and c.transf
+			if c and c.edgeObjectConstruction == ref.model and t then
+				local dx, dy, dz = t[13] - ref.at.x, t[14] - ref.at.y, t[15] - ref.at.z
+				local dist = dx * dx + dy * dy + dz * dz
+				if dist <= 4 then
+					if bestD == nil or dist < bestD then
+						best, bestD, bestKind, bestAt = o[1], dist, edgeKinds[o[1]], { t[13], t[14], t[15] }
+					elseif dist == bestD then
+						error("two " .. tostring(ref.model) .. " objects equally near", 0)
+					end
+				end
 			end
 		end
+		if best == nil then error("no " .. tostring(ref.model) .. " there", 0) end
+		if bestKind == nil then error("an edge object with no stop or signal type", 0) end
+		mine(best, "stop")
+		taken[best] = true
+		gone[#gone + 1] = best
+		names[#names + 1] = tostring(ref.model) .. " " .. tostring(best)
+		resolved[#resolved + 1] = { entity = best, kind = bestKind, at = bestAt }
 	end
-	if best == nil then error("no " .. tostring(ref.model) .. " there", 0) end
-	mine(best, "stop")
+	if twoSided then
+		local types = enum("EdgeObjectType")
+		if resolved[1].kind ~= types.STOP_LEFT and resolved[1].kind ~= types.STOP_RIGHT then
+			error("a two-sided stop removal resolved to a signal or waypoint", 0)
+		end
+		if resolved[2].kind ~= types.STOP_LEFT and resolved[2].kind ~= types.STOP_RIGHT then
+			error("a two-sided stop removal resolved to a signal or waypoint", 0)
+		end
+		if resolved[1].kind == resolved[2].kind or resolved[1].entity == resolved[2].entity then
+			error("a two-sided stop removal needs opposite sides", 0)
+		end
+		local function stationGroup(entity)
+			local ok, group = pcall(function()
+				return api.engine.system.stationGroupSystem.getStationGroup(entity)
+			end)
+			if not ok or type(group) ~= "number" or group < 0 then
+				error("a two-sided stop without a readable station group", 0)
+			end
+			local componentType = api.type.ComponentType.STATION_GROUP
+			if type(componentType) ~= "number" then error("the station group component cannot be read", 0) end
+			local component = api.engine.getComponent(group, componentType)
+			if component == nil then error("a two-sided stop with no station group component", 0) end
+			local listed = 0
+			for _, member in ipairs(seq(component.stations or {})) do
+				if member == entity then listed = listed + 1 end
+			end
+			if listed ~= 1 then error("a two-sided stop not listed once in its station group", 0) end
+			return group
+		end
+		if stationGroup(resolved[1].entity) ~= stationGroup(resolved[2].entity) then
+			error("the two stops are not one two-sided stop", 0)
+		end
+		local function center(at)
+			local u = geom.parameterAt(e.a, e.ta, e.b, e.tb, at[1], at[2])
+			return geom.hermitePos(e.a, e.ta, e.b, e.tb, u)
+		end
+		local a, b = center(resolved[1].at), center(resolved[2].at)
+		local dx, dy, dz = a[1] - b[1], a[2] - b[2], a[3] - b[3]
+		if dx * dx + dy * dy + dz * dz > 0.25 then
+			error("the two stops are at different places on the edge", 0)
+		end
+	end
 	local objects = {}
 	for _, o in ipairs(e.comp.objects) do
-		if o[1] ~= best then objects[#objects + 1] = { o[1], o[2] } end
+		if not taken[o[1]] then objects[#objects + 1] = { o[1], o[2] } end
 	end
 	local proposal = rebuildWith(e, network, objects)
-	proposal.streetProposal.edgeObjectsToRemove = { best }
-	log("removing " .. tostring(ref.model) .. " " .. tostring(best) .. " from " .. network .. " edge " .. e.id)
+	proposal.streetProposal.edgeObjectsToRemove = gone
+	log("removing " .. table.concat(names, ", ") .. " from " .. network .. " edge " .. e.id)
 	return buildProposal(proposal, context)
 end
 

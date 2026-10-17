@@ -593,6 +593,25 @@ pub enum Bulldoze {
     /// Trees and other assets taken out of their asset group, which every
     /// game builds again from its own copy without them (schema 25).
     Assets(AssetRemoval),
+    /// The stops one bulldozer click removes from one edge together: both
+    /// of a two-sided stop (schema 27). Each is the stop of its model on
+    /// the edge nearest its `at`, every one a different object; every game
+    /// rebuilds the edge once without them.
+    EdgeObjects {
+        edge: EdgeRef,
+        objects: BoundedVec<EdgeObjectAt, MAX_REMOVED_STOPS>,
+    },
+}
+
+/// Most stops one bulldoze of an edge's objects removes: a two-sided stop's.
+pub const MAX_REMOVED_STOPS: usize = 2;
+
+/// A stop, signal or waypoint on an edge: its construction's file and where
+/// it stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeObjectAt {
+    pub at: Pos,
+    pub model: ResName,
 }
 
 /// One asset of an asset group: its model's file and where it stands,
@@ -1552,6 +1571,9 @@ pub enum ActionError {
     /// An [`AssetStroke`] that changes nothing or names a model it lacks.
     #[error("invalid asset stroke: {0}")]
     Assets(&'static str),
+    /// A two-sided stop removal that does not carry one same-construction pair.
+    #[error("invalid bulldoze: {0}")]
+    Bulldoze(&'static str),
 }
 
 impl Action {
@@ -1589,10 +1611,27 @@ impl Action {
         }
     }
 
-    /// Validate what the wire's bounds do not: the relationships within a
-    /// junction, and no vehicle sent to be sold on arrival
-    /// ([`ActionError::SellOnArrival`]).
+    /// Validate relationships the wire's bounds do not: a two-sided stop
+    /// removal's pair, the relationships within a junction, and no vehicle
+    /// sent to be sold on arrival ([`ActionError::SellOnArrival`]).
     pub fn validate(&self) -> Result<(), ActionError> {
+        if let Self::Bulldoze(Bulldoze::EdgeObjects { objects, .. }) = self {
+            if objects.len() != 2 {
+                return Err(ActionError::Bulldoze(
+                    "a two-sided stop removal must name both objects",
+                ));
+            }
+            if objects[0] == objects[1] {
+                return Err(ActionError::Bulldoze(
+                    "a two-sided stop removal must name distinct objects",
+                ));
+            }
+            if objects[0].model != objects[1].model {
+                return Err(ActionError::Bulldoze(
+                    "a two-sided stop removal must name one construction",
+                ));
+            }
+        }
         let changes = match self {
             Self::CalendarSpeed { millis_per_day } if *millis_per_day > i32::MAX as u32 => {
                 return Err(ActionError::CalendarSpeed);
@@ -2088,8 +2127,8 @@ mod tests {
             signals.to_payload().unwrap().as_bytes(),
             [27, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
         );
-        // Appended under schema version 27: terrain paint, then the asset
-        // brush, take the next tags.
+        // Schema 27 appends the terrain and asset actions, then the
+        // two-sided stop removal within Bulldoze. Earlier tags stay fixed.
         let paint = Action::Paint(TerrainPaint {
             materials: PaintGrid::new(
                 -1,
@@ -2124,6 +2163,36 @@ mod tests {
             plant.to_payload().unwrap().as_bytes(),
             [
                 27, 26, 1, 1, b't', 0, 1, 1, 0, 2, 0, 0, 0, 2, 0, 0, 0, 2, 2, 0, 0
+            ]
+        );
+        let stops = Action::Bulldoze(Bulldoze::EdgeObjects {
+            edge: EdgeRef {
+                network: Network::Street,
+                ends: EdgeEnds {
+                    a: pos(0, 0, 0),
+                    b: pos(1, 0, 0),
+                },
+            },
+            objects: BoundedVec::new(vec![
+                EdgeObjectAt {
+                    at: pos(0, 1, 0),
+                    model: Text::new("s").unwrap(),
+                },
+                EdgeObjectAt {
+                    at: pos(0, -1, 0),
+                    model: Text::new("s").unwrap(),
+                },
+            ])
+            .unwrap(),
+        });
+        assert_eq!(
+            stops.to_payload().unwrap().as_bytes(),
+            [
+                27, // schema version
+                2,  // Action::Bulldoze
+                4,  // Bulldoze::EdgeObjects
+                0, 0, 0, 0, 2, 0, 0, // Street, (0, 0, 0), (1, 0, 0)
+                2, 0, 2, 0, 1, b's', 0, 1, 0, 1, b's', // two stops, (0, 1, 0) and (0, -1, 0)
             ]
         );
         let hold = Action::VehicleOp(VehicleOp {
