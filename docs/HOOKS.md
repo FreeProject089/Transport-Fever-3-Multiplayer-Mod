@@ -3001,9 +3001,11 @@ construction's window its edits:
   proposal, every edge it adds such a join, travels as the build it is: a
   `BuildRoad` or `BuildTrack` of the joining edge between the existing
   far nodes, with the removed edges (each in its own network) and nodes
-  as its removals, as a road modifier's build travels. A stop or signal
-  on a joined edge, or town buildings the bulldozer takes with it, are
-  refused.
+  as its removals, as a road modifier's build travels. Capture accounts for
+  every removed edge: it must pair with a join or be the known track stub
+  attached to the joined node, with its removed far node a degree-one track
+  endpoint. An unrelated extra removal is refused. A stop or signal on a
+  joined edge, or town buildings the bulldozer takes with it, are refused.
   A town building is a construction like any (one that lists its
   `townBuildings`) and goes the same way. A town street's proposal lists
   the town buildings along it in `toRemove` too; they travel beside the

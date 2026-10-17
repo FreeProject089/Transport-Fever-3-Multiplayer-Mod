@@ -1004,7 +1004,7 @@ local function joinsOnly(street)
 		if type(e) ~= "number" then return false end
 		gone[e] = true
 	end
-	local removed, used = list(get(street, "removedSegments")), {}
+	local removed, used, joinedAt = list(get(street, "removedSegments")), {}, {}
 	-- The end of a removed edge opposite node n, if it touches n.
 	local function across(seg, n)
 		local c = get(seg, "comp")
@@ -1012,10 +1012,34 @@ local function joinsOnly(street)
 		if get(c, "node1") == n then return get(c, "node0") end
 		return nil
 	end
+	-- A removed track is the crossing's bulldozed stub only when it touches
+	-- exactly one node already accounted for by a street join, both ends are
+	-- removed, and its other end has no other track in the live network map.
+	local function bulldozedStub(seg)
+		if networkOf(seg) ~= "Track" then return false end
+		local entity, comp = get(seg, "entity"), get(seg, "comp")
+		local a, b = get(comp, "node0"), get(comp, "node1")
+		if type(entity) ~= "number" or entity <= 0 or entity % 1 ~= 0
+			or type(a) ~= "number" or a % 1 ~= 0 or type(b) ~= "number" or b % 1 ~= 0
+			or a == b or not gone[a] or not gone[b] then return false end
+		local junction
+		if joinedAt[a] and not joinedAt[b] then junction = a
+		elseif joinedAt[b] and not joinedAt[a] then junction = b
+		else return false end
+		local tip = junction == a and b or a
+		local atJunction, atTip = nodeEdges(junction, "Track"), nodeEdges(tip, "Track")
+		if atJunction == nil or atTip == nil then return false end
+		atJunction, atTip = list(atJunction), list(atTip)
+		local present = false
+		for _, edge in ipairs(atJunction) do
+			if edge == entity then present = true break end
+		end
+		return present and #atTip == 1 and atTip[1] == entity
+	end
 	for _, seg in ipairs(list(get(street, "addedSegments"))) do
 		local comp = get(seg, "comp")
 		local a, b = get(comp, "node0"), get(comp, "node1")
-		local found
+		local found, foundAt
 		for i, s in ipairs(removed) do
 			for _, n in ipairs({ get(get(s, "comp"), "node0"), get(get(s, "comp"), "node1") }) do
 				if gone[n] and n ~= a and n ~= b and across(s, n) == a then
@@ -1023,6 +1047,7 @@ local function joinsOnly(street)
 						if j ~= i and across(t, n) == b then
 							if found ~= nil then return false end
 							found = { i, j }
+							foundAt = n
 						end
 					end
 				end
@@ -1033,6 +1058,10 @@ local function joinsOnly(street)
 			if get(removed[k], "type") ~= get(seg, "type") then return false end
 		end
 		used[found[1]], used[found[2]] = true, true
+		joinedAt[foundAt] = true
+	end
+	for i, seg in ipairs(removed) do
+		if not used[i] and not bulldozedStub(seg) then return false end
 	end
 	return true
 end

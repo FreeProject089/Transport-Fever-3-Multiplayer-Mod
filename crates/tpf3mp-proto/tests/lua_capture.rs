@@ -691,17 +691,28 @@ const STUB_PROPOSAL: &str = "{ toAdd = {}, toRemove = TO_REMOVE, proposal = {
     },
     removedSegments = { { entity = 120, type = 1, comp = { node0 = 9, node1 = 32, objects = {} } },
                         { entity = 100, type = 0, comp = { node0 = 8, node1 = 9, objects = OBJECTS } },
-                        { entity = 101, type = 0, comp = { node0 = 9, node1 = 10, objects = {} } } },
+                        { entity = 101, type = 0, comp = { node0 = 9, node1 = 10, objects = {} } },
+                        EXTRA_REMOVED },
     removedNodes = { { entity = 9, comp = { position = v(50, 1, 0) } },
                      { entity = 32, comp = { position = v(10, 1, 0) } } },
 } }";
 
 /// The bulldozer's capture of [`STUB_PROPOSAL`], the stub on node 9.
 fn capture_stub(join: &str, objects: &str, to_remove: &str) -> Result<LuaValue, String> {
+    capture_stub_with_extra(join, objects, to_remove, "")
+}
+
+fn capture_stub_with_extra(
+    join: &str,
+    objects: &str,
+    to_remove: &str,
+    extra_removed: &str,
+) -> Result<LuaValue, String> {
     let proposal = STUB_PROPOSAL
         .replace("JOIN", join)
         .replace("OBJECTS", objects)
-        .replace("TO_REMOVE", to_remove);
+        .replace("TO_REMOVE", to_remove)
+        .replace("EXTRA_REMOVED", extra_removed);
     capture_with(
         "nil",
         &format!(
@@ -754,6 +765,16 @@ fn a_bulldozer_join_the_room_cannot_account_for_is_refused() {
         why,
         "removing a street with town buildings where the bulldozer joins the streets left"
     );
+}
+
+#[test]
+fn a_join_does_not_carry_an_unpaired_removed_edge() {
+    // Edge 102 is a valid, existing street, but it is unrelated to the
+    // 100/101 pair joined at removed node 9. It must not pass through as an
+    // extra action removal.
+    let extra = "{ entity = 102, type = 0, comp = { node0 = 20, node1 = 21, objects = {} } }";
+    let why = capture_stub_with_extra("10", "{}", "{}", extra).unwrap_err();
+    assert_eq!(why, "a bulldozer proposal that builds");
 }
 
 /// A road the tool draws through a town's house: the house goes with the
