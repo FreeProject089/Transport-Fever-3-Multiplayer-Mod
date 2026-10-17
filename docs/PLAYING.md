@@ -488,8 +488,11 @@ protected folder such as Program Files.
   room cannot carry is refused, and the game bar says so ("Not in
   multiplayer yet: changing a level crossing's type"). A type picked in
   the road or track tool for a new crossing is not carried yet.
-- **Line waypoints, Industry Greenification marketing campaigns and
-  Historic Preservation.**
+- **Line waypoints.** Add waypoints to a line's route in the line
+  manager as usual: the line is changed in every player's game, each
+  waypoint on the same lane or, for an aircraft, at the same place.
+- **Industry Greenification marketing campaigns and Historic
+  Preservation.**
   These new channels are refused pending a two-player game acceptance run.
   Their mechanics are implemented but are not enabled for play yet; see
   [COVERAGE.md](COVERAGE.md).
