@@ -78,6 +78,7 @@ fn polyline() -> Polyline {
         list(vec![
             Link {
                 precedence: None,
+                kept: BoundedVec::default(),
 
                 from: 0,
                 to: 1,
@@ -100,6 +101,7 @@ fn polyline() -> Polyline {
             },
             Link {
                 precedence: None,
+                kept: BoundedVec::default(),
 
                 from: 1,
                 to: 2,

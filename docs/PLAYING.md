@@ -609,7 +609,11 @@ protected folder such as Program Files.
   settings) have an implementation behind `strict_junctions`, off until
   the two-player acceptance check in HOOKS.md passes. With it off, these
   tools, and a tool that would move a stop or signal onto another stretch of road, show "Not in
-  multiplayer yet" and build nothing: the tool says why.
+  multiplayer yet" and build nothing: the tool says why. A track started
+  or ended between a track's signals keeps each signal on its piece of the
+  cut track once its two-player check passes (`splitSignals`); until then
+  it says "splitSignals awaits two-player game acceptance". A waypoint on
+  the cut track still stops the build.
 
 ## Playtesting before the game is out
 

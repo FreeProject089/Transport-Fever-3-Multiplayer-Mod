@@ -34,7 +34,7 @@ use crate::{
 /// Version of the action schema, the first thing in an action's payload.
 /// Players in one room run the same mod, so their versions match; a payload
 /// of any other version is refused, never guessed at.
-pub const ACTION_SCHEMA_VERSION: u32 = 26;
+pub const ACTION_SCHEMA_VERSION: u32 = 27;
 
 /// Most vertices, and most links, in one road or track build. A 23-segment
 /// track was the longest single TPF2 build measured.
@@ -365,6 +365,24 @@ pub struct Link {
     /// set none.
     #[serde(default)]
     pub precedence: Option<Precedence>,
+    /// The signals this edge takes from an edge the build removes, as the
+    /// tool moved them: a track split where a signal stands, the signal on
+    /// the piece it stood on (schema 27). Empty for an edge that takes
+    /// none, or that rebuilds a removed edge in place, which takes all its
+    /// objects.
+    #[serde(default)]
+    pub kept: BoundedVec<KeptSignal, MAX_EDGE_SIGNALS>,
+}
+
+/// A signal an edge takes from an edge the build removes: the one signal of
+/// this construction on the polyline's removal number `removal` (from 0)
+/// within a quarter of a metre of `at`, its place along that edge from the
+/// removal's `a` end. None, or more than one, refuses the whole build.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptSignal {
+    pub removal: u16,
+    pub at: Fraction,
+    pub model: ResName,
 }
 
 /// A street's precedence at its two ends, the game's own values.
@@ -415,6 +433,8 @@ pub enum PolylineError {
     NoSuchVertex(usize),
     #[error("link {0} joins a vertex to itself")]
     Loop(usize),
+    #[error("link {0} keeps a signal of a removal the polyline does not have, or off its edge")]
+    KeptSignal(usize),
 }
 
 impl Polyline {
@@ -434,6 +454,11 @@ impl Polyline {
             }
             if link.from == link.to {
                 return Err(PolylineError::Loop(index));
+            }
+            if link.kept.iter().any(|k| {
+                usize::from(k.removal) >= removals.len() || !(0..=1_000_000).contains(&k.at.0)
+            }) {
+                return Err(PolylineError::KeptSignal(index));
             }
         }
         Ok(Self {
@@ -1455,6 +1480,7 @@ mod tests {
     fn link(from: u16, to: u16) -> Link {
         Link {
             precedence: None,
+            kept: BoundedVec::default(),
 
             from,
             to,
@@ -1499,6 +1525,39 @@ mod tests {
             Err(PolylineError::Loop(1))
         );
         assert!(Polyline::new(vertices(2), links(vec![link(1, 0)]), BoundedVec::empty()).is_ok());
+        // A kept signal names one of the polyline's removals, on its edge.
+        let keeping = |removal, at| Link {
+            kept: BoundedVec::new(vec![KeptSignal {
+                removal,
+                at: Fraction(at),
+                model: Text::new("s").unwrap(),
+            }])
+            .unwrap(),
+            ..link(0, 1)
+        };
+        let one = || {
+            BoundedVec::new(vec![EdgeRef {
+                network: Network::Track,
+                ends: EdgeEnds {
+                    a: pos(0, 0, 0),
+                    b: pos(1, 0, 0),
+                },
+            }])
+            .unwrap()
+        };
+        assert_eq!(
+            Polyline::new(vertices(2), links(vec![keeping(0, 0)]), BoundedVec::empty()),
+            Err(PolylineError::KeptSignal(0))
+        );
+        assert_eq!(
+            Polyline::new(vertices(2), links(vec![keeping(1, 0)]), one()),
+            Err(PolylineError::KeptSignal(0))
+        );
+        assert_eq!(
+            Polyline::new(vertices(2), links(vec![keeping(0, 1_000_001)]), one()),
+            Err(PolylineError::KeptSignal(0))
+        );
+        assert!(Polyline::new(vertices(2), links(vec![keeping(0, 1_000_000)]), one()).is_ok());
     }
 
     #[test]
@@ -1553,7 +1612,7 @@ mod tests {
         assert_eq!(
             payload.as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 5,  // Action::SellVehicle
                 2, 3, 0xac, 0x02, // two ids, varints
             ]
@@ -1596,7 +1655,7 @@ mod tests {
         assert_eq!(
             track.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 1,  // Action::BuildTrack
                 1, b't', 1, 1, b's', 1, // track, style Some("s"), catenary
                 2, // two vertices
@@ -1605,10 +1664,30 @@ mod tests {
                 1, // one link
                 0, 1, 2, 0, 0, 2, 0, 0, 0, // 0 -> 1, tangents, Structure::Ground
                 0, // the build's own kind
-                0, 0, 0, 0, 0, // no decorations, lock, ownership, lanes or precedence
+                0, 0, 0, 0, 0,
+                0, // no decorations, lock, ownership, lanes, precedence or kept signals
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
                 0, // no junction changes
+            ]
+        );
+        // Schema 27: a link keeps a signal of a removal, after its precedence.
+        let keeping = Link {
+            kept: BoundedVec::new(vec![KeptSignal {
+                removal: 1,
+                at: Fraction(750_000),
+                model: Text::new("s").unwrap(),
+            }])
+            .unwrap(),
+            ..link(0, 1)
+        };
+        assert_eq!(
+            postcard::to_stdvec(&keeping).unwrap()[15..],
+            [
+                1, // one kept signal
+                1, // removal 1
+                0xe0, 0xc6, 0x5b, // at 750,000, zigzag varint
+                1, b's', // its construction
             ]
         );
         // Appended with Prospect under schema version 7: the variants
@@ -1631,7 +1710,7 @@ mod tests {
         assert_eq!(
             replace.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 14, // Action::ReplaceVehicle
                 3,  // vehicle-3
                 1, 1, b'm', 1, 0, 2, 0, 0, // one part: model, reversed, no loads, colour
@@ -1649,7 +1728,7 @@ mod tests {
         assert_eq!(
             prospect.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 15, // Action::Prospect
                 3,  // town-3
                 1, b'c', // cargo
@@ -1664,7 +1743,7 @@ mod tests {
         assert_eq!(
             recolor.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 11, // Action::CompanyOp
                 4,  // CompanyOp::Recolor, appended under schema version 8
                 2,  // company-2
@@ -1675,7 +1754,7 @@ mod tests {
         assert_eq!(
             rank.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 17, // Action::ApplyRank, appended under schema version 9
                 6,  // the rank
             ]
@@ -1687,7 +1766,7 @@ mod tests {
         assert_eq!(
             accept.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 19, // Action::Subsidy, appended under schema version 13
                 0,  // SubsidyOp::Accept
                 0x80, 0x90, 0xaf, 0x99, 0x09, // the uid, zigzag varint
@@ -1724,7 +1803,7 @@ mod tests {
         ];
         for (op, bytes) in cases {
             let payload = Action::CompanyOp(op).to_payload().unwrap();
-            assert_eq!(payload.as_bytes()[..2], [26, 11]);
+            assert_eq!(payload.as_bytes()[..2], [27, 11]);
             assert_eq!(&payload.as_bytes()[2..], bytes);
         }
         // Appended under schema version 24: the perk tools take the next tag.
@@ -1732,7 +1811,7 @@ mod tests {
             industry: IndustryId(5),
             permit: None,
         });
-        assert_eq!(green.to_payload().unwrap().as_bytes(), [26, 21, 0, 5, 0]);
+        assert_eq!(green.to_payload().unwrap().as_bytes(), [27, 21, 0, 5, 0]);
         // Appended under schema version 24: Historic Preservation takes the
         // next tag.
         let preserve = Action::Preserve(Preservation {
@@ -1745,7 +1824,7 @@ mod tests {
         });
         assert_eq!(
             preserve.to_payload().unwrap().as_bytes(),
-            [26, 22, 1, b'b', 2, 0, 0, 0, 1]
+            [27, 22, 1, b'b', 2, 0, 0, 0, 1]
         );
         // Appended under schema version 26: signals on existing tracks take
         // the next tag.
@@ -1769,7 +1848,7 @@ mod tests {
         });
         assert_eq!(
             signals.to_payload().unwrap().as_bytes(),
-            [26, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
+            [27, 24, 1, b's', 1, 0, 1, 0, 0, 0, 2, 0, 0, 1, 10, 1, 0]
         );
         let hold = Action::VehicleOp(VehicleOp {
             vehicle: VehicleId(7),
@@ -1778,7 +1857,7 @@ mod tests {
         assert_eq!(
             hold.to_payload().unwrap().as_bytes(),
             [
-                26, // schema version
+                27, // schema version
                 13, // Action::VehicleOp
                 7,  // vehicle-7
                 4,  // VehicleChange::ManualDeparture, appended under schema version 10

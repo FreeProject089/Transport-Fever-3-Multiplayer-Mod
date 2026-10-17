@@ -2974,7 +2974,9 @@ construction's window its edits:
   catenary with the tracks beside it, and the ground showed between them
   (seen 2026-10-02, tracks laid side by side in a room). A build that
   moves or removes an edge with a stop or signal on it, or that places
-  stops, signals or constructions, is refused.
+  stops, signals or constructions, is refused; except a track cut between
+  its signals (started or ended there), each signal kept on the piece the
+  tool put it on (`Link::kept`, BUILDING.md; behind `splitSignals`).
 - **The bulldozer** (`bulldozer`): its proposal removes one construction
   (with the construction's own entrance edge and node) or edges of one
   network (with the nodes they leave on their own). It becomes a
@@ -3317,7 +3319,9 @@ places in the same direction as a removed one, listing exactly its objects,
 is the edge rebuilt in place, and every game's build gives it the objects
 of the edge it replaces under their own entities (`engine.keptInPlace`,
 `networkInto`); a stop moved onto another edge is refused. The same rule
-lets the road and track tools build through an edge with a stop on it.
+lets the road and track tools build through an edge with a stop on it. A
+track signal may also move onto the piece of a track the build cuts where
+that piece runs where it stands (`Link::kept`, BUILDING.md).
 
 A track's catenary and type travel the same way, as far as the game's
 scripts say (build 40408's `construction_react_util.tl`: the

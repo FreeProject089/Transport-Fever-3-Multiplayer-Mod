@@ -121,6 +121,43 @@ function geom.parameterAt(a, ta, b, tb, x, y)
 	return u, math.sqrt(d2(u))
 end
 
+-- How near a signal's place on the edge it stood on the edge that takes it
+-- runs, in three dimensions; how alike their directions there are (the
+-- dot of their unit tangents); and how far from that edge's ends it is,
+-- horizontally: a signal at the new node would stand on either piece.
+geom.FOLLOW_TOL = 0.5
+geom.FOLLOW_DOT = 0.995
+geom.FOLLOW_END = 1.0
+
+-- Whether the edge `to` runs along the edge `from` (both { a, b, ta, tb })
+-- where a signal stands on `from` at parameter `p`, the same way. Returns
+-- the parameter on `to`, or nil and why not. Every game computes it alike
+-- (geom.parameterAt; sqrt only).
+function geom.follows(from, p, to)
+	if type(p) ~= "number" or p ~= p or p < 0 or p > 1 then return nil, "a signal's place off its edge" end
+	local q = geom.hermitePos(from.a, from.ta, from.b, from.tb, p)
+	local u = geom.parameterAt(to.a, to.ta, to.b, to.tb, q[1], q[2])
+	local r = geom.hermitePos(to.a, to.ta, to.b, to.tb, u)
+	local dx, dy, dz = r[1] - q[1], r[2] - q[2], r[3] - q[3]
+	if dx * dx + dy * dy + dz * dz > geom.FOLLOW_TOL * geom.FOLLOW_TOL then
+		return nil, "a signal onto an edge that does not run where it stood"
+	end
+	for _, e in ipairs({ to.a, to.b }) do
+		local ex, ey = r[1] - e[1], r[2] - e[2]
+		if ex * ex + ey * ey < geom.FOLLOW_END * geom.FOLLOW_END then
+			return nil, "a signal where its track is cut"
+		end
+	end
+	local t1 = geom.hermiteTangent(from.a, from.ta, from.b, from.tb, p)
+	local t2 = geom.hermiteTangent(to.a, to.ta, to.b, to.tb, u)
+	local n1 = math.sqrt(t1[1] * t1[1] + t1[2] * t1[2] + t1[3] * t1[3])
+	local n2 = math.sqrt(t2[1] * t2[1] + t2[2] * t2[2] + t2[3] * t2[3])
+	if n1 == 0 or n2 == 0 then return nil, "a signal on an edge with no direction" end
+	local dot = (t1[1] * t2[1] + t1[2] * t2[2] + t1[3] * t2[3]) / (n1 * n2)
+	if dot < geom.FOLLOW_DOT then return nil, "a signal onto an edge that runs another way" end
+	return u
+end
+
 -- Nearest point of the curve to the cursor's forward viewing ray. The
 -- terrain hit lies beyond elevated track, so projecting that hit vertically
 -- onto the track can move a signal tens of metres along a bridge.

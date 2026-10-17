@@ -140,6 +140,18 @@ local function objectEntities(c)
 	return out
 end
 
+-- The same as { entity, type } pairs (EdgeObjectType), as the edge lists
+-- them.
+local function objectPairs(c)
+	local out = {}
+	for _, o in ipairs(list(get(c, "objects"))) do
+		local entity, kind = get(o, 1), get(o, 2)
+		if type(entity) ~= "number" or type(kind) ~= "number" then error("an edge object it cannot read", 0) end
+		out[#out + 1] = { entity, kind }
+	end
+	return out
+end
+
 -- An edge's decorations (noise barriers, alleys) by name, with the game's
 -- flag for each (BaseEdge.edgeDecorations: { decoration id, flag }).
 local function decorationsOf(c)
@@ -203,6 +215,7 @@ local function segment(seg)
 		template = resName(c.roadTemplate, "roadTemplate"),
 		style = styleName(c.roadStyle),
 		objects = objectEntities(c),
+		typed = objectPairs(c),
 		decorations = decorationsOf(c),
 		locked = get(c, "roadDevelopmentLocked") == true,
 		owned = type(player) == "number" and player >= 0,
@@ -220,13 +233,60 @@ local function segment(seg)
 	return e
 end
 
--- Stops and signals move with a build only on an edge it rebuilds in
--- place: a new edge between the same places, in the same direction, as a
--- removed one, listing exactly its objects (a modifier tool's, a road drawn
+-- The game's own track signals' constructions: its own resources ("::/"),
+-- in their folder. A waypoint is an edge object of the same type (SIGNAL)
+-- and lines name it; a mod's signal ("<mod>::/...") may be anything.
+-- Neither moves onto another edge until a room has shown it does what the
+-- game does.
+local SIGNAL_FOLDER = "::/infrastructure/signal/"
+
+-- A removed edge's geometry, as geom.lua takes it: the tangents the
+-- proposal lists for it, else its own.
+local function removedGeometry(r, posOf)
+	local ta, tb = vec3(get(r.comp, "tangent0")), vec3(get(r.comp, "tangent1"))
+	if (ta == nil or tb == nil) and type(r.entity) == "number" then
+		local c
+		pcall(function() c = api.engine.getComponent(r.entity, api.type.ComponentType.BASE_EDGE) end)
+		ta, tb = c and vec3(get(c, "tangent0")), c and vec3(get(c, "tangent1"))
+	end
+	local a, b = posOf(r.node0), posOf(r.node1)
+	if not (a and b and ta and tb and type(ta[1]) == "number" and type(tb[1]) == "number") then
+		error("a signal's track has no geometry here", 0)
+	end
+	return { a = a, b = b, ta = ta, tb = tb }
+end
+
+-- Where along the removed edge `r` its signal `entity` stands, and its
+-- construction; or raises.
+local function signalOn(entity)
+	local c
+	pcall(function() c = api.engine.getComponent(entity, api.type.ComponentType.EDGE_OBJECT) end)
+	local p, model = c and get(c, "param"), c and get(c, "edgeObjectConstruction")
+	if type(p) ~= "number" or type(model) ~= "string" or model == "" then
+		error("a signal it cannot read", 0)
+	end
+	if model:sub(1, #SIGNAL_FOLDER) ~= SIGNAL_FOLDER then
+		if model:find("waypoint", 1, true) then error("a build that moves a waypoint", 0) end
+		error("a build that moves a signal it does not know: " .. model, 0)
+	end
+	return p, model
+end
+
+-- Stops and signals move with a build on an edge it rebuilds in place: a
+-- new edge between the same places, in the same direction, as a removed
+-- one, listing exactly its objects (a modifier tool's, a road drawn
 -- through). Each game's build then gives the new edge the objects of the
--- one it replaces (tpf3mp/apply.lua). Anything else is refused: a new stop
--- or signal, one dropped, or one carried onto another edge.
-function engine.keptInPlace(capture)
+-- one it replaces (tpf3mp/apply.lua).
+-- A signal also moves onto another track the build makes where the track
+-- it stood on is cut (a track started or ended between its signals): the
+-- new track runs where the signal stands, the same way (geom.follows). The
+-- edge that takes it says which, by the removal, the place along it and its
+-- construction (`kept`, action::KeptSignal), as the tool decided.
+-- Anything else is refused: a new stop or signal, one dropped, a stop or a
+-- waypoint carried onto another edge. `connection` true for a
+-- construction's streets, which keep no signal on another edge (every
+-- game's build of them peels and refuses it, apply.lua keptSignals).
+function engine.keptInPlace(capture, connection)
 	local newPos = {}
 	for _, n in ipairs(capture.nodes) do newPos[n.id] = n.pos end
 	for _, n in ipairs(capture.removedNodes) do newPos[n.id] = n.pos end
@@ -239,7 +299,7 @@ function engine.keptInPlace(capture)
 			and math.abs(a[3] - b[3]) < 0.05
 	end
 	local function key(list) return table.concat(list, ",") end
-	local placed = {}
+	local placed, claimed, moving = {}, {}, {}
 	for _, e in ipairs(capture.edges) do
 		if #e.objects > 0 then
 			for _, o in ipairs(e.objects) do
@@ -253,12 +313,56 @@ function engine.keptInPlace(capture)
 					break
 				end
 			end
-			if found == nil then error("a build that moves a stop or signal", 0) end
-			placed[found] = true
+			if found == nil then
+				moving[#moving + 1] = e
+			else
+				placed[found] = true
+				for _, o in ipairs(e.objects) do claimed[o] = true end
+			end
 		end
 	end
-	for k, r in ipairs(capture.removed) do
-		if #r.objects > 0 and not placed[k] then error("a build that removes an edge with a stop or signal on it", 0) end
+	if #moving > 0 and connection then error("a build that moves a stop or signal", 0) end
+	if #moving > 0 then
+		-- Each object of a removed edge not rebuilt in place, by entity.
+		local from = {}
+		for k, r in ipairs(capture.removed) do
+			if not placed[k] then
+				for _, o in ipairs(r.typed or {}) do
+					if from[o[1]] ~= nil then error("an edge object on two edges", 0) end
+					from[o[1]] = { k = k, kind = o[2] }
+				end
+			end
+		end
+		local SIGNAL
+		pcall(function() SIGNAL = enum("EdgeObjectType").SIGNAL end)
+		local geometry = {}
+		for _, e in ipairs(moving) do
+			local to
+			e.kept = {}
+			for _, o in ipairs(e.typed or {}) do
+				local src = from[o[1]]
+				if src == nil or claimed[o[1]] or o[2] ~= src.kind then
+					error("a build that moves a stop or signal", 0)
+				end
+				local r = capture.removed[src.k]
+				if SIGNAL == nil or o[2] ~= SIGNAL or r.network ~= "Track" or e.network ~= "Track" then
+					error("a build that moves a stop or signal", 0)
+				end
+				local p, model = signalOn(o[1])
+				geometry[src.k] = geometry[src.k] or removedGeometry(r, posOf)
+				to = to or { a = posOf(e.node0), b = posOf(e.node1), ta = e.tangent0, tb = e.tangent1 }
+				if not (to.a and to.b) then error("a signal's new track has no place here", 0) end
+				local u, why = geom.follows(geometry[src.k], p, to)
+				if u == nil then error(why, 0) end
+				claimed[o[1]] = true
+				e.kept[#e.kept + 1] = { removal = src.k - 1, at = p, model = model }
+			end
+		end
+	end
+	for _, r in ipairs(capture.removed) do
+		for _, o in ipairs(r.objects) do
+			if not claimed[o] then error("a build that removes an edge with a stop or signal on it", 0) end
+		end
 	end
 end
 
@@ -320,12 +424,13 @@ function engine.fromProposal(proposal, network, constructions)
 	end
 	for _, seg in ipairs(removed) do
 		capture.removed[#capture.removed + 1] = { node0 = seg.comp.node0, node1 = seg.comp.node1,
-			network = networkOf(seg), objects = objectEntities(seg.comp) }
+			network = networkOf(seg), objects = objectEntities(seg.comp), typed = objectPairs(seg.comp),
+			entity = get(seg, "entity"), comp = seg.comp }
 	end
 	for _, n in ipairs(removedNodes) do
 		capture.removedNodes[#capture.removedNodes + 1] = { id = n.entity, pos = vec3(get(n.comp, "position")) }
 	end
-	engine.keptInPlace(capture)
+	engine.keptInPlace(capture, constructions == true)
 
 	-- The build's own kind: its first edge of the tool's network. The
 	-- template names the edge whole on TF3: its lanes, bus lanes and tram
