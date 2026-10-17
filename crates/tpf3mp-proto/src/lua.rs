@@ -1096,6 +1096,9 @@ mod tests {
                 .unwrap(),
                 BoundedVec::new(vec![Link {
                     precedence: None,
+                    position0: None,
+                    position1: None,
+                    kept: BoundedVec::default(),
 
                     from: 0,
                     to: 1,
@@ -1293,7 +1296,7 @@ mod tests {
              `Bulldoze`, `BuildConstruction`, `BuyVehicle`, `SellVehicle`, `CreateLine`, \
              `EditLine`, `AssignLine`, `PlaceStop`, `Terraform`, `CompanyOp`, `Loan`, `VehicleOp`, \
              `ReplaceVehicle`, `Prospect`, `NotificationSeen`, `ApplyRank`, `EditJunctions`, \
-             `Subsidy`, `Rename`, `Perk`, `Preserve`, `CalendarSpeed`, `PlaceSignals`"
+             `Subsidy`, `Rename`, `Perk`, `Preserve`, `CalendarSpeed`, `PlaceSignals`, `Paint`, `PlantAssets`, `SetCrossingType`"
         );
     }
 

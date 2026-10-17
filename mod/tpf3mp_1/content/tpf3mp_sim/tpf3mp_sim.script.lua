@@ -83,8 +83,8 @@
 function data()
 	local MOD = "tpf3mp_1"
 	-- Per Lua state: tried once, then kept.
-	local tried, link, apply, lanes, capture, registry, companies, progression, modbuild, previews =
-		false, nil, nil, nil, nil, nil, nil, nil, nil, nil
+	local tried, link, apply, lanes, capture, registry, companies, progression, modbuild, previews, toolchain =
+		false, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil
 	-- Whether this state is applying the room's actions (in postUpdate);
 	-- the scripts' follow-up builds in the GUI's state, and whether their
 	-- wrapper is on there (tpf3mp/modbuild.lua).
@@ -252,12 +252,70 @@ function data()
 
 	-- The snapshot of a terrain tool's click, from its stroke as the hook read
 	-- it (tpf3mp_native.built): its Terraform actions, one a band of rows.
+	-- The level crossing window's click (crates/tpf3mp-hook/src/crossings.rs,
+	-- tpf3mp/crossings.lua): its SetCrossingType, or why the room does not
+	-- carry it. Either way the player is told when it does not go to the
+	-- room: the window itself shows nothing.
+	local CROSSING_WHY = "crossing window: "
+	local crossingsModule = nil
+	local function crossingEdit(native, whyNot)
+		local shape = "crossing window"
+		if native == nil then return { why = tostring(whyNot):sub(#CROSSING_WHY + 1), shape = shape, tell = true } end
+		if crossingsModule == nil then
+			local ok, m = pcall(ug_require, MOD .. "::/scripts/tpf3mp/crossings.lua")
+			crossingsModule = ok and type(m) == "table" and m or false
+		end
+		if not crossingsModule then return { why = "the crossings module does not load", shape = shape, tell = true } end
+		local action, why = crossingsModule.capture(native)
+		return { action = action, why = why, shape = shape, tell = true }
+	end
+	-- Tells the player, in the game bar (gui/tpf3mp/tpf3mp.script.lua), that
+	-- a click of theirs did not go to the room: under NOTICE_NOTE, a count
+	-- first, so the same refusal twice is told twice.
+	local NOTICE_NOTE = "tpf3mp.notice"
+	local noticed = 0
+	local function tell(l, why)
+		noticed = noticed + 1
+		local text = "Not in multiplayer yet: changing a level crossing's type"
+		if why and why ~= "" then text = text .. " (" .. tostring(why) .. ")" end
+		l:note(NOTICE_NOTE, tostring(noticed) .. "	" .. text)
+	end
+
 	local function terraformEdit(built)
 		local actions, why = capture.terraform(built)
 		if not actions then return { why = "the terrain tool's stroke: " .. tostring(why), shape = "terrain tool" } end
 		local said = {}
 		for i, a in ipairs(actions) do
 			said[i] = "terraform handed to the room: " .. capture.terraformSummary(a.Terraform)
+				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
+		end
+		return { actions = actions, said = said, shape = "terrain tool" }
+	end
+
+	-- The snapshot of a terrain painter's click: the Paint actions the hook
+	-- made of its stroke (tpf3mp_native.built: `{ paint = { a1, a2, ... } }`),
+	-- one a band of rows.
+	local function paintEdit(built)
+		local actions = built.paint
+		if type(actions) ~= "table" or #actions == 0 then
+			return { why = "the terrain painter's stroke read as nothing", shape = "terrain tool" }
+		end
+		local said = {}
+		for i, a in ipairs(actions) do
+			said[i] = "paint handed to the room: " .. capture.paintSummary(a.Paint)
+				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
+		end
+		return { actions = actions, said = said, shape = "terrain tool" }
+	end
+
+	-- The snapshot of an asset brush's click: its PlantAssets actions
+	-- (tpf3mp/capture.lua, capture.assetStroke), from the stroke the hook read.
+	local function assetEdit(built)
+		local actions, why = capture.assetStroke(built.assets)
+		if not actions then return { why = "the asset brush's stroke: " .. tostring(why), shape = "terrain tool" } end
+		local said = {}
+		for i, a in ipairs(actions) do
+			said[i] = "asset brush handed to the room: " .. capture.assetSummary(a.PlantAssets)
 				.. (#actions > 1 and (" (part " .. i .. " of " .. #actions .. ")") or "")
 		end
 		return { actions = actions, said = said, shape = "terrain tool" }
@@ -398,6 +456,8 @@ function data()
 					apply.log = function(line) linked:log(line) end
 					-- A terraform's grid goes to the hook (tpf3mp/apply.lua).
 					apply.terrain = function(grid) return linked:terrain(grid) end
+					-- A level crossing's type goes the same way (tpf3mp/apply.lua).
+					apply.crossing = function(entity, index) return linked:crossing(entity, index) end
 				end
 				lanes = lanesModule
 				capture = captureModule
@@ -405,6 +465,10 @@ function data()
 				-- so a mod without them still builds through the room.
 				local okPreviews, previewsModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/previews.lua")
 				previews = okPreviews and type(previewsModule) == "table" and previewsModule or nil
+				-- The street and track tools continue from what the room
+				-- built (tpf3mp/toolchain.lua): optional too.
+				local okChain, chainModule = pcall(ug_require, MOD .. "::/scripts/tpf3mp/toolchain.lua")
+				toolchain = okChain and type(chainModule) == "table" and chainModule or nil
 				registry = registryModule
 				companies = companiesModule
 				progression = progressionModule
@@ -919,14 +983,23 @@ function data()
 			if previews and handled < clicks then previews.hidden(l) end
 			while handled < clicks do
 				local seen = snapshots[handled]
+				local ticket = nil
 				-- The module editor's click: its build as the hook read it,
 				-- whatever preview another tool showed before.
 				local native, whyNot = l:built(handled)
 				if type(native) == "table" and native.terrain ~= nil then
 					seen = terraformEdit(native)
+				elseif type(native) == "table" and native.paint ~= nil then
+					seen = paintEdit(native)
+				elseif type(native) == "table" and native.assets ~= nil then
+					seen = assetEdit(native)
 				elseif native == nil and type(whyNot) == "string" and whyNot:find("terrain tool: ", 1, true) == 1 then
 					-- The painter's, the asset brush's, or a stroke that did not read.
 					seen = { why = whyNot, shape = "terrain tool" }
+				elseif type(native) == "table" and native.crossingType then
+					seen = crossingEdit(native)
+				elseif native == nil and type(whyNot) == "string" and whyNot:find(CROSSING_WHY, 1, true) == 1 then
+					seen = crossingEdit(nil, whyNot)
 				elseif native ~= nil or whyNot ~= nil then
 					seen = moduleEdit(native, whyNot)
 				end
@@ -936,30 +1009,40 @@ function data()
 						if ok then
 							l:log(seen.said[i])
 						else
-							l:log("the player's terraform was not handed to the room: " .. tostring(why))
+							l:log("the player's terrain stroke was not handed to the room: " .. tostring(why))
 							break
 						end
 					end
 				elseif seen and seen.action then
 					local ok, why = l:command(seen.action)
 					if ok then
+						ticket = why
 						l:log("handed the player's build to the room"
 							.. (seen.shape and (" [" .. seen.shape .. "]") or ""))
 						if seen.upgrade then l:log("upgrade handed to the room: " .. seen.upgrade) end
 					else
 						l:log("the player's build was not handed to the room: " .. tostring(why))
+						if seen.tell then tell(l, why) end
 					end
 				else
 					l:log("stopped a build the room cannot carry: "
 						.. tostring(seen and seen.why or "no proposal seen (a tool that tells game scripts nothing)")
 						.. ((seen and seen.shape) and (" [" .. seen.shape .. "]") or ""))
+					if seen and seen.tell then tell(l, seen.why) end
 				end
+				-- The street or track tool continues from what the room
+				-- builds for this click, if it was handed over (the hook
+				-- knows whether it was that tool's).
+				l:chainClick(handled, ticket)
 				snapshots[handled] = nil
 				handled = handled + 1
 			end
 			for count in pairs(snapshots) do
 				if count < handled then snapshots[count] = nil end
 			end
+			-- The edge the room built for the last street or track click,
+			-- checked in this state each frame (tpf3mp/toolchain.lua).
+			if toolchain then toolchain.frame(l, api) end
 		end,
 
 		handleEvent = function(_params, state, _src, id, name, param)
