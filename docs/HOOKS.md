@@ -2976,7 +2976,10 @@ construction's window its edits:
   moves or removes an edge with a stop or signal on it, or that places
   stops, signals or constructions, is refused; except a track cut between
   its signals (started or ended there), each signal kept on the piece the
-  tool put it on (`Link::kept`, BUILDING.md; behind `splitSignals`).
+  tool put it on (`Link::kept`, BUILDING.md; behind `splitSignals`), and
+  a signal the tool puts back where it stood on a track it redraws around
+  a node it moves, kept as the old signal on that piece (behind
+  `refitSignals`).
 - **The bulldozer** (`bulldozer`): its proposal removes one construction
   (with the construction's own entrance edge and node) or edges of one
   network (with the nodes they leave on their own). It becomes a

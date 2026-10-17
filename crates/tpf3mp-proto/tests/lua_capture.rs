@@ -1076,6 +1076,211 @@ fn a_refit_signal_is_described_with_what_it_removes() {
     );
 }
 
+/// As [`track_split_west`], with the tool's `edgeObjectsToAdd` and
+/// `edgeObjectsToRemove`.
+fn track_refit(
+    old: &str,
+    south: &str,
+    north: &str,
+    west: &str,
+    adds: &str,
+    removes: &str,
+) -> String {
+    track_split_west(old, south, north, west).replace(
+        "removedNodes = {},",
+        &format!(
+            "removedNodes = {{}}, edgeObjectsToAdd = {adds}, edgeObjectsToRemove = {removes},"
+        ),
+    )
+}
+
+/// As [`capture_track`], with acceptance.lua's refitSignals on.
+fn capture_refit(street: &str) -> Result<LuaValue, String> {
+    capture_with(
+        street,
+        "(function() require('tpf3mp.acceptance').refitSignals = true          return engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Track') end)()",
+    )
+}
+
+/// The track tool's record of a new signal, as build 40420 lists it.
+const NEW_SIGNAL: &str = "{ { resultEntity = -400000000, category = 2, left = false, oneWay = false, playerEntity = 3892, name = '' } }";
+
+/// A track started close to a node of a track with signals: the tool
+/// replaces the signal on the edge whose node it removes with a new one on
+/// the piece that goes on from that edge's other end (run-1017-033551). The
+/// room keeps the old signal there, as for a cut: the same action, the
+/// signal named by where it stood, its construction and settings its own.
+#[test]
+fn a_signal_the_tool_puts_back_is_kept_on_its_piece() {
+    let refit = track_refit(
+        "{ { 556, 2 } }",
+        "{}",
+        "{ { -400000000, 2 } }",
+        "{}",
+        NEW_SIGNAL,
+        "{ 556 }",
+    );
+    let decoded = decode(capture_refit(&refit).unwrap());
+    let kept =
+        decode(capture_track(&track_split("{ { 556, 2 } }", "{}", "{ { 556, 2 } }")).unwrap());
+    assert_eq!(decoded, kept, "the same as the signal kept by its entity");
+    let Action::BuildTrack(track) = &decoded else {
+        panic!("{decoded:?}")
+    };
+    assert_eq!(track.polyline.links[1].kept.len(), 1);
+    assert_eq!(track.polyline.links[1].kept[0].at, Fraction(750_000));
+    // A mod's signal too.
+    let modded = decode(
+        capture_refit(&track_refit(
+            "{ { 559, 2 } }",
+            "{}",
+            "{ { -400000000, 2 } }",
+            "{}",
+            NEW_SIGNAL,
+            "{ 559 }",
+        ))
+        .unwrap(),
+    );
+    let Action::BuildTrack(modded) = &modded else {
+        panic!("{modded:?}")
+    };
+    assert_eq!(
+        modded.polyline.links[1].kept[0].model.as_str(),
+        "custom_signals_1::/infrastructure/signal/custom.con"
+    );
+    // Off until its two-player game: refused, though the room carries a
+    // split's kept signals.
+    let gate = capture_track(&refit).unwrap_err();
+    assert!(
+        gate.contains("puts back awaits two-player game acceptance"),
+        "{gate}"
+    );
+}
+
+#[test]
+fn a_signal_the_tool_replaces_otherwise_is_refused() {
+    let refused = |street: String, why: &str| {
+        let got = capture_refit(&street).unwrap_err();
+        assert!(got.contains(why), "{got}");
+    };
+    let north = "{ { -400000000, 2 } }";
+    // A new signal with nothing removed, or one removed with none added.
+    refused(
+        track_refit("{}", "{}", north, "{}", NEW_SIGNAL, "{}"),
+        "a build with a stop or signal",
+    );
+    refused(
+        track_refit("{ { 556, 2 } }", "{}", "{}", "{}", "{}", "{ 556 }"),
+        "a build with a stop or signal",
+    );
+    // A waypoint's or a stop's record.
+    for category in [0, 1] {
+        refused(
+            track_refit(
+                "{ { 556, 2 } }",
+                "{}",
+                north,
+                "{}",
+                &NEW_SIGNAL.replace("category = 2", &format!("category = {category}")),
+                "{ 556 }",
+            ),
+            "a build with a stop or signal",
+        );
+    }
+    // A removed signal on no edge the build removes.
+    refused(
+        track_refit("{}", "{}", north, "{}", NEW_SIGNAL, "{ 558 }"),
+        "a build with a stop or signal",
+    );
+    // The new signal on the new track west of the cut, which does not go on
+    // from the old one.
+    refused(
+        track_refit("{ { 556, 2 } }", "{}", "{}", north, NEW_SIGNAL, "{ 556 }"),
+        "replaces a signal elsewhere",
+    );
+    // The record's signal on no new edge, or listed under another entity.
+    refused(
+        track_refit(
+            "{ { 556, 2 } }",
+            "{}",
+            "{ { -400000001, 2 } }",
+            "{}",
+            NEW_SIGNAL,
+            "{ 556 }",
+        ),
+        "a build with a stop or signal",
+    );
+    // The signal it removes also kept by its entity.
+    refused(
+        track_refit(
+            "{ { 556, 2 } }",
+            "{ { 556, 2 } }",
+            north,
+            "{}",
+            NEW_SIGNAL,
+            "{ 556 }",
+        ),
+        "a build with a stop or signal",
+    );
+    // A waypoint put back: lines name it.
+    refused(
+        track_refit("{ { 557, 2 } }", "{}", north, "{}", NEW_SIGNAL, "{ 557 }"),
+        "moves a waypoint",
+    );
+    // Two signals of one edge for two new ones on one piece: which is which,
+    // the proposal does not say.
+    refused(
+        track_refit(
+            "{ { 556, 2 }, { 558, 2 } }",
+            "{}",
+            "{ { -400000000, 2 }, { -400000001, 2 } }",
+            "{}",
+            "{ { resultEntity = -400000000, category = 2 }, { resultEntity = -400000001, category = 2 } }",
+            "{ 556, 558 }",
+        ),
+        "cannot tell apart",
+    );
+    // On the piece before the cut, which goes on from the old track's end
+    // but not past where the signal stood, three quarters of the way north.
+    refused(
+        track_refit(
+            "{ { 556, 2 } }",
+            "{ { -400000000, 2 } }",
+            "{}",
+            "{}",
+            NEW_SIGNAL,
+            "{ 556 }",
+        ),
+        "replaces a signal elsewhere",
+    );
+    // On the edge rebuilt between the old one's own nodes: a waypoint is
+    // refused before anything else, a signal as not put back on a piece.
+    let in_place = |old: u32| {
+        format!(
+            "{{ addedNodes = {{}},
+                addedSegments = {{ {{ entity = -3, type = 1, comp = {{ node0 = 30, node1 = 31,
+                    tangent0 = v(0, 60, 0), tangent1 = v(0, 60, 0), type = 0, typeIndex = -1,
+                    roadTemplate = 'track/standard.track_template', roadStyle = '',
+                    objects = {{ {{ -400000000, 2 }} }} }} }} }},
+                removedSegments = {{ {{ entity = 110, type = 1, comp = {{ node0 = 30, node1 = 31,
+                    tangent0 = v(0, 60, 0), tangent1 = v(0, 60, 0), objects = {{ {{ {old}, 2 }} }} }} }} }},
+                removedNodes = {{}}, edgeObjectsToAdd = {NEW_SIGNAL}, edgeObjectsToRemove = {{ {old} }} }}"
+        )
+    };
+    refused(in_place(557), "moves a waypoint");
+    refused(in_place(556), "replaces a signal elsewhere");
+    // A construction's streets keep none.
+    let connection = capture_with(
+        &track_refit("{ { 556, 2 } }", "{}", north, "{}", NEW_SIGNAL, "{ 556 }"),
+        "engine.fromProposal({ toAdd = {}, toRemove = {}, proposal = street }, nil, true)",
+    )
+    .unwrap_err();
+    assert!(
+        connection.contains("a build with a stop or signal"),
+        "{connection}"
+    );
+}
+
 /// Runs the asset bulldozer's capture (`engine.captureAssets`) over three
 /// asset groups as build 40408 holds them, and returns the action table,
 /// or why it was refused. 50 holds four firs as thin instances; 51 a fir

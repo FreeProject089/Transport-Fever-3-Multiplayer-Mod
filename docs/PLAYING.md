@@ -613,8 +613,12 @@ protected folder such as Program Files.
   or ended between a track's signals keeps each signal on its piece of the
   cut track once its two-player check passes (`splitSignals`); until then
   it says "splitSignals awaits two-player game acceptance". Mods' signals
-  go too; a waypoint on the cut track still stops the build, and so does a
-  cut where the tool places a new signal itself (near a node it moves).
+  go too; a waypoint on the cut track still stops the build. A track
+  started close to a node of a track with signals, where the tool moves
+  that node and puts the signal back on the redrawn track, keeps the old
+  signal there once its own two-player check passes (`refitSignals`);
+  until then it says "a signal the track tool puts back awaits two-player
+  game acceptance".
 
 ## Playtesting before the game is out
 
