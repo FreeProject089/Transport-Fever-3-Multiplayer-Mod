@@ -733,8 +733,8 @@ positions, the originator's decisions included:
   between the signal's edge's own nodes, and that runs where the signal
   stood, the same way (`geom.runsThrough`); anything else is refused as a
   build with a stop or signal. Captured only behind `acceptance.lua`'s
-  `refitSignals`, off until a two-player game shows every game keeps the
-  signal where it stood;
+  `refitSignals`, on since a two-player game showed every game keeps the
+  signal where it stood (run-1017-refit2, build 40420);
 - `removals`: existing edges the build removes, of either network, by their
   ends: an upgrade's, a span the build passes under, the stretch the tool
   rebuilds around a new junction or crossing. A split parent is no removal;

@@ -1148,9 +1148,13 @@ fn a_signal_the_tool_puts_back_is_kept_on_its_piece() {
         modded.polyline.links[1].kept[0].model.as_str(),
         "custom_signals_1::/infrastructure/signal/custom.con"
     );
-    // Off until its two-player game: refused, though the room carries a
-    // split's kept signals.
-    let gate = capture_track(&refit).unwrap_err();
+    // With its gate off: refused, though the room carries a split's kept
+    // signals.
+    let gate = capture_with(
+        &refit,
+        "(function() require('tpf3mp.acceptance').refitSignals = false return engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Track') end)()",
+    )
+    .unwrap_err();
     assert!(
         gate.contains("puts back awaits two-player game acceptance"),
         "{gate}"
