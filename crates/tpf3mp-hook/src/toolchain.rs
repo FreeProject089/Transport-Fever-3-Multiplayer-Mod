@@ -83,6 +83,13 @@ pub const MAX_EDGES: usize = 4096;
 pub const SNAP_SIZE: usize = 0x34;
 /// The direction's size, as `StartAt` reads it.
 pub const DIRECTION_SIZE: usize = 0x14;
+/// Explicit opt-in until ordinary-start input cancellation and track
+/// direction match the native callback in a real-game check.
+pub const ENV: &str = "TPF3MP_TOOL_CONTINUE";
+
+fn wanted(value: Option<&str>) -> bool {
+    value == Some("1")
+}
 
 /// A click of the street or track tool, as its callback holds it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -417,6 +424,22 @@ impl Chain {
         });
     }
 
+    /// The game's proposal reset follows its own click before `Add` calls
+    /// [`before_add`]. Any later reset of this builder withdraws its kept
+    /// click, including an abort before the room replies.
+    fn reset(&mut self, builder: usize) -> bool {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.click.tool == builder)
+        {
+            self.pending = None;
+            true
+        } else {
+            false
+        }
+    }
+
     /// The GUI handed click `number` to the room with `ticket`, or did not
     /// hand it over (`None`).
     pub fn bind(&mut self, number: u64, ticket: Option<u64>) -> Option<&'static str> {
@@ -705,6 +728,21 @@ pub fn before_add(return_address: usize, callback: usize, number: u64) {
     rearm(&chain);
 }
 
+/// Called by the already-installed proposal-reset detour. A reset after the
+/// click's Add callback means the player (or game) abandoned that proposal;
+/// continuing it after the room replies would revive an old start point.
+pub fn proposal_reset(builder: usize) {
+    let reset = {
+        let mut chain = chain();
+        let reset = chain.reset(builder);
+        rearm(&chain);
+        reset
+    };
+    if reset {
+        dropped(Some("the tool's proposal was reset"));
+    }
+}
+
 /// The mod's GUI handed click `number` to the room with `ticket`, or did
 /// not (`None`).
 pub fn bind(number: u64, ticket: Option<u64>) {
@@ -926,6 +964,11 @@ pub fn check(
 /// Installs the tools' continuing where the profile has every target;
 /// returns the hook log's line.
 pub fn install(at: &dyn Fn(&str) -> Result<usize, String>, add: usize) -> String {
+    if !wanted(std::env::var(ENV).ok().as_deref()) {
+        return format!(
+            "the street and track tools' continuation is off ({ENV}=1 opts in for testing)"
+        );
+    }
     let code = |address: usize| -> Option<[u8; 5]> {
         if !crate::image::readable(address, 5) {
             return None;
@@ -955,6 +998,14 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn continuation_requires_explicit_test_opt_in() {
+        assert!(!wanted(None));
+        assert!(!wanted(Some("0")));
+        assert!(!wanted(Some("true")));
+        assert!(wanted(Some("1")));
+    }
 
     #[derive(Default)]
     struct Fake {
@@ -1229,6 +1280,32 @@ mod tests {
             chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]),
             None
         );
+    }
+
+    #[test]
+    fn a_later_proposal_reset_cancels_continuation_before_or_after_room_ack() {
+        let now = Instant::now();
+        let mut chain = Chain::default();
+        // The build's own reset happens before Add captures a click.
+        assert!(!chain.reset(TOOL));
+        chain.click(7, Some(click(true, 1)), now, 0);
+        assert!(!chain.reset(TOOL + 1), "another builder cannot cancel it");
+        chain.bind(7, Some(900));
+        assert!(
+            chain.reset(TOOL),
+            "a later native reset cancels while ack is pending"
+        );
+        assert_eq!(chain.ordered(), None);
+        chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]);
+        chain.seen(11, 1, 0, 1);
+        assert_eq!(
+            chain.step(TOOL, 1, now, true, &|_| Some(tool_now())),
+            Step::Nothing
+        );
+
+        built(&mut chain, now);
+        assert!(chain.reset(TOOL), "a reset after ack also cancels");
+        assert_eq!(chain.poll(now, true), (None, None));
     }
 
     #[test]

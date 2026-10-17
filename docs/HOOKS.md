@@ -3173,7 +3173,11 @@ construction's window its edits:
   the model name `modelRep` gives is the one `EdgeObject.model` takes, and
   that the tool's click is `playerInitiated`.
 
-**The street and track tools continue** from the segment the room built,
+**The street and track tools' continuation is test-only**
+(`TPF3MP_TOOL_CONTINUE=1`) until an ordinary-start real-game check covers
+input cancellation and native track direction. With the default setting,
+the game leaves the tool at its normal start-point picker after the room
+builds a segment. With the opt-in, the tools continue from that segment,
 as they do from the one just built in single player
 (`crates/tpf3mp-hook/src/toolchain.rs`, `scripts/tpf3mp/toolchain.lua`).
 Read on 40420 with tpfre (the same code, at the same places, on 40408 and
@@ -3221,6 +3225,7 @@ never hands the callback a result of its own:
 
 The click is dropped, and the tool left as the game left it, when the
 player starts a segment (even one let go again before the room built),
+the native builder resets its proposal after the click was captured,
 the tool misses frames (closed), the room
 refuses or does not apply the build or applies it without such an edge,
 the game leaves the room, or 15 s pass. The direction rule is the
@@ -3229,11 +3234,12 @@ difference: the game counts the other network's edges that also have
 `BaseEdge`'s field `+0x90` clear, the hook all of them. (Whether the
 click's end snapped to something does not matter: a track snapped to a
 street beside it, as a guide, still goes on in its direction.)
-A right-click while the click waits does not cancel it: with no start
-point, the tool's own input handler passes a right-click on
-(`UI::StreetBuilder` vf2, 0x581479..0x5814d7), so the hook sees no
-abort; whatever the game then does with it, a tool it closes misses
-frames and drops the click. "Closed" is three GUI frames without the
+A right-click while the click waits passes through the tool's own input
+handler with no start point (`UI::StreetBuilder` vf2, 0x581479..0x5814d7).
+The native proposal-reset detour now drops a kept click if that path resets
+the builder; closing the tool also drops it after missed frames. Whether
+the parent handler can leave the tool open without resetting remains to be
+checked in game, so default continuation stays off. "Closed" is three GUI frames without the
 tool's frame, counted from the click's own; a tool closed and opened
 again faster than that is not seen.
 Profile targets, all optional: `StreetBuilder::UpdateEngine/Add call`,
