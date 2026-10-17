@@ -454,22 +454,95 @@ function junctions.into(proposal, changes, preserve, mine, gone, narrow)
 	for id in pairs(gone or {}) do w.removed[id] = true end
 	local removedNodes = {}
 	for _, id in ipairs(list(s.nodesToRemove)) do removedNodes[id] = true end
-	local allEdges, allNodes = {}, {}
+	-- Every node of either network with its position, and the edges the
+	-- network's map lists at it; an edge is read (w.edge) only where a
+	-- reference names a place at one of its ends. Every edge is listed at
+	-- both its nodes, and one that matches a reference has a node near the
+	-- reference's first end, so the edges at those nodes are every edge the
+	-- whole world could match (2026-10-16: reading every edge of the world
+	-- took ~600 ms of every road build that rebuilt an edge in a late game,
+	-- a street upgrade included; its ~10,000 nodes alone take 40-65 ms).
+	-- A node's position is read plainly where it is three finite numbers,
+	-- as w.position reads it; anything else goes through w.position, which
+	-- refuses it as before (its guarded reads cost ~20 us a node).
+	local positions = {}
+	local BASE_NODE = api.type.ComponentType.BASE_NODE
+	local function at(node)
+		local p = positions[node]
+		if p then return p end
+		local read, x, y, z = pcall(function()
+			local c = api.engine.getComponent(node, BASE_NODE)
+			local v = c and c.position
+			if v == nil then return nil end
+			return v.x, v.y, v.z
+		end)
+		if read and type(x) == "number" and type(y) == "number" and type(z) == "number"
+			and x == x and y == y and z == z and math.abs(x) ~= math.huge and math.abs(y) ~= math.huge
+			and math.abs(z) ~= math.huge then
+			p = { x = x, y = y, z = z }
+		else
+			p = w.position(node)
+		end
+		positions[node] = p
+		return p
+	end
+	-- The nodes by the metre square their position is in, so a place's
+	-- nodes are looked for in the squares within `near` of it only (a
+	-- junction's every turn and crosswalk names two places): those 3 mm
+	-- around it, a millimetre more than `near` takes, for rounding. `+ 0`
+	-- makes -0 the square of 0.
+	local cells = {}
+	local function cell(x, y) return (math.floor(x) + 0) .. "," .. (math.floor(y) + 0) end
+	local maps, allNodes = {}, {}
 	for _, kind in ipairs({ "Street", "Track" }) do
-		for node, ids in pairs(api.engine.system.streetSystem["getNode2" .. kind .. "EdgeMap"]()) do
+		maps[kind] = api.engine.system.streetSystem["getNode2" .. kind .. "EdgeMap"]()
+		for node, ids in pairs(maps[kind]) do
+			local p = at(node)
 			if not removedNodes[node] then
-				allNodes[#allNodes+1] = { id = node, network = kind, at = w.position(node) }
+				allNodes[#allNodes+1] = { id = node, network = kind, at = p }
 			end
-			for _, id in ipairs(list(ids)) do
-				if not w.removed[id] and not allEdges[id] then allEdges[id] = { ref = w.edge(id), comp = component(id,"BASE_EDGE") } end
-			end
+			local key = cell(p.x, p.y)
+			local bucket = cells[key]
+			if bucket == nil then bucket = {} cells[key] = bucket end
+			bucket[#bucket+1] = { at = p, ids = ids }
 		end
 	end
 	for id, p in pairs(w.nodes) do
 		local n = w.node(id)
 		allNodes[#allNodes+1] = { id = id, network = n.network, at = p }
 	end
-	for id, e in pairs(w.edges) do allEdges[id] = { ref = w.edge(id), comp = e.comp } end
+	local proposedEdges, read = {}, {}
+	for id, e in pairs(w.edges) do proposedEdges[id] = { ref = w.edge(id), comp = e.comp } end
+	-- The edges at the nodes near `p` that stay, and the proposal's own.
+	local function edgesAt(p)
+		local out, keys = {}, {}
+		for _, x in ipairs({ p.x - 0.003, p.x + 0.003 }) do
+			for _, y in ipairs({ p.y - 0.003, p.y + 0.003 }) do
+				local key = cell(x, y)
+				if not keys[key] then keys[key] = true keys[#keys+1] = key end
+			end
+		end
+		local nodes = {}
+		for _, key in ipairs(keys) do
+			for _, n in ipairs(cells[key] or {}) do nodes[#nodes+1] = n end
+		end
+		for _, n in ipairs(nodes) do
+			if near(n.at, p) then
+				for _, id in ipairs(list(n.ids)) do
+					if not w.removed[id] and not out[id] then
+						local e = read[id]
+						if e == nil then
+							e = { ref = w.edge(id), comp = component(id, "BASE_EDGE") }
+							read[id] = e
+						end
+						out[id] = e
+					end
+				end
+			end
+		end
+		for id, e in pairs(proposedEdges) do out[id] = e end
+		return out
+	end
 	local function resolveNode(ref)
 		local found
 		for _, n in ipairs(allNodes) do
@@ -483,7 +556,7 @@ function junctions.into(proposal, changes, preserve, mine, gone, narrow)
 	end
 	local function resolveEdge(ref, allowMissing)
 		local found, comp
-		for id, e in pairs(allEdges) do
+		for id, e in pairs(edgesAt(ref.ends.a)) do
 			local a, b = e.ref.ends, ref.ends
 			if ref.network == e.ref.network and ((near(a.a,b.a) and near(a.b,b.b)) or (near(a.a,b.b) and near(a.b,b.a))) then
 				if found then error("ambiguous junction edge", 0) end
@@ -579,7 +652,7 @@ function junctions.into(proposal, changes, preserve, mine, gone, narrow)
 					for candidate,e in pairs(w.edges) do
 						local n0,n1 = e.comp.node0,e.comp.node1
 						if n0 == node or n1 == node then
-							local er = allEdges[candidate].ref
+							local er = proposedEdges[candidate].ref
 							local x,y,z = direction(e.comp)
 							local l = math.sqrt(x*x+y*y+z*z)
 							if er.network == ref.network and len > 0 and l > 0 and (x*dx+y*dy+z*dz)/(l*len) > 0.99999 then

@@ -1317,6 +1317,11 @@ fn engine() -> (Lua, Table) {
         .exec()
         .unwrap();
     let script: Table = lua.load("return data()").eval().unwrap();
+    // How long an action took depends on the machine: no test's log has
+    // the line a slow one adds, but the one that asks for it.
+    lua.load("ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua').SLOW_MS = math.huge")
+        .exec()
+        .unwrap();
     // One simulation update as the game runs it: update, then postUpdate
     // with what update returned, and not when that is nil.
     lua.globals().set("SCRIPT", script.clone()).unwrap();
@@ -1416,6 +1421,54 @@ fn junction_tools_round_trip_through_the_wire_and_apply_with_each_games_ids() {
             .eval()
             .unwrap();
         assert_eq!(ids, [1, 1, 101, 102, 103, 40].map(|n| n + offset));
+    }
+}
+
+/// A junction's settings name its node and edges by places in millimetres;
+/// in another game a node may lie a fraction of a millimetre off, across a
+/// metre line from the place named (the replay looks for edges in the
+/// metre squares around it): still found, the same settings built.
+#[test]
+fn junction_edges_are_found_across_a_metre_line() {
+    use tpf3mp_proto::{
+        action::Action,
+        lua::{action_from_lua, action_to_lua},
+    };
+    let source = junction_game(0);
+    let captured: mlua::Value = source
+        .load("return C.windowBuild(nil,PROPOSAL)")
+        .eval()
+        .unwrap();
+    let action = action_from_lua(&common::tree(&captured)).unwrap();
+    let portable = Action::from_payload(&action.to_payload().unwrap()).unwrap();
+    for shift in [0.0, -0.0003, 0.0003] {
+        let replica = junction_game(0);
+        replica.globals().set("SHIFT", shift).unwrap();
+        // Every node moved: the junction at the origin into the squares
+        // below or above, its arms' ends with it.
+        replica
+            .load("for _, p in pairs(NODES) do p.x = p.x + SHIFT p.y = p.y + SHIFT end")
+            .exec()
+            .unwrap();
+        replica
+            .globals()
+            .set(
+                "ACTION",
+                lua_value(&replica, &action_to_lua(&portable).unwrap()),
+            )
+            .unwrap();
+        let segments: Vec<u32> = replica
+            .load(
+                r#"
+            HOOK.batch = {ACTION} UPDATE({},STATE,0.2)
+            assert(#SENT==1, table.concat(HOOK.logged,'\n'))
+            local c = SENT[1].proposal.streetProposal.nodeConfigsToAdd[1].comp
+            return {c.laneConnections[1].segment0, c.laneConnections[1].segment1, c.crosswalks[1], c.crosswalks[2]}
+        "#,
+            )
+            .eval()
+            .unwrap_or_else(|error| panic!("{shift}: {error}"));
+        assert_eq!(segments, [101, 102, 101, 103], "shift {shift}");
     }
 }
 
@@ -6790,6 +6843,224 @@ fn the_game_script_rebuilds_a_street_through_a_new_junction() {
             .ends_with("removal 2 has a stop or signal on it and no link rebuilds it"),
         "{logged:?}"
     );
+}
+
+/// The engine's octree as the fake network holds it: each edge where its
+/// end nodes are, found by any box that reaches its span (twice, as the
+/// game may name one more than once). `OCTREE` 'none' leaves the game
+/// without one, 'empty' has one that holds nothing yet (a network built
+/// earlier in the same update). WHOLE counts the reads of a whole network.
+const FAKE_OCTREE: &str = r#"
+api.type.Box3 = { new = function(a, b) return { min = a, max = b } end }
+QUERIES, WHOLE = 0, 0
+if OCTREE ~= 'none' then
+    api.engine.system.octreeSystem = { findIntersectingEntities = function(box, visit)
+        QUERIES = QUERIES + 1
+        if OCTREE == 'empty' then return end
+        for e, c in pairs(EDGES) do
+            local a, b = NODES[c.node0], NODES[c.node1]
+            if a and b and math.max(a.x, b.x) >= box.min.x and math.min(a.x, b.x) <= box.max.x
+                and math.max(a.y, b.y) >= box.min.y and math.min(a.y, b.y) <= box.max.y then
+                visit(e)
+                visit(e)
+            end
+        end
+    end }
+end
+local street = api.engine.system.streetSystem
+local streets, tracks = street.getNode2StreetEdgeMap, street.getNode2TrackEdgeMap
+street.getNode2StreetEdgeMap = function() WHOLE = WHOLE + 1 return streets() end
+street.getNode2TrackEdgeMap = function() WHOLE = WHOLE + 1 return tracks() end
+"#;
+
+/// A street rebuilt through a new junction keeps the settings of the
+/// junctions at the ends of the edges it removes, and reads only the edges
+/// at the nodes those settings name, never every edge of the world
+/// (2026-10-16: ~600 ms of every such build in a late game, a street
+/// upgrade included). What it builds is what reading every edge built; an
+/// octree changes nothing in a build the room applies.
+#[test]
+fn a_rebuilt_street_reads_only_the_edges_its_junctions_name() {
+    let mut built = Vec::new();
+    for octree in ["none", "spatial"] {
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        // The country street through node 11: edges 100 (8-11) and 102
+        // (11-9); a town street 103 on from 9 to 12. The junction at 9 turns
+        // from the removed 102 onto 103, which stays. A street 200 far away.
+        lua.load(
+            "NODES[11] = { x = 50, y = 0, z = 0 } NODES[12] = { x = 50, y = 90, z = 0 } \
+             NODES[20] = { x = 900, y = 900, z = 0 } NODES[21] = { x = 990, y = 900, z = 0 } \
+             EDGES[100].node1 = 11 \
+             EDGES[102] = { node0 = 11, node1 = 9, tangent0 = { x = 0, y = 40, z = 0 }, \
+                            tangent1 = { x = 0, y = 40, z = 0 }, objects = {}, laneConfigs = { 'country lanes' } } \
+             EDGES[103] = { node0 = 9, node1 = 12, tangent0 = { x = 0, y = 50, z = 0 }, \
+                            tangent1 = { x = 0, y = 50, z = 0 }, objects = {}, laneConfigs = { 'town lanes' } } \
+             EDGES[200] = { node0 = 20, node1 = 21, tangent0 = { x = 90, y = 0, z = 0 }, \
+                            tangent1 = { x = 90, y = 0, z = 0 }, objects = {}, laneConfigs = { 'town lanes' } } \
+             STREETS[8], STREETS[11], STREETS[9], STREETS[12] = { 100 }, { 100, 102 }, { 102, 103 }, { 103 } \
+             STREETS[20], STREETS[21] = { 200 }, { 200 } \
+             CONFIGS[9] = { laneConnections = { { segment0 = 102, lane0 = 0, segment1 = 103, lane1 = 0, \
+                 withRoad = true, withTram = false } }, crosswalks = { 103 }, trafficLightPreference = 1, \
+                 trafficLightConfig = { trafficLightType = -1, states = {} }, doubleSlipSwitch = false, \
+                 userModifiedTrafficLightStates = false } \
+             FAR_READS = 0 \
+             local get = api.engine.getComponent \
+             api.engine.getComponent = function(id, kind) \
+                 if id == 200 and kind == api.type.ComponentType.BASE_EDGE then FAR_READS = FAR_READS + 1 end \
+                 return get(id, kind) \
+             end",
+        )
+        .exec()
+        .unwrap();
+        lua.globals().set("OCTREE", octree).unwrap();
+        lua.load(FAKE_OCTREE).exec().unwrap();
+        lua.load(format!(
+            "HOOK.batch = {{ {JUNCTION} }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap();
+        let (shape, far): (String, u32) = lua
+            .load(
+                "local p = SENT[1].proposal.streetProposal
+                 local out = { #p.nodesToAdd, table.concat(p.edgesToRemove, ','), table.concat(p.nodesToRemove, ','),
+                               table.concat(p.nodeConfigsToRemove, ',') }
+                 for _, e in ipairs(p.edgesToAdd) do
+                     out[#out + 1] = e.entity .. ':' .. e.comp.node0 .. '>' .. e.comp.node1
+                 end
+                 for _, n in ipairs(p.nodeConfigsToAdd or {}) do
+                     local turns = {}
+                     for _, t in ipairs(n.comp.laneConnections) do turns[#turns + 1] = t.segment0 .. '>' .. t.segment1 end
+                     out[#out + 1] = 'config ' .. n.entity .. ' ' .. table.concat(turns, ',')
+                         .. ' walk ' .. table.concat(n.comp.crosswalks, ',')
+                 end
+                 return table.concat(out, ' | '), FAR_READS",
+            )
+            .eval()
+            .unwrap_or_else(|error| panic!("{octree}: {error}\n{}", hook_log(&lua)));
+        assert_eq!(far, 0, "{octree}: the far street's edge was read");
+        built.push(shape);
+    }
+    assert_eq!(
+        built[0],
+        "1 | 100,102 | 11 | 8,9 | -1:7>-4 | -2:8>-4 | -3:-4>9 | config 8  walk  | config 9 -3>103 walk 103",
+        "the junction at 9 turns from the new edge onto the street that stays"
+    );
+    assert_eq!(built[1], built[0], "an octree changes nothing in a build");
+}
+
+/// Two edges a junction could mean by the same ends are still refused,
+/// though only the edges near them are read.
+#[test]
+fn a_junction_edge_named_twice_is_still_refused() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(
+        "NODES[11] = { x = 50, y = 0, z = 0 } NODES[12] = { x = 50, y = 90, z = 0 } \
+         EDGES[100].node1 = 11 \
+         EDGES[102] = { node0 = 11, node1 = 9, tangent0 = { x = 0, y = 40, z = 0 }, \
+                        tangent1 = { x = 0, y = 40, z = 0 }, objects = {}, laneConfigs = { 'country lanes' } } \
+         EDGES[103] = { node0 = 9, node1 = 12, tangent0 = { x = 0, y = 50, z = 0 }, \
+                        tangent1 = { x = 0, y = 50, z = 0 }, objects = {}, laneConfigs = { 'town lanes' } } \
+         EDGES[104] = { node0 = 12, node1 = 9, tangent0 = { x = 0, y = -50, z = 0 }, \
+                        tangent1 = { x = 0, y = -50, z = 0 }, objects = {}, laneConfigs = { 'town lanes' } } \
+         STREETS[8], STREETS[11], STREETS[9], STREETS[12] = { 100 }, { 100, 102 }, { 102, 103, 104 }, { 103, 104 } \
+         CONFIGS[9] = { laneConnections = { { segment0 = 102, lane0 = 0, segment1 = 103, lane1 = 0, \
+             withRoad = true, withTram = false } }, crosswalks = {}, trafficLightPreference = 1, \
+             trafficLightConfig = { trafficLightType = -1, states = {} }, doubleSlipSwitch = false, \
+             userModifiedTrafficLightStates = false }",
+    )
+    .exec()
+    .unwrap();
+    lua.load(format!(
+        "HOOK.batch = {{ {JUNCTION} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    assert_eq!(lua.load("return #SENT").eval::<usize>().unwrap(), 0);
+    let log = hook_log(&lua);
+    assert!(log.contains("ambiguous junction edge"), "{log}");
+}
+
+/// A preview of another player's road finds its nodes near them through
+/// the engine's octree, not by reading the whole network, and makes the
+/// same proposal (2026-10-16: 130-150 ms a preview in the GUI of a late
+/// game, several a second). Where the octree holds nothing near (a road
+/// built a moment ago) it reads the whole network, as before.
+#[test]
+fn a_road_preview_finds_its_nodes_near_them() {
+    let mut made = Vec::new();
+    for octree in ["none", "spatial", "empty"] {
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        lua.globals().set("OCTREE", octree).unwrap();
+        lua.load(FAKE_OCTREE).exec().unwrap();
+        let (shape, reads): (String, u32) = lua
+            .load(format!(
+                "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')
+                 local proposal = assert(apply.proposalOf({ROAD}, {{}}))
+                 local p = proposal.streetProposal
+                 local out = {{ table.concat(p.edgesToRemove, ',') }}
+                 for _, e in ipairs(p.edgesToAdd) do
+                     out[#out + 1] = e.entity .. ':' .. e.comp.node0 .. '>' .. e.comp.node1
+                 end
+                 return table.concat(out, ' | '), WHOLE"
+            ))
+            .eval()
+            .unwrap_or_else(|error| panic!("{octree}: {error}"));
+        made.push(shape);
+        assert_eq!(
+            reads == 0,
+            octree == "spatial",
+            "{octree}: {reads} whole reads"
+        );
+    }
+    assert_eq!(made[1], made[0]);
+    assert_eq!(made[2], made[0]);
+}
+
+/// An applied road reads its nodes from the whole network, as it always
+/// did, whatever the octree holds: one the octree missed could make one
+/// game choose another node than another game.
+#[test]
+fn an_applied_road_reads_the_whole_network() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.globals().set("OCTREE", "spatial").unwrap();
+    lua.load(FAKE_OCTREE).exec().unwrap();
+    lua.load(format!(
+        "HOOK.batch = {{ {ROAD} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let (sent, queries, whole): (usize, u32, u32) =
+        lua.load("return #SENT, QUERIES, WHOLE").eval().unwrap();
+    assert_eq!(sent, 1, "{}", hook_log(&lua));
+    assert_eq!(queries, 0, "the octree is not asked");
+    assert!(whole > 0);
+}
+
+/// An applied action's cost by part is said in the log once it is slow:
+/// for finding what makes another player's builds stutter here (2026-10-16).
+#[test]
+fn a_slow_action_says_what_it_cost() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(format!(
+        "local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua') \
+         apply.SLOW_MS = 0 \
+         HOOK.batch = {{ {ROAD} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let log = hook_log(&lua);
+    let line = log
+        .lines()
+        .find(|l| l.contains("applying BuildRoad took"))
+        .unwrap_or_else(|| panic!("{log}"));
+    for part in ["nodes Street 1x", "junctions 1x", "commands 1x"] {
+        assert!(line.contains(part), "{part}: {line}");
+    }
 }
 
 #[test]

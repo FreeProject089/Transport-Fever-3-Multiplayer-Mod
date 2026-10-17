@@ -820,6 +820,25 @@ which takes its own along and may not be named for both. The replay now
 adds preserved configurations back with references to the replacement
 edges (`tpf3mp/junctions.lua`). A split matches the unique replacement
 with the old edge's tangent at that endpoint, including curved roads.
+
+To keep a junction's settings the replay reads the position of every node
+of both networks, but reads an edge only where a setting names a place at
+one of its ends: every edge is listed at both its nodes, so the edges at
+the nodes there are every edge the whole world could match, and two that
+match are still refused. Reading every edge of the world for this cost
+about 600 ms of every road build that rebuilt an edge in a late game
+(2026-10-16), a street upgrade included; with the nodes looked up by the
+metre square they are in, 40-65 ms, and the whole build 80-130 ms.
+
+A preview of another player's road (docs/HOOKS.md, "Build previews"), which
+nothing of reaches the world, finds its nodes near the places it names
+through the engine's octree: the edges whose boxes reach a column 2 m
+wider than the tolerance there, and their end nodes, each read afresh.
+Where the octree has none near enough, or the game has none, it reads the
+whole network. Reading it whole cost 130-150 ms of each preview in the
+GUI, several a second. A build the room applies never asks the octree:
+nothing shows that it holds every edge, or one built earlier in the same
+update, and one it missed could make two games resolve a vertex apart.
 Missing lanes or an ambiguous replacement refuse the build instead of
 resetting the player's settings. Before sending, the replay asks
 the game's verdict (`makeProposalData`) and refuses a build it calls
