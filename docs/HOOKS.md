@@ -2976,10 +2976,13 @@ construction's window its edits:
   not be its node: a track laid onto the free end of a street with tram
   tracks starts on the street's tram lane, 2 m beside the node, and only
   so does the game join them for trams (build 40420; docs/BUILDING.md,
-  "Edge ends"). Built from the node's centre, as before schema 27, the
-  track ended in a buffer stop in every game of the room (2026-10-15).
-  A build that moves or removes an edge with a stop or signal on it, or
-  that places stops, signals or constructions, is refused.
+  "Edge ends"). Built from the node's centre, the track ended in a buffer
+  stop in every game of the room (2026-10-15); the schema-27 edge ends fix
+  passed two-game acceptance on build 40420. A build that moves or removes
+  an edge with a stop or signal on it, or that places stops, signals or
+  constructions, is refused, except a track cut between its signals where
+  every existing non-waypoint signal is declared and kept on its continuing
+  piece (`Link::kept`, BUILDING.md; `splitSignals`).
 - **The bulldozer** (`bulldozer`): its proposal removes one construction
   (with the construction's own entrance edge and node) or edges of one
   network (with the nodes they leave on their own). It becomes a
@@ -3335,7 +3338,10 @@ places in the same direction as a removed one, listing exactly its objects,
 is the edge rebuilt in place, and every game's build gives it the objects
 of the edge it replaces under their own entities (`engine.keptInPlace`,
 `networkInto`); a stop moved onto another edge is refused. The same rule
-lets the road and track tools build through an edge with a stop on it.
+lets the road and track tools build through an edge with a stop on it. A
+track signal (not a waypoint) may also move onto the piece of a track
+the build cuts that goes on from one of its old track's ends, where the
+tool put it (`Link::kept`, BUILDING.md).
 
 A track's catenary and type travel the same way, as far as the game's
 scripts say (build 40408's `construction_react_util.tl`: the

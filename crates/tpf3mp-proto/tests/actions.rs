@@ -80,6 +80,7 @@ fn polyline() -> Polyline {
                 precedence: None,
                 position0: None,
                 position1: None,
+                kept: BoundedVec::default(),
 
                 from: 0,
                 to: 1,
@@ -104,6 +105,7 @@ fn polyline() -> Polyline {
                 precedence: None,
                 position0: None,
                 position1: None,
+                kept: BoundedVec::default(),
 
                 from: 1,
                 to: 2,

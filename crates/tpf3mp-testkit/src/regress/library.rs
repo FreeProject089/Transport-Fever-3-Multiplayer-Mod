@@ -97,6 +97,7 @@ pub fn polyline(vertices: Vec<Vertex>, structure: &Structure) -> Polyline {
                 precedence: None,
                 position0: None,
                 position1: None,
+                kept: BoundedVec::default(),
 
                 from: u16::try_from(i).expect("few vertices"),
                 to: u16::try_from(i + 1).expect("few vertices"),

@@ -146,6 +146,8 @@ function roads.convert(capture, world)
 				end
 			end
 		end
+		-- The signals it takes from a track the build cuts (engine.keptInPlace).
+		if e.kept and #e.kept > 0 then link.kept = e.kept end
 		if capture.explicit or e.network ~= own or e.template ~= ownTemplate or e.style ~= capture.style then
 			if e.network ~= "Street" and e.network ~= "Track" then
 				return nil, "edge " .. k .. " is in no network"

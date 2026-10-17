@@ -153,7 +153,9 @@ Rules that came out of the replay:
   same step, in `station_util::GetTerminalPersonEdges` from the catchment
   update, because every stop on that street pointed at a deleted edge. An
   edge with objects and no one-for-one replacement (a split or a reroute)
-  makes the whole command skip on every instance, with a log line.
+  makes the whole command skip on every instance, with a log line; on TF3
+  the one exception is a track cut between its signals, whose signals the
+  links keep by name (`kept`, "The action schema").
 - **Prefer what the originator's proposal did over re-deriving it.** Whenever
   a receiver reconstructs a decision from geometry (is this vertex on that
   road? is this node a crossing?) it eventually decides differently from the
@@ -607,8 +609,10 @@ then places along the track (Auto Signals) go as one `PlaceSignals`
 What an intent's payload carries: `tpf3mp_proto::action`, version
 `ACTION_SCHEMA_VERSION` (**27**; combines station access, company perks
 and preservation, plus named stops and gated asset removal; 26 adds a
-signal's settings to `PlaceStop` and `PlaceSignals`; 27 a link's own edge
-ends, "Edge ends" below). This
+signal's settings to `PlaceStop` and `PlaceSignals`; 27 adds link fields
+after `precedence`: edge-end positions, then the signals kept from a cut
+track (`position0`, `position1`, and `kept`; see "Edge ends" below).
+Version 27 is one combined layout and has not been released. This
 integration combines the existing
 junction schema with the selected vehicle, depot, demolition, precedence
 and gated action additions described in [COVERAGE.md](COVERAGE.md).
@@ -691,7 +695,31 @@ positions, the originator's decisions included:
   the new junction, keeps that street's kind; so does a street a track
   crosses. A link also names where the edge itself ends, at either end,
   when that is not its vertex (`position0`, `position1`, schema 27; see
-  "Edge ends" below);
+  "Edge ends" below). It can also name the signals it keeps from a track
+  the build cuts (`kept`, schema 27): each by its removal's number, its
+  place along that edge from the removal's `a` end, and its construction.
+  A track started or ended between a track's signals cuts that track in
+  two; each signal goes with the piece the tool put it on, the piece that
+  goes on from one
+  of its old track's ends. Near a node the tool moves that node onto the
+  cut and redraws the track through it, and may keep a signal on the piece
+  before the cut that now stands past it (seen on build 40420,
+  2026-10-17); the game places it on that piece, so the room follows the
+  tool. Every game finds the one signal of that construction within 0.25 m
+  of that place on the removed edge, checks it is no waypoint (lines name
+  waypoints; its signal list says, `SIGNAL_LIST`, `Signal.Type.WAYPOINT`,
+  whatever its construction: a mod's signal goes like the game's own), the
+  acting company's or no company's, and that the piece starts where its
+  old track started or ends where it ended, the same way there
+  (`geom.continues`: within 0.5 m in three dimensions, tangents within
+  about 6 degrees), and lists it on that piece under its own entity;
+  anything missing or ambiguous refuses the build in every game. After
+  the build each kept signal must still exist (else the room's replay
+  stops), and how far it moved is said in the log. A cut where the tool
+  adds a new signal itself (`edgeObjectsToAdd`, seen where it redraws the
+  track around a moved node) stays refused. The kept-signal behavior passed
+  local two-player acceptance on build 40420, 2026-10-17; `acceptance.lua`'s
+  `splitSignals` gate is enabled for that accepted case.
 - `removals`: existing edges the build removes, of either network, by their
   ends: an upgrade's, a span the build passes under, the stretch the tool
   rebuilds around a new junction or crossing. A split parent is no removal;

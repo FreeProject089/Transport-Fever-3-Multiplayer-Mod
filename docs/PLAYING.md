@@ -608,13 +608,18 @@ protected folder such as Program Files.
 - **Not in multiplayer yet.** What the room cannot share with everyone yet
   does not happen in your game either. The game bar says "Not in
   multiplayer yet: …" for what the game's windows do that the room does
-  not carry yet. Junction tools (lane arrows, crosswalks and traffic-light
-  settings) have an implementation behind `strict_junctions`, off until
-  the two-player acceptance check in HOOKS.md passes. One of their edits
-  already goes through the room: turning a double slip switch on or off
-  in the junction's window. With it off, the other edits of these
-  tools, and a tool that would move a stop or signal onto another stretch of road, show "Not in
-  multiplayer yet" and build nothing: the tool says why.
+  not carry yet. Full junction editing (lane arrows, crosswalks, lights,
+  phases and reset) remains behind `strict_junctions`, off by default. With
+  it off, only the junction window's double-slip toggle is accepted; at a
+  track-only node, its observed Auto-to-No preference side effect is kept.
+  Other junction edits and crossing-tool tram-lane edits still show "Not in
+  multiplayer yet" and build nothing. So does a tool that would move a stop
+  or signal onto another stretch of road. A track started
+  or ended between a track's signals now keeps each signal on the piece of
+  the cut track the tool chose (`splitSignals`; accepted in a two-game room
+  on build 40420). Mods' signals go too. A waypoint on the cut track still
+  stops the build, as does a cut where the tool places a new signal itself
+  (near a node it moves).
 
 ## Playtesting before the game is out
 

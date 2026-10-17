@@ -1098,6 +1098,7 @@ mod tests {
                     precedence: None,
                     position0: None,
                     position1: None,
+                    kept: BoundedVec::default(),
 
                     from: 0,
                     to: 1,

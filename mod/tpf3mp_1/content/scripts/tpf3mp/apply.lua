@@ -989,6 +989,125 @@ function apply.ownJunctions(polyline)
 	return junctions.without(polyline.junctions, ownNodes, ownEdges)
 end
 
+-- How near where a kept signal stood, along its track, the signal of its
+-- construction there is (as a PlaceSignals' removed one).
+local KEPT_TOLERANCE = 0.25
+
+-- An edge's length along its curve, in metres (its Hermite curve in 32
+-- steps).
+local function edgeLength(e)
+	local length, last = 0, e.a
+	for i = 1, 32 do
+		local p = geom.hermitePos(e.a, e.ta, e.b, e.tb, i / 32)
+		local dx, dy, dz = p[1] - last[1], p[2] - last[2], (p[3] or 0) - (last[3] or 0)
+		length = length + math.sqrt(dx * dx + dy * dy + dz * dz)
+		last = p
+	end
+	return length
+end
+
+-- The signals the polyline's links keep from the edges it removes
+-- (action::KeptSignal), each found on its removal's edge as the world
+-- stands, one for one, and each checked as the capture checked it: a track
+-- signal, no waypoint (its signal list says, as tpf3mp/engine.lua's capture
+-- reads it), the acting company's or no company's, on a link of track that
+-- goes on from one of its old track's ends, the same way (geom.continues).
+-- Anything missing or ambiguous refuses the whole build, in every game
+-- alike. Returns { link, entity, kind, pos } for each.
+local function keptSignals(polyline, removalEdges, network, at, dangling)
+	local out, seen = {}, {}
+	local any = false
+	for _, link in ipairs(polyline.links) do
+		if link.kept and #link.kept > 0 then any = true end
+	end
+	if not any then return out end
+	if dangling then error("a construction's streets keep no signals", 0) end
+	local C = api.type.ComponentType
+	local SIGNAL = enum("EdgeObjectType").SIGNAL
+	local lengths = {}
+	for j, link in ipairs(polyline.links) do
+		for n, kept in ipairs(link.kept or {}) do
+			local what = "link " .. j .. "'s signal " .. n
+			local r = polyline.removals[kept.removal + 1]
+			local e = removalEdges[kept.removal + 1]
+			if r == nil or e == nil then error(what .. ": no such removal", 0) end
+			local own = link.kind and link.kind.network or network
+			if r.network ~= "Track" or own ~= "Track" then error(what .. ": not on track", 0) end
+			-- The place is from the removal's `a` end; this game's edge may
+			-- run from its `b`.
+			local ea = arr(r.ends.a)
+			local dx, dy = e.a[1] - ea[1], e.a[2] - ea[2]
+			local flipped = dx * dx + dy * dy > END_TOLERANCE * END_TOLERANCE
+			local want = kept.at
+			if flipped then want = 1 - want end
+			lengths[e.id] = lengths[e.id] or edgeLength(e)
+			local best, bestComp
+			for _, o in ipairs(e.comp.objects or {}) do
+				local c = o[2] == SIGNAL and not seen[o[1]] and api.engine.getComponent(o[1], C.EDGE_OBJECT)
+				if c and c.edgeObjectConstruction == kept.model
+					and math.abs(c.param - want) * lengths[e.id] <= KEPT_TOLERANCE then
+					if best ~= nil then error(what .. ": two signals where one is kept", 0) end
+					best, bestComp = o[1], c
+				end
+			end
+			if best == nil then error(what .. ": no " .. tostring(kept.model) .. " where it is kept", 0) end
+			local list = api.engine.getComponent(best, C.SIGNAL_LIST)
+			local signals = list and list.signals or {}
+			if #signals == 0 then error(what .. ": a signal with no signal list", 0) end
+			for i = 1, #signals do
+				local kind = signals[i].type
+				if type(kind) ~= "number" or kind == api.type.Signal.Type.WAYPOINT then
+					error(what .. ": a waypoint, which lines name, kept on another edge", 0)
+				end
+			end
+			mine(e.id, "track")
+			mine(best, "signal")
+			-- Checked along the removal as the room names it, from its `a`
+			-- end, so every game decides alike whichever way its own edge
+			-- runs.
+			local from = e
+			if flipped then from = { a = e.b, b = e.a, ta = scaled(e.tb, -1), tb = scaled(e.ta, -1) } end
+			local to = { a = at[link.from + 1], b = at[link.to + 1], ta = arr(link.tangent0), tb = arr(link.tangent1) }
+			local ok, why = geom.continues(from, to)
+			if not ok then error(what .. ": " .. why, 0) end
+			seen[best] = true
+			local pos
+			local t = bestComp.transf
+			if t and type(t[13]) == "number" then pos = { t[13], t[14], t[15] } end
+			out[#out + 1] = { link = j, entity = best, kind = SIGNAL, pos = pos }
+		end
+	end
+	return out
+end
+
+-- After the build, each kept signal is still there, where it stood: the
+-- game moves a signal onto the piece of track that takes it. One gone is a
+-- world this mod cannot account for, so the room's replay stops
+-- (replayFatal); one moved is said in the log.
+local function settleKept(carried)
+	local C = api.type.ComponentType
+	local farthest
+	for _, c in ipairs(carried) do
+		local ok, comp = pcall(function() return api.engine.getComponent(c.entity, C.EDGE_OBJECT) end)
+		if not ok or comp == nil then
+			error({ replayFatal = "kept signal " .. tostring(c.entity) .. " is gone after the build" }, 0)
+		end
+		local t = comp.transf
+		if c.pos and t and type(t[13]) == "number" then
+			local dx, dy, dz = t[13] - c.pos[1], t[14] - c.pos[2], t[15] - c.pos[3]
+			local moved = math.sqrt(dx * dx + dy * dy + dz * dz)
+			if moved > 0.5 then
+				log(string.format("kept signal %d moved %.2f m in the build", c.entity, moved))
+			end
+			if farthest == nil or moved > farthest then farthest = moved end
+		end
+	end
+	if #carried > 0 then
+		log("kept " .. #carried .. " signal(s) on the track's new pieces"
+			.. (farthest and string.format(", the farthest moved %.2f m", farthest) or ", where they stand unread"))
+	end
+end
+
 function networkInto(proposal, network, templateName, style, polyline, dangling, gone)
 	local links, skipped = polyline.links, {}
 	local settings = polyline.junctions
@@ -1178,9 +1297,10 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 	-- nowhere: on TPF2 that crashed every game at the same step
 	-- (docs/BUILDING.md). So one with any is removed only where a link
 	-- rebuilds it in place, between the same places in the same direction,
-	-- which takes its objects under their own entities (as the capture
-	-- demands, tpf3mp/engine.lua keptInPlace).
-	local taken = {}
+	-- which takes its objects under their own entities, or where links keep
+	-- every one of its signals (`kept`: a track cut between its signals); as
+	-- the capture demands, tpf3mp/engine.lua keptInPlace.
+	local taken, removalEdges, removedIds = {}, {}, {}
 	local function sameAt(a, b)
 		return math.abs(a[1] - b[1]) < 0.05 and math.abs(a[2] - b[2]) < 0.05 and math.abs(a[3] - b[3]) < 0.05
 	end
@@ -1188,9 +1308,28 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 		local e = edgeBetween(nodes(r.network), r.network, arr(r.ends.a), arr(r.ends.b))
 		if e == nil then error("no " .. r.network .. " edge to remove (" .. k .. ")") end
 		if gone and gone[e.id] then error("removal " .. k .. " is the old construction's own edge", 0) end
+		if removedIds[e.id] then error("removal " .. k .. " names an edge another removal names", 0) end
+		removedIds[e.id] = true
 		if dangling then mine(e.id, "road or track") end
+		removalEdges[k] = e
+	end
+	local objectsFor, claimed = {}, {}
+	local function give(j, o)
+		objectsFor[j] = objectsFor[j] or {}
+		objectsFor[j][#objectsFor[j] + 1] = { o[1], o[2] }
+	end
+	local carried = keptSignals(polyline, removalEdges, network, at, dangling)
+	for _, c in ipairs(carried) do
+		claimed[c.entity] = true
+		give(c.link, { c.entity, c.kind })
+	end
+	for k, e in ipairs(removalEdges) do
 		local objects = e.comp.objects or {}
-		if #objects > 0 then
+		local kept = 0
+		for _, o in ipairs(objects) do if claimed[o[1]] then kept = kept + 1 end end
+		if kept > 0 and kept < #objects then
+			error("removal " .. k .. " has a signal a link keeps and an object no link takes", 0)
+		elseif kept == 0 and #objects > 0 then
 			local into
 			for j, link in ipairs(polyline.links) do
 				if not taken[j] and sameAt(at[link.from + 1], e.a) and sameAt(at[link.to + 1], e.b) then
@@ -1200,12 +1339,11 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 			end
 			if into == nil then error("removal " .. k .. " has a stop or signal on it and no link rebuilds it") end
 			taken[into] = true
-			local kept = {}
-			for i, o in ipairs(objects) do kept[i] = { o[1], o[2] } end
-			links[into].comp.objects = kept
+			for _, o in ipairs(objects) do give(into, o) end
 		end
 		removeEdge(e)
 	end
+	for j, objects in pairs(objectsFor) do links[j].comp.objects = objects end
 
 	local nodesToRemove, removedNode = {}, {}
 	for k, n in ipairs(polyline.removed_nodes or {}) do
@@ -1271,17 +1409,20 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 		shape[#shape + 1] = "+j" .. tostring(n.entity) .. "{lanes " .. turns .. " tram " .. trams .. "}"
 	end
 	log("building " .. table.concat(shape, " "))
+	return carried
 end
 
 local function buildNetwork(network, templateName, style, polyline)
 	local proposal = api.type.SimpleProposal.new()
-	networkInto(proposal, network, templateName, style, polyline)
+	local carried = networkInto(proposal, network, templateName, style, polyline)
 	-- Paid by the player, as the tool builds; the town buildings in the way
 	-- cleared, as the tool clears them (the capture lets only those through).
 	local context = api.type.Context.new()
 	context.player = company()
 	context.gatherBuildings = true
-	return buildProposal(proposal, context)
+	local built = buildProposal(proposal, context)
+	settleKept(carried)
+	return built
 end
 
 function HANDLERS.BuildRoad(road)

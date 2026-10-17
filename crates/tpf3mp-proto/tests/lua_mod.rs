@@ -16240,3 +16240,243 @@ fn event_boundary_diagnostics_report_buys_and_resolved_bulldozes() {
     let scans: usize = lua.load("return CONSTRUCTION_SCANS").eval().unwrap();
     assert_eq!(scans, 2, "one constructionAt traversal per bulldoze action");
 }
+
+/// A track the room ordered, started from the middle of track 200 between
+/// its signals (FAKE_TRACKS): 200 cut at (50, 200), the new track running
+/// south from there, each signal kept on the piece it stood on, by where it
+/// stood on 200 and its construction. `KEPT_A` and `KEPT_B` are the kept
+/// signals of the western and eastern pieces, `KEPT_C` the new track's.
+const CUT_TRACK: &str = "{ BuildTrack = { track = '::/track/standard.street_template', catenary = false, \
+    polyline = { \
+    vertices = { \
+        { pos = { x = 0, y = 200, z = 0 }, resolve = { Node = 'Track' } }, \
+        { pos = { x = 50, y = 200, z = 0 }, resolve = 'New' }, \
+        { pos = { x = 100, y = 200, z = 0 }, resolve = { Node = 'Track' } }, \
+        { pos = { x = 50, y = 150, z = 0 }, resolve = 'New' } }, \
+    links = { \
+        { from = 0, to = 1, tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+          structure = 'Ground', kept = KEPT_A }, \
+        { from = 1, to = 2, tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
+          structure = 'Ground', kept = KEPT_B }, \
+        { from = 1, to = 3, tangent0 = { x = 0, y = -50, z = 0 }, tangent1 = { x = 0, y = -50, z = 0 }, \
+          structure = 'Ground', kept = KEPT_C } }, \
+    removals = { { network = 'Track', ends = { a = { x = 0, y = 200, z = 0 }, b = { x = 100, y = 200, z = 0 } } } } \
+    } } }";
+
+const KEPT_300: &str =
+    "{ removal = 0, at = 0.25, model = '::/infrastructure/signal/signal_path_c.con' }";
+const KEPT_301: &str =
+    "{ removal = 0, at = 0.75, model = '::/infrastructure/signal/signal_path_a.con' }";
+
+fn cut_track(a: &str, b: &str) -> String {
+    cut_track_onto(a, b, "{}")
+}
+
+fn cut_track_onto(a: &str, b: &str, c: &str) -> String {
+    CUT_TRACK
+        .replace("KEPT_A", a)
+        .replace("KEPT_B", b)
+        .replace("KEPT_C", c)
+}
+
+/// A game with FAKE_TRACKS and the standard track template, its gate for
+/// signals kept on a cut track `on`.
+fn cut_track_game(on: bool) -> Lua {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    lua.load(FAKE_TRACKS).exec().unwrap();
+    lua.load(format!(
+        r#"
+        local get = api.res.streetTemplateRep.get
+        local find = api.res.streetTemplateRep.find
+        api.res.streetTemplateRep.find = function(name)
+            if name == '::/track/standard.street_template' then return 6 end
+            return find(name)
+        end
+        api.res.streetTemplateRep.get = function(id)
+            if id == 6 then return {{ laneConfigs = {{ 'track lanes' }}, streetStyle = '::/style/track.street_style' }} end
+            return get(id)
+        end
+        ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').splitSignals = {on}
+        -- Each signal's signal list (SIGNAL_LIST): a plain signal unless set.
+        api.type.ComponentType.SIGNAL_LIST = 26
+        api.type.Signal = {{ Type = {{ SIGNAL = 0, ONE_WAY_SIGNAL = 1, WAYPOINT = 2 }} }}
+        SIGNALS = {{}}
+        local component = api.engine.getComponent
+        api.engine.getComponent = function(id, kind)
+            if kind == 26 then
+                if OBJECTS[id] == nil then return nil end
+                return SIGNALS[id] or {{ signals = {{ {{ type = 0 }} }} }}
+            end
+            return component(id, kind)
+        end
+        "#
+    ))
+    .exec()
+    .unwrap();
+    lua
+}
+
+/// Each new edge's objects, as `entity[object:type,...]`, and the edges
+/// removed; or "nothing sent".
+fn cut_track_sent(lua: &Lua) -> String {
+    lua.load(
+        "local c = SENT[1] if c == nil then return 'nothing sent' end \
+         local p = c.proposal.streetProposal local out = {} \
+         for _, e in ipairs(p.edgesToAdd) do \
+             local o = {} for _, x in ipairs(e.comp.objects or {}) do o[#o + 1] = x[1] .. ':' .. x[2] end \
+             out[#out + 1] = e.entity .. '[' .. table.concat(o, ',') .. ']' \
+         end \
+         return table.concat(out, ' ') .. ' | -' .. table.concat(p.edgesToRemove, ',')",
+    )
+    .eval()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(lua)))
+}
+
+/// A track cut between its signals keeps each signal, under its own entity,
+/// on the piece it stood on, in every game alike: in one whose track runs
+/// the other way too, each signal found by where it stands from the
+/// removal's own end. The accepted case is enabled; the gate-off check below
+/// confirms that it refuses the build when disabled.
+#[test]
+fn every_game_keeps_a_cut_tracks_signals_on_their_pieces() {
+    let build = cut_track(&format!("{{ {KEPT_300} }}"), &format!("{{ {KEPT_301} }}"));
+    let lua = cut_track_game(true);
+    lua.load(format!(
+        "HOOK.batch = {{ {build} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert_eq!(
+        cut_track_sent(&lua),
+        "-1[300:2] -2[301:2] -3[] | -200",
+        "{}",
+        hook_log(&lua)
+    );
+    assert!(
+        hook_log(&lua).contains("kept 2 signal(s) on the track's new pieces"),
+        "{}",
+        hook_log(&lua)
+    );
+
+    // Another game, whose track 200 runs from node 21 to node 20.
+    let other = cut_track_game(true);
+    other
+        .load(format!(
+            "EDGES[200].node0, EDGES[200].node1 = 21, 20 \
+             EDGES[200].tangent0, EDGES[200].tangent1 = {{ x = -100, y = 0, z = 0 }}, {{ x = -100, y = 0, z = 0 }} \
+             OBJECTS[300].param, OBJECTS[301].param = 0.75, 0.25 \
+             HOOK.batch = {{ {build} }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&other)));
+    assert_eq!(
+        cut_track_sent(&other),
+        "-1[300:2] -2[301:2] -3[] | -200",
+        "{}",
+        hook_log(&other)
+    );
+
+    // A mod's signal, which every game of the room has.
+    let modded = cut_track_game(true);
+    let mod_301 = KEPT_301
+        .replace("'::/", "'custom_signals_1::/")
+        .replace("signal_path_a", "custom");
+    modded
+        .load(format!(
+            "OBJECTS[301].edgeObjectConstruction = 'custom_signals_1::/infrastructure/signal/custom.con' \
+             HOOK.batch = {{ {} }} UPDATE({{}}, STATE, 0.2)",
+            cut_track(&format!("{{ {KEPT_300} }}"), &format!("{{ {mod_301} }}"))
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&modded)));
+    assert_eq!(
+        cut_track_sent(&modded),
+        "-1[300:2] -2[301:2] -3[] | -200",
+        "{}",
+        hook_log(&modded)
+    );
+
+    // With its gate off, no game builds it.
+    let off = cut_track_game(false);
+    off.load(format!(
+        "HOOK.batch = {{ {build} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    assert_eq!(cut_track_sent(&off), "nothing sent");
+    assert!(
+        hook_log(&off).contains("splitSignals awaits two-player game acceptance"),
+        "{}",
+        hook_log(&off)
+    );
+}
+
+/// What a game refuses of a cut track's kept signals, saying why, the same
+/// in every game: a signal kept on the piece it did not stand on, one left
+/// behind, one it cannot find or finds twice, a waypoint or a mod's signal.
+#[test]
+fn a_cut_tracks_signal_a_game_cannot_keep_refuses_the_build() {
+    let refused = |a: &str, b: &str, setup: &str, why: &str| {
+        let lua = cut_track_game(true);
+        lua.load(format!(
+            "{setup} HOOK.batch = {{ {} }} UPDATE({{}}, STATE, 0.2)",
+            cut_track(a, b)
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+        assert_eq!(cut_track_sent(&lua), "nothing sent", "{why}");
+        assert!(hook_log(&lua).contains(why), "{why}: {}", hook_log(&lua));
+    };
+    let both = |a: &str, b: &str| (format!("{{ {a} }}"), format!("{{ {b} }}"));
+    // Onto the new track, which does not go on from the cut one.
+    let lua = cut_track_game(true);
+    lua.load(format!(
+        "HOOK.batch = {{ {} }} UPDATE({{}}, STATE, 0.2)",
+        cut_track_onto(
+            &format!("{{ {KEPT_300} }}"),
+            "{}",
+            &format!("{{ {KEPT_301} }}")
+        )
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert_eq!(cut_track_sent(&lua), "nothing sent");
+    assert!(
+        hook_log(&lua).contains("does not go on from its track"),
+        "{}",
+        hook_log(&lua)
+    );
+    // One left behind on the removed track.
+    refused(
+        &format!("{{ {KEPT_300} }}"),
+        "{}",
+        "",
+        "an object no link takes",
+    );
+    // A construction that is not there.
+    let wrong = KEPT_301.replace("signal_path_a", "signal_path_c");
+    let (a, b) = both(KEPT_300, &wrong);
+    refused(&a, &b, "", "where it is kept");
+    // Two signals of one construction where one is kept.
+    let (a, b) = both(KEPT_300, KEPT_301);
+    refused(
+        &a,
+        &b,
+        "OBJECTS[302] = { param = 0.751, edgeObjectConstruction = '::/infrastructure/signal/signal_path_a.con' } \
+         EDGES[200].objects[3] = { 302, 2 }",
+        "two signals where one is kept",
+    );
+    // A waypoint, which lines name, whatever its construction.
+    let (a, b) = both(KEPT_300, KEPT_301);
+    refused(
+        &a,
+        &b,
+        "SIGNALS[301] = { signals = { { type = 2 } } }",
+        "a waypoint",
+    );
+    // The same signal kept twice.
+    let (a, b) = both(KEPT_300, &format!("{KEPT_301}, {KEPT_301}"));
+    refused(&a, &b, "", "where it is kept");
+}

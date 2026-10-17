@@ -51,9 +51,9 @@ pub const MAX_PHASES: usize = 64;
 /// Most edges one action removes or bulldozes.
 pub const MAX_EDGES: usize = 256;
 /// How far an edge's own end may lie from its vertex, in millimetres, on
-/// each axis ([`Link::position0`], schema 27). The track tool starts a track
-/// on a street's tram lane, 2 m beside the street's end node (build 40420);
-/// the widest street's outer lane is well within this.
+/// each axis ([`Link::position0`] or [`Link::position1`], schema 27). The
+/// track tool starts a track on a street's tram lane, 2 m beside the street's
+/// end node (build 40420); the widest street's outer lane is well within this.
 pub const MAX_END_OFFSET: i32 = 32_000;
 /// Most town buildings one bulldoze of streets removes with them.
 pub const MAX_BUILDINGS: usize = 64;
@@ -381,6 +381,24 @@ pub struct Link {
     /// The same at `to` (`BaseEdge.position1`).
     #[serde(default)]
     pub position1: Option<Pos>,
+    /// The signals this edge takes from an edge the build removes, as the
+    /// tool moved them: a track split where a signal stands, the signal on
+    /// the piece it stood on (schema 27). Empty for an edge that takes
+    /// none, or that rebuilds a removed edge in place, which takes all its
+    /// objects.
+    #[serde(default)]
+    pub kept: BoundedVec<KeptSignal, MAX_EDGE_SIGNALS>,
+}
+
+/// A signal an edge takes from an edge the build removes: the one signal of
+/// this construction on the polyline's removal number `removal` (from 0)
+/// within a quarter of a metre of `at`, its place along that edge from the
+/// removal's `a` end. None, or more than one, refuses the whole build.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptSignal {
+    pub removal: u16,
+    pub at: Fraction,
+    pub model: ResName,
 }
 
 /// A street's precedence at its two ends, the game's own values.
@@ -433,6 +451,8 @@ pub enum PolylineError {
     Loop(usize),
     #[error("link {0} ends too far from its vertex")]
     EndTooFar(usize),
+    #[error("link {0} keeps a signal of a removal the polyline does not have, or off its edge")]
+    KeptSignal(usize),
 }
 
 impl Polyline {
@@ -463,6 +483,11 @@ impl Polyline {
                 if far(end.x, at.x) || far(end.y, at.y) || far(end.z, at.z) {
                     return Err(PolylineError::EndTooFar(index));
                 }
+            }
+            if link.kept.iter().any(|k| {
+                usize::from(k.removal) >= removals.len() || !(0..=1_000_000).contains(&k.at.0)
+            }) {
+                return Err(PolylineError::KeptSignal(index));
             }
         }
         Ok(Self {
@@ -1486,6 +1511,7 @@ mod tests {
             precedence: None,
             position0: None,
             position1: None,
+            kept: BoundedVec::default(),
 
             from,
             to,
@@ -1530,6 +1556,39 @@ mod tests {
             Err(PolylineError::Loop(1))
         );
         assert!(Polyline::new(vertices(2), links(vec![link(1, 0)]), BoundedVec::empty()).is_ok());
+        // A kept signal names one of the polyline's removals, on its edge.
+        let keeping = |removal, at| Link {
+            kept: BoundedVec::new(vec![KeptSignal {
+                removal,
+                at: Fraction(at),
+                model: Text::new("s").unwrap(),
+            }])
+            .unwrap(),
+            ..link(0, 1)
+        };
+        let one = || {
+            BoundedVec::new(vec![EdgeRef {
+                network: Network::Track,
+                ends: EdgeEnds {
+                    a: pos(0, 0, 0),
+                    b: pos(1, 0, 0),
+                },
+            }])
+            .unwrap()
+        };
+        assert_eq!(
+            Polyline::new(vertices(2), links(vec![keeping(0, 0)]), BoundedVec::empty()),
+            Err(PolylineError::KeptSignal(0))
+        );
+        assert_eq!(
+            Polyline::new(vertices(2), links(vec![keeping(1, 0)]), one()),
+            Err(PolylineError::KeptSignal(0))
+        );
+        assert_eq!(
+            Polyline::new(vertices(2), links(vec![keeping(0, 1_000_001)]), one()),
+            Err(PolylineError::KeptSignal(0))
+        );
+        assert!(Polyline::new(vertices(2), links(vec![keeping(0, 1_000_000)]), one()).is_ok());
     }
 
     #[test]
@@ -1657,10 +1716,34 @@ mod tests {
                 0, 1, 2, 0, 0, 2, 0, 0, 0, // 0 -> 1, tangents, Structure::Ground
                 0, // the build's own kind
                 0, 0, 0, 0, 0, // no decorations, lock, ownership, lanes or precedence
-                0, 0, // no end of its own at either vertex (schema 27)
+                0, 0, // no edge end offset at either vertex
+                0, // no kept signals (schema 27)
                 1, 0, 2, 0, 0, 0, 2, 0, // a removal: Street, (1, 0, 0), (0, 1, 0)
                 1, 1, 0, 0, 2, // a removed node: Track, (0, 0, 1)
                 0, // no junction changes
+            ]
+        );
+        // Final schema 27 link order after precedence: position0, position1, kept.
+        let keeping = Link {
+            position0: Some(pos(1, -2, 3)),
+            position1: Some(pos(4, 5, 6)),
+            kept: BoundedVec::new(vec![KeptSignal {
+                removal: 1,
+                at: Fraction(750_000),
+                model: Text::new("s").unwrap(),
+            }])
+            .unwrap(),
+            ..link(0, 1)
+        };
+        assert_eq!(
+            postcard::to_stdvec(&keeping).unwrap()[15..],
+            [
+                1, 2, 3, 6, // Some(position0): (1, -2, 3)
+                1, 8, 10, 12, // Some(position1): (4, 5, 6)
+                1,  // one kept signal
+                1,  // removal 1
+                0xe0, 0xc6, 0x5b, // at 750,000, zigzag varint
+                1, b's', // its construction
             ]
         );
         // Appended with Prospect under schema version 7: the variants
