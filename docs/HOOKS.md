@@ -3524,8 +3524,7 @@ Refused in the sender and in every replay until `acceptance.lua`'s
 window's rebuild does beyond the type (it lays the crossing's segments
 again; the replay does not); the cost (the window checks the player can afford
 the change; the carrier is built with the game's cost as any build of the
-room's, unchecked against the window's); crossing types in the room's checkpoints (no lane
-reads them); the type a road or track tool's toolbar picks for a new
+room's, unchecked against the window's; each game logs what the company paid, `the company paid N`); the type a road or track tool's toolbar picks for a new
 crossing (`rcType`, `node2rcType` of the tool's proposal), which the
 capture of builds drops, so each game's replay picks the engine's own.
 ### Build previews
@@ -3775,7 +3774,7 @@ matter:
 
 | lane | reads |
 |---|---|
-| 0 network | street/track endpoints (0.1 m), template and per-lane modes/dimensions/direction; junction positions (1 mm), portable turn/crosswalk references, light preference/resource/phases and flags |
+| 0 network | street/track endpoints (0.1 m), template and per-lane modes/dimensions/direction; junction positions (1 mm), portable turn/crosswalk references, light preference/resource/phases and flags; each level crossing's node positions (1 mm) and type file |
 | 1 constructions | every construction by its file and position (0.1 m) |
 | 2 lines | every line's number of stops |
 | 3 vehicles | each vehicle's state, stop and place on its path: the path edge, the distance along it (1 cm) and the speed (1 cm/s), the simulation's own (`MOVE_PATH.dyn`) |
@@ -3997,6 +3996,18 @@ update, not only on a batch's. No other reader takes over.
 - each construction's file (its `ResName`, +0) and the translation of its
   `transf` (16 float32 at +0x58; x and y at +0x88 and +0x8c), as
   `file@x,y` to 0.1 m.
+
+The hook reads no level crossing. On a part's junctions turn the mod adds
+the part's crossings to the hook's network text (`<hook's text>|crossings
+<count>:<hash>`): every crossing's row as `crossings.rows` makes it,
+`crossing:x,y,z;x,y,z|file` (its nodes' places in whole millimetres,
+sorted; its type's file), in the part of its first node's millimetres, as
+a junction's. Every crossing is listed by `getEntitiesWithComponent` where
+the engine lists them, else from the nodes on both a street and a track
+(`crossings listed N` or `by nodes N` in the checkpoint line). In compare
+mode the crossing rows join the hook's rows before they are compared with
+this Lua's, which read them too. A tile (version 1) reads the crossings on
+its edges' nodes.
 
 Rows are sorted, joined and hashed in the hook; no row comes into the
 mod's Lua unless compared.

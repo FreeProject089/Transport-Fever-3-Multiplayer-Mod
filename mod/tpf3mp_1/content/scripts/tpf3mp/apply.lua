@@ -2693,6 +2693,13 @@ function HANDLERS.SetCrossingType(change)
 	if type(apply.crossing) ~= "function" then error("this hook cannot set a crossing's type", 0) end
 	local context = api.type.Context.new()
 	context.player = company()
+	-- What the change cost the company, for the log: the same in every game.
+	local function balance()
+		local ok, account = pcall(api.engine.getComponent, context.player, api.type.ComponentType.ACCOUNT)
+		local value = ok and account and account.balance
+		return type(value) == "number" and value or nil
+	end
+	local paidFrom = balance()
 	local command = api.cmd.makeWorldBuildProposalCmd(api.type.Proposal.new(), context, true, true)
 	-- Armed for this one build only: disarmed whatever becomes of it, so no
 	-- later build of the room's is filled with it.
@@ -2719,7 +2726,10 @@ function HANDLERS.SetCrossingType(change)
 		error({ replayFatal = "level crossing " .. tostring(entity) .. " took type " .. tostring(now.typeIndex)
 			.. ", not " .. tostring(change.crossing_type) }, 0)
 	end
-	log("crossing " .. tostring(entity) .. " (now " .. tostring(after) .. ") set to type " .. tostring(change.crossing_type))
+	local paidTo = balance()
+	local paid = (paidFrom and paidTo) and string.format("%.0f", paidFrom - paidTo) or "?"
+	log("crossing " .. tostring(entity) .. " (now " .. tostring(after) .. ") set to type "
+		.. tostring(change.crossing_type) .. ", the company paid " .. paid)
 	return true
 end
 

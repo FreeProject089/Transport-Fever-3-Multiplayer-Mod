@@ -417,8 +417,8 @@ Dev C:
   (2026-10-16). Built: the hook reads the window's click, and it goes to
   the room as `SetCrossingType` (action schema 27): the crossing by its
   nodes' places, the type by its file; the player is told when it is
-  refused. Behind `acceptance.lua`'s `crossings`, off until a two-player
-  game, with a checkpoint lane for crossing types first. Open: the type
+  refused; the network lane reads every crossing's type. Behind
+  `acceptance.lua`'s `crossings`, off until a two-player game. Open: the type
   the road and track tools pick for a new crossing (`rcType`), not
   carried ([HOOKS.md](HOOKS.md), "Level crossing types").
 - [ ] Landmarks, built once: the second on the same turn is refused and

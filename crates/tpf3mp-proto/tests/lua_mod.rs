@@ -16207,3 +16207,134 @@ fn the_window_s_rebuild_of_a_crossing_goes_to_the_room_as_its_type() {
         assert!(logged.contains(&line), "{line}: {logged:?}");
     }
 }
+
+/// Level crossings' types are in the network lane, so two games whose
+/// crossings differ split at the next checkpoint: each crossing by its
+/// nodes' places and its type by its file, whatever the engine numbers them,
+/// whether the engine lists the crossings or they are found from the nodes on
+/// both a street and a track; a tile reads its own crossings only, and each
+/// row is placed in a part, with the junctions.
+#[test]
+fn level_crossings_types_are_in_the_network_lane() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_CROSSINGS).exec().unwrap();
+    let out: Vec<String> = lua
+        .load(
+            r#"local L = ug_require('tpf3mp_1::/scripts/tpf3mp/lanes.lua')
+            local C = ug_require('tpf3mp_1::/scripts/tpf3mp/crossings.lua')
+            -- No edges in this lane but the crossings' rows.
+            api.engine.system.streetSystem.getNode2SegmentMap = function() return {} end
+            -- The engine lists the crossings.
+            api.engine.getEntitiesWithComponent = function(kind)
+                if kind == 31 then local out = {} for e in pairs(CROSSINGS) do out[#out + 1] = e end return out end
+                return {}
+            end
+            local rows = C.rows(api)
+            local listed = C.listed
+            local lane = L.read(api)[L.NETWORK]
+            -- It refuses: found from the nodes instead, the same rows.
+            api.engine.getEntitiesWithComponent = function(kind)
+                if kind == 31 then error('Cannot loop over this component type') end
+                return {}
+            end
+            local byNodes = C.rows(api)
+            local byNodesListed = C.listed
+            -- Another type: another lane.
+            CROSSINGS[800].typeIndex = 5
+            local retyped = L.read(api)[L.NETWORK]
+            CROSSINGS[800].typeIndex = 3
+            -- The same world numbered otherwise: the same lane.
+            local renumbered = {}
+            for e, c in pairs(CROSSINGS) do
+                renumbered[e + 5000] = { nodes = c.nodes, edges = c.edges, typeIndex = c.typeIndex }
+            end
+            local before = CROSSINGS
+            CROSSINGS = renumbered
+            local again = L.read(api)[L.NETWORK]
+            CROSSINGS = before
+            -- A tile's nodes: its crossings only.
+            local tile = C.rows(api, { [700] = true, [999] = true })
+            assert(lane ~= 'err' and retyped ~= 'err', tostring(lane))
+            return { table.concat(rows, ' || '), listed, byNodesListed,
+                tostring(table.concat(byNodes, ' || ') == table.concat(rows, ' || ')),
+                tostring(lane ~= retyped), tostring(lane == again), table.concat(tile, ' || '),
+                L.rowKind(L.NETWORK, rows[1]), tostring(L.rowPart(L.NETWORK, rows[1], 10)),
+                tostring(L.rowPart(L.NETWORK, rows[2], 10)) }"#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert_eq!(
+        out[0],
+        "crossing:10000,20000,1000;18000,20000,1000|railroad_crossing/era_a_eu.rcr \
+         || crossing:500000,0,0;508000,0,0|railroad_crossing/era_a_eu.rcr"
+    );
+    assert_eq!(out[1], "listed 2");
+    assert_eq!(out[2], "by nodes 2");
+    assert_eq!(out[3], "true", "both listings give the same rows");
+    assert_eq!(out[4], "true", "a crossing's type is in the lane");
+    assert_eq!(out[5], "true", "no entity id is");
+    assert_eq!(
+        out[6],
+        "crossing:10000,20000,1000;18000,20000,1000|railroad_crossing/era_a_eu.rcr"
+    );
+    assert_eq!(out[7], "junctions");
+    // By the first node's millimetres in cells of 256 m: (0, 0) and (1, 0).
+    assert_eq!(out[8], "0");
+    assert_eq!(out[9], "1");
+}
+
+/// Where the hook reads the parts, it reads no level crossings: this Lua
+/// adds the part's crossing rows to the hook's network text on a junctions
+/// turn, so two games whose crossing differs in type split there.
+#[test]
+fn rolling_parts_carry_the_level_crossings_the_hook_does_not_read() {
+    let game = |kind: u32| {
+        let lua = rolling_game();
+        lua.load(FAKE_PARTS).exec().unwrap();
+        lua.load(format!(
+            r#"api.type.ComponentType.RAILROAD_CROSSING = 931
+            local NODES = {{ [90700] = {{ x = 10, y = 20, z = 1 }}, [90701] = {{ x = 18, y = 20, z = 1 }} }}
+            local X = {{ nodes = {{ 90700, 90701 }}, edges = {{}}, typeIndex = {kind} }}
+            local get = api.engine.getComponent
+            api.engine.getComponent = function(e, k)
+                if k == 931 then return e == 90800 and X or nil end
+                if NODES[e] and k == api.type.ComponentType.BASE_NODE then return {{ position = NODES[e] }} end
+                return get(e, k)
+            end
+            local list = api.engine.getEntitiesWithComponent
+            api.engine.getEntitiesWithComponent = function(k)
+                if k == 931 then return {{ 90800 }} end
+                return list(k)
+            end
+            api.engine.system.railRoadCrossingSystem = {{ getRailroadCrossingForNode = function(n)
+                if NODES[n] then return 90800 end
+                return -1
+            end }}
+            api.res = api.res or {{}}
+            api.res.railroadCrossingTypeRep = {{ getName = function(i) return 'crossing/type' .. i .. '.rcr' end }}"#
+        ))
+        .exec()
+        .unwrap();
+        lua
+    };
+    let read = |lua: &Lua| -> Vec<String> {
+        lua.load(
+            "for s=1,11 do ROLL_STEP(s,false) end local r=ROLL_STEP(12,true) \
+             local out={} for n=0,6 do out[#out+1]=r[n] end return out",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(lua)))
+    };
+    let (a, b) = (read(&game(3)), read(&game(5)));
+    assert_ne!(a[0], b[0], "the crossing's type is in the network history");
+    assert_eq!(a[1..], b[1..], "and in nothing else");
+    assert_eq!(read(&game(3)), a, "the same world, the same history");
+    let reports: Vec<String> = game(3)
+        .load("for s=1,11 do ROLL_STEP(s,false) end ROLL_STEP(12,true) return REPORTS")
+        .eval()
+        .unwrap();
+    assert!(
+        reports.iter().any(|r| r.contains("crossings listed 1")),
+        "{reports:?}"
+    );
+}

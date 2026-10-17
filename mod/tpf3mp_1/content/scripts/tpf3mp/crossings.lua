@@ -230,4 +230,105 @@ function crossings.resolve(places)
 	return match.entity, match.comp
 end
 
+-- ---------------------------------------------------------- checkpoints
+--
+-- Every crossing's type, for the network lane (tpf3mp/lanes.lua), so two
+-- games whose crossings differ split at the next checkpoint. A row names
+-- the crossing by the places of its nodes in whole millimetres, sorted
+-- (as the action does), and its type by its file: `crossing:x,y,z;x,y,z|
+-- file`. No entity id: two games number them differently.
+
+-- How the last listing of every crossing was made, for the log.
+crossings.listed = nil
+
+-- Whether `a` (an engine binding) answers here: a stand-in engine without
+-- crossings has none of them, and then the world has no crossing rows.
+local function hasCrossings(a)
+	return type(a) == "table" and a.type and a.type.ComponentType
+		and a.type.ComponentType.RAILROAD_CROSSING ~= nil
+		and a.engine and a.engine.system and a.engine.system.railRoadCrossingSystem ~= nil
+end
+
+-- The crossing on `node`, or nil.
+local function crossingOf(a, node)
+	local ok, e = pcall(a.engine.system.railRoadCrossingSystem.getRailroadCrossingForNode, node)
+	if ok and type(e) == "number" and e >= 0 then return e end
+	return nil
+end
+
+-- Every crossing of the world: listed by the engine where it lists them,
+-- else from the nodes on both a street and a track. Raises when neither
+-- reads.
+local function everyCrossing(a)
+	local kind = a.type.ComponentType.RAILROAD_CROSSING
+	local ok, all = pcall(a.engine.getEntitiesWithComponent, kind)
+	if ok and type(all) == "table" then
+		crossings.listed = "listed " .. #all
+		local out = {}
+		for i = 1, #all do out[i] = all[i] end
+		return out
+	end
+	local streets = a.engine.system.streetSystem
+	local trackMap, streetMap = streets.getNode2TrackEdgeMap(), streets.getNode2StreetEdgeMap()
+	local onTrack = {}
+	for node in pairs(trackMap) do onTrack[node] = true end
+	local out, seen = {}, {}
+	for node in pairs(streetMap) do
+		if onTrack[node] then
+			local e = crossingOf(a, node)
+			if e and not seen[e] then
+				seen[e] = true
+				out[#out + 1] = e
+			end
+		end
+	end
+	crossings.listed = "by nodes " .. #out
+	return out
+end
+
+-- The checkpoint row of crossing `entity`, its node places (for a dump's
+-- box), or raises when the crossing does not read.
+function crossings.row(a, entity)
+	local ok, c = pcall(a.engine.getComponent, entity, a.type.ComponentType.RAILROAD_CROSSING)
+	if not ok or c == nil then error("level crossing " .. tostring(entity) .. " does not read", 0) end
+	local places = crossings.places(c)
+	local keys = {}
+	for i, p in ipairs(places) do
+		keys[i] = string.format("%.0f,%.0f,%.0f", mm(p.x), mm(p.y), mm(p.z))
+	end
+	local index = c.typeIndex
+	local okName, name = pcall(a.res.railroadCrossingTypeRep.getName, index)
+	if not okName or type(name) ~= "string" or name == "" then name = "type " .. tostring(index) end
+	return "crossing:" .. table.concat(keys, ";") .. "|" .. name, places
+end
+
+-- The checkpoint rows of the crossings on `nodes` (a set of node entities),
+-- or of every crossing when `nodes` is nil, sorted; and each one's node
+-- places, by row. None where the engine has no crossings.
+function crossings.rows(a, nodes)
+	if not hasCrossings(a) then return {}, {} end
+	local list
+	if nodes == nil then
+		list = everyCrossing(a)
+	else
+		list = {}
+		local seen = {}
+		for node in pairs(nodes) do
+			local e = crossingOf(a, node)
+			if e and not seen[e] then
+				seen[e] = true
+				list[#list + 1] = e
+			end
+		end
+	end
+	local rows, points = {}, {}
+	for _, e in ipairs(list) do
+		local row, places = crossings.row(a, e)
+		rows[#rows + 1] = row
+		points[row] = places
+	end
+	table.sort(rows)
+	return rows, points
+end
+
 return crossings

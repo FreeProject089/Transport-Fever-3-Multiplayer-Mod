@@ -12,7 +12,8 @@
 -- What each lane reads, from the engine the game script runs in:
 --
 -- - NETWORK: every street and track edge, by its ends to 0.1 m and its road
---   template, lane settings and portable junction configurations;
+--   template, lane settings and portable junction configurations; and
+--   every level crossing's type, by its nodes' places (tpf3mp/crossings.lua);
 -- - CONSTRUCTIONS: every construction, by its file and position to 0.1 m;
 -- - LINES: every line's number of stops;
 -- - VEHICLES: each vehicle's state, stop, and place on its path (edge and
@@ -59,13 +60,15 @@
 -- Pure Lua over the `api` it is given; the tests hand it a fake.
 
 local lanes = {}
-local junctions, subsidies
+local junctions, subsidies, crossings
 if type(ug_require) == "function" then
 	junctions = ug_require("tpf3mp_1::/scripts/tpf3mp/junctions.lua")
 	subsidies = ug_require("tpf3mp_1::/scripts/tpf3mp/subsidies.lua")
+	crossings = ug_require("tpf3mp_1::/scripts/tpf3mp/crossings.lua")
 else
 	junctions = require("tpf3mp.junctions")
 	subsidies = require("tpf3mp.subsidies")
+	crossings = require("tpf3mp.crossings")
 end
 
 lanes.NETWORK = 0
@@ -281,6 +284,12 @@ readers[lanes.NETWORK] = function(api, emit, ids, selected)
 	for _, row in ipairs(junctionRows) do
 		rows[#rows+1] = "junction:" .. row
 		if emit then emit(nil, nil, "junction:" .. row, "", false) end
+	end
+	-- Each level crossing's type: of the tile's nodes, or of the world.
+	local crossingRows, points = crossings.rows(api, selected and selected.nodes)
+	for _, row in ipairs(crossingRows) do
+		rows[#rows + 1] = row
+		if emit then emit(nil, nil, row, "", points[row]) end
 	end
 	return summary(rows)
 end
@@ -717,6 +726,13 @@ function lanes.rowPart(lane, row, n)
 		if not x then error("a construction row without its place", 0) end
 		return partOf(tenthsOf(x), tenthsOf(y), CELL_TENTHS, n)
 	end
+	-- A level crossing by the first of its nodes, in millimetres.
+	local cx, cy = string.match(row, "^crossing:([^,|;]+),([^,|;]+),")
+	if cx then
+		local x, y = tonumber(cx), tonumber(cy)
+		if type(x) ~= "number" or type(y) ~= "number" then error("a crossing row without its place", 0) end
+		return partOf(x, y, CELL_MM, n)
+	end
 	local jx, jy = string.match(row, "^junction:%a+:([^,|]+),([^,|]+),")
 	if jx then
 		local x, y = tonumber(jx), tonumber(jy)
@@ -735,10 +751,12 @@ end
 -- its junctions (both the network lane's), its constructions.
 lanes.KINDS = { "edges", "junctions", "constructions" }
 
--- The kind of objects a canonical row of `lane` is of.
+-- The kind of objects a canonical row of `lane` is of. A level crossing is
+-- read with the junctions.
 function lanes.rowKind(lane, row)
 	if lane == lanes.CONSTRUCTIONS then return "constructions" end
 	if string.sub(row, 1, 9) == "junction:" then return "junctions" end
+	if string.sub(row, 1, 9) == "crossing:" then return "junctions" end
 	return "edges"
 end
 
@@ -877,15 +895,31 @@ local function rollingParts(api, scan, step, checkpoint)
 		c.n, c.sum, c.max = c.n + 1, c.sum + (read.ms or 0), math.max(c.max, read.ms or 0)
 		compared.byKind[kind] = c
 		values[lanes.NETWORK], values[lanes.CONSTRUCTIONS] = net, cons
+		-- The level crossings of this part, which the hook does not read:
+		-- this Lua's rows, with the junctions'.
+		local crossingRows = {}
+		if net ~= nil and lanes.kindHas(kind, "junctions") then
+			local all = crossings.rows(api)
+			for _, row in ipairs(all) do
+				if lanes.rowPart(lanes.NETWORK, row, n) == k then crossingRows[#crossingRows + 1] = row end
+			end
+			values[lanes.NETWORK] = net .. "|crossings " .. summary(crossingRows)
+		end
 		if compare then
 			local own = luaPart(api, n, k, kind)
-			local theirs = { [lanes.NETWORK] = netRows, [lanes.CONSTRUCTIONS] = consRows }
+			local nativeRows = {}
+			for _, row in ipairs(netRows or {}) do nativeRows[#nativeRows + 1] = row end
+			for _, row in ipairs(crossingRows) do nativeRows[#nativeRows + 1] = row end
+			table.sort(nativeRows)
+			local theirs = { [lanes.NETWORK] = nativeRows, [lanes.CONSTRUCTIONS] = consRows }
 			local differ = {}
 			for _, lane in ipairs({ lanes.NETWORK, lanes.CONSTRUCTIONS }) do
 				if lanes.kindReads(kind, lane) then
 					local text = summary(own[lane])
 					-- The rows themselves, not only their count and hash.
-					if text ~= values[lane] or not sameRows(own[lane], theirs[lane] or {}) then
+					local native = values[lane]
+					if lane == lanes.NETWORK then native = summary(theirs[lane] or {}) end
+					if text ~= native or not sameRows(own[lane], theirs[lane] or {}) then
 						differ[#differ + 1] = string.format("lane %d lua %s native %s; only lua: %s; only native: %s",
 							lane, text, tostring(values[lane]), table.concat(onlyIn(own[lane], theirs[lane] or {}), " || "),
 							table.concat(onlyIn(theirs[lane] or {}, own[lane]), " || "))
@@ -929,9 +963,9 @@ local function rollingParts(api, scan, step, checkpoint)
 			texts[#texts + 1] = out[lane]
 		end
 		local line = string.format("rolling world check: steps=%d-%d part=%d/%d last_ms=%.3f"
-			.. " native_mean_ms=%.2f native_max_ms=%.2f by kind [%s] (%s)%s signature=%s",
+			.. " native_mean_ms=%.2f native_max_ms=%.2f by kind [%s] (%s) crossings %s%s signature=%s",
 			scan.first, step, k, n, ms, compared.nativeMs / math.max(1, compared.reads), compared.nativeMax,
-			byKindText(), tostring(compared.timing),
+			byKindText(), tostring(compared.timing), tostring(crossings.listed),
 			(compared.agree + compared.differ > 0)
 				and string.format(" compared agree=%d differ=%d", compared.agree, compared.differ) or "",
 			fastHash(table.concat(texts, "\n")))
