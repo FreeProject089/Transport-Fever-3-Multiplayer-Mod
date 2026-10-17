@@ -162,12 +162,17 @@ starting any task, check it against that page and
   Part 3).
 - **Keep the plan current.** Tick an item in the change that finishes it.
   A new decision goes into DECISIONS.md first, then the plan follows.
-- **Decisions are the owner's.** Only the owner (Juliansgith) makes or
-  changes a decision, or settles a question the plan leaves open for
-  them. Propose one in a pull request into `dev`: GitHub asks the owner
-  to approve any change to `docs/DECISIONS.md` or `docs/PLAN.md`
-  (`.github/CODEOWNERS`). Never write a decision, or mark an open
-  question decided, on your own or another person's say.
+- **Decisions are the owner's.** Only the repository owner (Juliansgith)
+  makes or changes a decision, or settles a question the plan leaves open
+  for them. Propose one in a pull request into `dev` and record their
+  approval. Never write a decision, or mark an open question decided,
+  on your own or another person's say.
+- **Code-owner reviews are shared.** Juliansgith and silver2127 are the
+  code owners listed in `.github/CODEOWNERS`. Either can satisfy GitHub's
+  required code-owner review, and Silver's existing write access lets him
+  merge pull requests once their checks and review requirements pass.
+  A code-owner review does not replace the repository owner's approval of
+  a new or changed project decision, or grant repository administration.
 
 ## Rules for every change
 
