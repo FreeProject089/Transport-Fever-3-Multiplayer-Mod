@@ -284,22 +284,27 @@ end
 -- old edge's other end (seen on build 40420, 2026-10-17, run-1017-033551:
 -- the signal in edgeObjectsToRemove, one record in edgeObjectsToAdd with
 -- category 2 and nothing else that reads, no model, place or settings,
--- and that piece listing it as a new entity). Each new signal is taken as
--- the old one, kept on that piece under its own entity (keptInPlace, as
--- a split's): every game's build keeps its construction and its settings,
+-- and that piece listing it as a new entity). The piece may also be the
+-- one that took over the track beyond the removed node, where the signal
+-- stood just past it (run-1017-pr165-p2: the signal 8 m past the removed
+-- node, the tool's own 10 m past it). Each new signal is taken as the old
+-- one, kept on that piece under its own entity (keptInPlace, as a
+-- split's): every game's build keeps its construction and its settings,
 -- which the tool's record does not say. Only one for one: each record a
 -- signal on one new track edge, each removal a signal (no waypoint) on one
 -- removed track edge, each new signal on a piece that only one removed
--- signal's edge goes on to (geom.continues), not rebuilt between that
--- edge's own nodes, and that runs where that signal stood (REFIT_TOL, its
--- place on the old centreline); anything else refused as before. Behind
+-- signal goes onto: a piece that goes on from that signal's edge
+-- (geom.continues), or either way round from another removed track edge
+-- that meets it at a node the build removes, not rebuilt between the
+-- signal's edge's own nodes, and that runs where the signal stood, the
+-- same way (geom.runsThrough); anything else refused as before. Behind
 -- acceptance.lua's refitSignals, which only the capture asks: the room
--- carries it as a split's Link.kept.
+-- carries it as a split's Link.kept. Returns the old signals so kept, by
+-- entity.
 local SIGNAL_CATEGORY = 2
-engine.REFIT_TOL = 0.5
 local function refitSignals(capture, connection, posOf)
 	local adds, removes = capture.objectAdds or {}, capture.objectRemoves or {}
-	if #adds == 0 and #removes == 0 then return end
+	if #adds == 0 and #removes == 0 then return {} end
 	local refused = "a build with a stop or signal"
 	if connection or #adds ~= #removes then error(refused, 0) end
 	local SIGNAL = enum("EdgeObjectType").SIGNAL
@@ -344,28 +349,58 @@ local function refitSignals(capture, connection, posOf)
 	for _, seen in pairs(new) do
 		if not seen then error(refused, 0) end
 	end
+	-- The removed track edges by the nodes the build removes that they
+	-- end at: across such a node the track goes on as another removed edge.
+	local gone = {}
+	for _, n in ipairs(capture.removedNodes) do gone[n.id] = {} end
+	for k, r in ipairs(capture.removed) do
+		if r.network == "Track" then
+			for _, n in ipairs({ r.node0, r.node1 }) do
+				if gone[n] then gone[n][#gone[n] + 1] = k end
+			end
+		end
+	end
+	local geometry = {}
+	local function geometryOf(k)
+		geometry[k] = geometry[k] or removedGeometry(capture.removed[k], posOf)
+		return geometry[k]
+	end
+	local function reversed(g)
+		local function back(t) return { -t[1], -t[2], -t[3] } end
+		return { a = g.b, b = g.a, ta = back(g.tb), tb = back(g.ta) }
+	end
+	-- Whether the piece goes on from the signal's edge, or either way round
+	-- from a removed track edge across a removed node of it.
+	local function tied(src, to)
+		if geom.continues(geometryOf(src.k), to) then return true end
+		local r = capture.removed[src.k]
+		for _, n in ipairs({ r.node0, r.node1 }) do
+			for _, k in ipairs(gone[n] or {}) do
+				if k ~= src.k then
+					local g = geometryOf(k)
+					if geom.continues(g, to) or geom.continues(reversed(g), to) then return true end
+				end
+			end
+		end
+		return false
+	end
 	-- Each new signal the one removed signal whose track goes on to its
-	-- piece, which runs where that signal stood.
-	local function standsOn(src, g, e, to)
+	-- piece, which runs where that signal stood, the same way.
+	local function standsOn(src, e, to)
 		local r = capture.removed[src.k]
 		if (e.node0 == r.node0 and e.node1 == r.node1) or (e.node0 == r.node1 and e.node1 == r.node0) then
 			return false
 		end
-		if not geom.continues(g, to) then return false end
-		local spot = geom.hermitePos(g.a, g.ta, g.b, g.tb, src.at)
-		local u, d = geom.parameterAt(to.a, to.ta, to.b, to.tb, spot[1], spot[2])
-		local h = geom.hermitePos(to.a, to.ta, to.b, to.tb, u)[3]
-		return d <= engine.REFIT_TOL and math.abs(h - spot[3]) <= engine.REFIT_TOL
+		return tied(src, to) and geom.runsThrough(geometryOf(src.k), src.at, to) == true
 	end
-	local used, geometry, pairsOf = {}, {}, {}
+	local used, pairsOf = {}, {}
 	for _, p in ipairs(placed) do
 		local e = p.e
 		local to = { a = posOf(e.node0), b = posOf(e.node1), ta = e.tangent0, tb = e.tangent1 }
 		if not (to.a and to.b and to.ta and to.tb) then error("a signal's new track has no place here", 0) end
 		local match
 		for entity, src in pairs(removing) do
-			geometry[src.k] = geometry[src.k] or removedGeometry(capture.removed[src.k], posOf)
-			if standsOn(src, geometry[src.k], e, to) then
+			if standsOn(src, e, to) then
 				if match ~= nil then error("a build that replaces signals it cannot tell apart", 0) end
 				match = entity
 			end
@@ -377,13 +412,16 @@ local function refitSignals(capture, connection, posOf)
 	if module("acceptance").refitSignals ~= true then
 		error("a signal the track tool puts back awaits two-player game acceptance", 0)
 	end
+	local refitted = {}
 	for _, m in ipairs(pairsOf) do
+		refitted[m.entity] = true
 		local e = m.p.e
 		e.typed[m.p.i] = { m.entity, SIGNAL }
 		e.objects = {}
 		for _, o in ipairs(e.typed) do e.objects[#e.objects + 1] = o[1] end
 		table.sort(e.objects)
 	end
+	return refitted
 end
 
 -- Stops and signals move with a build on an edge it rebuilds in place: a
@@ -394,7 +432,9 @@ end
 -- A signal also moves onto another track the build makes where the track
 -- it stood on is cut (a track started or ended between its signals): the
 -- piece that goes on from one of its old track's ends, the same way
--- (geom.continues), where the tool put it. The edge that takes it says
+-- (geom.continues), where the tool put it; a signal the tool puts back
+-- (refitSignals) also onto one that runs where it stood, the same way
+-- (geom.keepsSignal, as every game's replay asks). The edge that takes it says
 -- which, by the removal, the place along it and its construction (`kept`,
 -- action::KeptSignal), as the tool decided.
 -- Anything else is refused: a new stop or signal, one dropped, a stop or a
@@ -414,7 +454,7 @@ function engine.keptInPlace(capture, connection)
 			and math.abs(a[3] - b[3]) < 0.05
 	end
 	local function key(list) return table.concat(list, ",") end
-	refitSignals(capture, connection, posOf)
+	local refitted = refitSignals(capture, connection, posOf)
 	local placed, claimed, moving = {}, {}, {}
 	for _, e in ipairs(capture.edges) do
 		if #e.objects > 0 then
@@ -468,7 +508,12 @@ function engine.keptInPlace(capture, connection)
 				geometry[src.k] = geometry[src.k] or removedGeometry(r, posOf)
 				to = to or { a = posOf(e.node0), b = posOf(e.node1), ta = e.tangent0, tb = e.tangent1 }
 				if not (to.a and to.b and to.ta and to.tb) then error("a signal's new track has no place here", 0) end
-				local ok, why = geom.continues(geometry[src.k], to)
+				local ok, why
+				if refitted[o[1]] then
+					ok, why = geom.keepsSignal(geometry[src.k], p, to)
+				else
+					ok, why = geom.continues(geometry[src.k], to)
+				end
 				if not ok then error(why, 0) end
 				claimed[o[1]] = true
 				e.kept[#e.kept + 1] = { removal = src.k - 1, at = p, model = model }

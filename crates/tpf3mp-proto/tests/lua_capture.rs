@@ -423,8 +423,8 @@ fn capture_with(street: &str, call: &str) -> Result<LuaValue, String> {
              -- The track 30-31 runs north at x = 300.
              local NODES = {{ [7] = v(0, 0, 0), [8] = v(50, -40, 0), [9] = v(50, 1, 0), [10] = v(50, 40, 0),
                               [20] = v(120, -30, 0), [21] = v(120, 30, 0), [30] = v(300, -30, 0),
-                              [31] = v(300, 30, 0) }}
-             local TRACKS = {{ [30] = {{ 110 }}, [31] = {{ 110 }} }}
+                              [31] = v(300, 30, 0), [32] = v(300, 90, 0) }}
+             local TRACKS = {{ [30] = {{ 110 }}, [31] = {{ 110, 111 }}, [32] = {{ 111 }} }}
              local STREETS = {{ [7] = {{ 104 }}, [8] = {{ 100 }}, [9] = {{ 100, 101 }}, [10] = {{ 101 }},
                                 [20] = {{ 102 }}, [21] = {{ 102 }} }}
              api = {{
@@ -1208,6 +1208,92 @@ fn a_signal_the_tool_puts_back_on_a_curve_near_a_removed_node_is_kept() {
     // node 30 the same way, but no longer runs where the signal stood.
     let why = capture_refit(&track("v(30, 45, 0)")).unwrap_err();
     assert!(why.contains("replaces a signal elsewhere"), "{why}");
+}
+
+/// As the game proposes it (run-1017-pr165-p2, scaled onto track 30-31-32,
+/// one straight line): signal 556 on 30-31, 15 m short of node 31; a track
+/// started close to 31. The tool removes 31 and puts its own node -1 on
+/// 30-31 just past the signal (13.2), so the signal now stands on the
+/// piece -1>32 that took over the track beyond 31, and puts it back there.
+/// Each case `-5` (30>-1) and `-6` (-1>32 or reversed) lists its objects;
+/// `beyond` is the removed track 31-32 as `node0 = .., node1 = ..` with its
+/// tangents.
+fn across_removed_node(on5: &str, six: &str, on6: &str, beyond: &str) -> String {
+    format!(
+        "{{ addedNodes = {{ {{ entity = -1, comp = {{ position = v(300, 13.2, 0) }} }},
+                          {{ entity = -2, comp = {{ position = v(305, 30, 0) }} }} }},
+            addedSegments = {{
+                {{ entity = -3, type = 1, comp = {{ node0 = -1, node1 = -2,
+                    tangent0 = v(0, 17, 0), tangent1 = v(5, 17, 0), type = 0, typeIndex = -1,
+                    roadTemplate = 'track/standard.track_template', roadStyle = '', objects = {{}} }} }},
+                {{ entity = -5, type = 1, comp = {{ node0 = 30, node1 = -1,
+                    tangent0 = v(0, 43.2, 0), tangent1 = v(0, 43.2, 0), type = 0, typeIndex = -1,
+                    roadTemplate = 'track/standard.track_template', roadStyle = '', objects = {on5} }} }},
+                {{ entity = -6, type = 1, comp = {{ {six}, type = 0, typeIndex = -1,
+                    roadTemplate = 'track/standard.track_template', roadStyle = '', objects = {on6} }} }} }},
+            removedSegments = {{
+                {{ entity = 110, type = 1, comp = {{ node0 = 30, node1 = 31,
+                    tangent0 = v(0, 60, 0), tangent1 = v(0, 60, 0), objects = {{ {{ 556, 2 }} }} }} }},
+                {{ entity = 111, type = 1, comp = {{ {beyond}, objects = {{}} }} }} }},
+            removedNodes = {{ {{ entity = 31, comp = {{ position = v(300, 30, 0) }} }} }},
+            edgeObjectsToAdd = {NEW_SIGNAL}, edgeObjectsToRemove = {{ 556 }} }}"
+    )
+}
+
+const SIX_NORTH: &str =
+    "node0 = -1, node1 = 32, tangent0 = v(0, 76.8, 0), tangent1 = v(0, 76.8, 0)";
+const BEYOND_NORTH: &str = "node0 = 31, node1 = 32, tangent0 = v(0, 60, 0), tangent1 = v(0, 60, 0)";
+const NEW_ON: &str = "{ { -400000000, 2 } }";
+
+#[test]
+fn a_signal_the_tool_puts_back_across_a_removed_node_is_kept() {
+    let kept = |street: String| {
+        let decoded = decode(capture_refit(&street).unwrap());
+        let Action::BuildTrack(built) = &decoded else {
+            panic!("{decoded:?}")
+        };
+        let kept: Vec<_> = built
+            .polyline
+            .links
+            .iter()
+            .flat_map(|link| link.kept.iter())
+            .collect();
+        assert_eq!(kept.len(), 1, "{decoded:?}");
+        assert_eq!(kept[0].removal, 0, "{decoded:?}");
+        assert_eq!(kept[0].at, Fraction(750_000));
+        assert_eq!(
+            kept[0].model.as_str(),
+            "::/infrastructure/signal/signal_path_a.con"
+        );
+    };
+    kept(across_removed_node("{}", SIX_NORTH, NEW_ON, BEYOND_NORTH));
+    // The removed track beyond the node may run either way round.
+    kept(across_removed_node(
+        "{}",
+        SIX_NORTH,
+        NEW_ON,
+        "node0 = 32, node1 = 31, tangent0 = v(0, -60, 0), tangent1 = v(0, -60, 0)",
+    ));
+    let refused = |street: String, why: &str| {
+        let got = capture_refit(&street).unwrap_err();
+        assert!(got.contains(why), "{why}: {got}");
+    };
+    // On the piece before it, which starts 1.8 m past where it stood.
+    refused(
+        across_removed_node(NEW_ON, SIX_NORTH, "{}", BEYOND_NORTH),
+        "replaces a signal elsewhere",
+    );
+    // On the piece beyond the node, drawn the other way: the signal would
+    // face the other way round.
+    refused(
+        across_removed_node(
+            "{}",
+            "node0 = 32, node1 = -1, tangent0 = v(0, -76.8, 0), tangent1 = v(0, -76.8, 0)",
+            NEW_ON,
+            BEYOND_NORTH,
+        ),
+        "replaces a signal elsewhere",
+    );
 }
 
 #[test]

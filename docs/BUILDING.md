@@ -704,7 +704,11 @@ positions, the originator's decisions included:
   acting company's or no company's, and that the piece starts where its
   old track started or ends where it ended, the same way there
   (`geom.continues`: within 0.5 m in three dimensions, tangents within
-  about 6 degrees), and lists it on that piece under its own entity;
+  about 6 degrees), or runs where the signal stood, the same way
+  (`geom.runsThrough`: its centreline within 0.5 m of that place,
+  horizontally and in height, its direction there the old track's, within
+  about 6 degrees; `geom.keepsSignal` asks both), and lists it on that
+  piece under its own entity;
   anything missing or ambiguous refuses the build in every game. After
   the build each kept signal must still exist (else the room's replay
   stops), and how far it moved is said in the log. Behind
@@ -720,11 +724,15 @@ positions, the originator's decisions included:
   tool's record does not say. Only one for one (`engine.lua`
   `refitSignals`): each record a signal on one new track edge, each
   removal a signal on one removed track edge and no waypoint, each new
-  signal on a piece that only one removed signal's edge goes on to
-  (`geom.continues`), not rebuilt between that edge's own nodes, and that
-  runs where that signal stood (its place on the old centreline within
-  0.5 m, horizontally and in height); anything else is refused as a build
-  with a stop or signal. Captured only behind `acceptance.lua`'s
+  signal on a piece that only one removed signal goes onto: a piece that
+  goes on from that signal's edge (`geom.continues`), or, either way
+  round, from another removed track edge that meets it at a node the
+  build removes (the signal stood just short of the removed node, past the
+  tool's own: the piece that took over the track beyond it, seen in
+  run-1017-pr165-p2), not rebuilt between the signal's edge's own nodes,
+  and that runs where the signal stood, the same way
+  (`geom.runsThrough`); anything else is refused as a build with a stop
+  or signal. Captured only behind `acceptance.lua`'s
   `refitSignals`, off until a two-player game shows every game keeps the
   signal where it stood;
 - `removals`: existing edges the build removes, of either network, by their
