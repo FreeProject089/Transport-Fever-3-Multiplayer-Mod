@@ -16254,6 +16254,17 @@ fn level_crossings_types_are_in_the_network_lane() {
             CROSSINGS = before
             -- A tile's nodes: its crossings only.
             local tile = C.rows(api, { [700] = true, [999] = true })
+            -- A lookup that fails, or a type with no name, fails the read: never
+            -- a crossing left out, never a type by its index.
+            local lookup = api.engine.system.railRoadCrossingSystem.getRailroadCrossingForNode
+            api.engine.system.railRoadCrossingSystem.getRailroadCrossingForNode = function() error('busy') end
+            local okLookup, whyLookup = pcall(C.rows, api, { [700] = true })
+            api.engine.system.railRoadCrossingSystem.getRailroadCrossingForNode = lookup
+            TYPES[3] = nil
+            local okName, whyName = pcall(C.rows, api, { [700] = true })
+            TYPES[3] = 'railroad_crossing/era_a_eu.rcr'
+            assert(not okLookup and whyLookup == 'the crossing on node 700 does not read', tostring(whyLookup))
+            assert(not okName and whyName == 'the type of level crossing 800 has no name', tostring(whyName))
             assert(lane ~= 'err' and retyped ~= 'err', tostring(lane))
             return { table.concat(rows, ' || '), listed, byNodesListed,
                 tostring(table.concat(byNodes, ' || ') == table.concat(rows, ' || ')),

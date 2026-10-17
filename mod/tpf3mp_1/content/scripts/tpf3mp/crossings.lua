@@ -249,10 +249,12 @@ local function hasCrossings(a)
 		and a.engine and a.engine.system and a.engine.system.railRoadCrossingSystem ~= nil
 end
 
--- The crossing on `node`, or nil.
+-- The crossing on `node`, or nil where there is none. Raises when the
+-- engine does not answer: a check never takes a failed read for no crossing.
 local function crossingOf(a, node)
 	local ok, e = pcall(a.engine.system.railRoadCrossingSystem.getRailroadCrossingForNode, node)
-	if ok and type(e) == "number" and e >= 0 then return e end
+	if not ok then error("the crossing on node " .. tostring(node) .. " does not read", 0) end
+	if type(e) == "number" and e >= 0 then return e end
 	return nil
 end
 
@@ -296,9 +298,12 @@ function crossings.row(a, entity)
 	for i, p in ipairs(places) do
 		keys[i] = string.format("%.0f,%.0f,%.0f", mm(p.x), mm(p.y), mm(p.z))
 	end
+	-- By its file alone: an index differs between games (D8).
 	local index = c.typeIndex
 	local okName, name = pcall(a.res.railroadCrossingTypeRep.getName, index)
-	if not okName or type(name) ~= "string" or name == "" then name = "type " .. tostring(index) end
+	if not okName or type(name) ~= "string" or name == "" then
+		error("the type of level crossing " .. tostring(entity) .. " has no name", 0)
+	end
 	return "crossing:" .. table.concat(keys, ";") .. "|" .. name, places
 end
 
