@@ -49,6 +49,7 @@ pub unsafe fn install(
     match result {
         Ok(original) => {
             ORIGINAL.store(original, Ordering::Release);
+            crate::toolchain::set_reset_hooked(true);
             "build previews: street and track proposal resets withdraw the player's preview".into()
         }
         Err(why) => format!("build previews: proposal reset withdrawal unavailable: {why}"),

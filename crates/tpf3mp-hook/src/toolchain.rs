@@ -642,6 +642,8 @@ static START_AT_FN: AtomicUsize = AtomicUsize::new(0);
 static EXISTS_FN: AtomicUsize = AtomicUsize::new(0);
 /// The street builder's frame runs the hook's pre-hook.
 static STEP_HOOKED: AtomicBool = AtomicBool::new(false);
+/// A missed proposal-reset hook must leave continuation off.
+static RESET_HOOKED: AtomicBool = AtomicBool::new(false);
 /// The GUI's frames, counted by the mod's `guiUpdate`.
 static FRAME: AtomicU64 = AtomicU64::new(0);
 /// A click waits for its ticket's builds: the replay reads them.
@@ -697,12 +699,25 @@ fn dropped(why: Option<&'static str>) {
 /// Whether the tools continue: the targets resolved and the street
 /// builder's frame is hooked.
 pub fn enabled() -> bool {
-    ADD_RETURN.load(Ordering::Acquire) != 0 && STEP_HOOKED.load(Ordering::Acquire)
+    ready(
+        ADD_RETURN.load(Ordering::Acquire) != 0,
+        STEP_HOOKED.load(Ordering::Acquire),
+        RESET_HOOKED.load(Ordering::Acquire),
+    )
+}
+
+fn ready(add: bool, step: bool, reset: bool) -> bool {
+    add && step && reset
 }
 
 /// The street builder's frame runs [`on_step`] (crate::toolplayer).
 pub fn set_step_hooked(hooked: bool) {
     STEP_HOOKED.store(hooked, Ordering::Release);
+}
+
+/// Called only after the native proposal-reset detour is installed.
+pub fn set_reset_hooked(hooked: bool) {
+    RESET_HOOKED.store(hooked, Ordering::Release);
 }
 
 /// Called by the add's detour for each of the player's builds in the room's
@@ -1005,6 +1020,14 @@ mod tests {
         assert!(!wanted(Some("0")));
         assert!(!wanted(Some("true")));
         assert!(wanted(Some("1")));
+    }
+
+    #[test]
+    fn continuation_requires_both_native_tool_hooks() {
+        assert!(!ready(true, true, false));
+        assert!(!ready(true, false, true));
+        assert!(!ready(false, true, true));
+        assert!(ready(true, true, true));
     }
 
     #[derive(Default)]
@@ -1564,6 +1587,7 @@ mod tests {
         // detour from elsewhere: the street tool's click stays kept.
         ADD_RETURN.store(0x1_4058_91b4, Ordering::Release);
         STEP_HOOKED.store(true, Ordering::Release);
+        RESET_HOOKED.store(true, Ordering::Release);
         {
             let mut chain = chain();
             built(&mut chain, Instant::now());
@@ -1577,6 +1601,7 @@ mod tests {
         assert!(!chain().take(7));
         ADD_RETURN.store(0, Ordering::Release);
         STEP_HOOKED.store(false, Ordering::Release);
+        RESET_HOOKED.store(false, Ordering::Release);
     }
 
     #[test]

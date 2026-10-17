@@ -3237,7 +3237,8 @@ street beside it, as a guide, still goes on in its direction.)
 A right-click while the click waits passes through the tool's own input
 handler with no start point (`UI::StreetBuilder` vf2, 0x581479..0x5814d7).
 The native proposal-reset detour now drops a kept click if that path resets
-the builder; closing the tool also drops it after missed frames. Whether
+the builder; continuation remains off even with test opt-in if this detour
+fails to install. Closing the tool also drops it after missed frames. Whether
 the parent handler can leave the tool open without resetting remains to be
 checked in game, so default continuation stays off. "Closed" is three GUI frames without the
 tool's frame, counted from the click's own; a tool closed and opened
