@@ -727,6 +727,52 @@ fn a_vehicle_sold_on_arrival_at_its_depot_is_refused_on_the_wire_and_in_lua() {
     assert_eq!(Action::from_payload(&payload).unwrap(), good);
 }
 
+#[test]
+fn a_two_sided_stop_bulldoze_requires_two_refs_for_one_construction() {
+    let action = |objects: Vec<EdgeObjectAt>| {
+        Action::Bulldoze(Bulldoze::EdgeObjects {
+            edge: EdgeRef {
+                network: Network::Street,
+                ends: ends(pos(0, 0, 0), pos(10_000, 0, 0)),
+            },
+            objects: list(objects),
+        })
+    };
+    let object = |x, model| EdgeObjectAt {
+        at: pos(x, 0, 0),
+        model: text(model),
+    };
+    let malformed = [
+        action(vec![]),
+        action(vec![object(2_000, "stations/street/twosided.con")]),
+        action(vec![
+            object(2_000, "stations/street/twosided.con"),
+            object(2_000, "stations/street/twosided.con"),
+        ]),
+        action(vec![
+            object(2_000, "stations/street/twosided.con"),
+            object(2_000, "stations/street/other.con"),
+        ]),
+    ];
+    for bad in malformed {
+        assert!(bad.validate().is_err());
+        assert!(bad.to_payload().is_err());
+        let wire = postcard::to_stdvec(&(ACTION_SCHEMA_VERSION, &bad)).unwrap();
+        assert!(Action::from_payload(&Payload::new(wire).unwrap()).is_err());
+        assert!(lua::action_from_lua(&lua::action_to_lua(&bad).unwrap()).is_err());
+    }
+
+    let good = action(vec![
+        object(2_000, "stations/street/twosided.con"),
+        object(8_000, "stations/street/twosided.con"),
+    ]);
+    assert!(good.validate().is_ok());
+    assert_eq!(
+        Action::from_payload(&good.to_payload().unwrap()).unwrap(),
+        good
+    );
+}
+
 /// A train's replacement: its locomotive kept, turned, and a new coach
 /// behind it.
 fn replacement() -> ReplaceVehicle {

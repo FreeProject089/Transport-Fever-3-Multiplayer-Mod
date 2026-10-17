@@ -534,8 +534,11 @@ GUI notes from the construction menu (TF3's proposal does not name it). A
 two-sided stop goes as one `PlaceStop` built on both sides, and the
 bulldozer's removal of it, both its stops at once, as one
 `Bulldoze::EdgeObjects` (schema 27): every game finds each of the two by
-its construction within 2 m of where it stood and rebuilds the edge once
-without them, or removes neither. A stop that replaces another stays
+its construction within 2 m of where it stood, checks they are opposite
+`STOP_LEFT`/`STOP_RIGHT` objects in the same station group at the same
+place along that edge, and rebuilds it once without them. An incomplete,
+ambiguous or unrelated pair removes neither; each resolved stop must also
+be one the acting company may touch. A stop that replaces another stays
 refused. A track bulldozed with signals on it goes as `Bulldoze::Edges`:
 every game finds the same tracks, refuses the removal if any of them
 carries a stop or another company's signal, and removes the tracks with

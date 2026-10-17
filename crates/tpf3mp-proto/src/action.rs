@@ -1349,6 +1349,9 @@ pub enum ActionError {
     /// place off its edge.
     #[error("invalid signals: {0}")]
     Signals(&'static str),
+    /// A two-sided stop removal that does not carry one same-construction pair.
+    #[error("invalid bulldoze: {0}")]
+    Bulldoze(&'static str),
 }
 
 impl Action {
@@ -1384,10 +1387,27 @@ impl Action {
         }
     }
 
-    /// Validate what the wire's bounds do not: the relationships within a
-    /// junction, and no vehicle sent to be sold on arrival
-    /// ([`ActionError::SellOnArrival`]).
+    /// Validate relationships the wire's bounds do not: a two-sided stop
+    /// removal's pair, the relationships within a junction, and no vehicle
+    /// sent to be sold on arrival ([`ActionError::SellOnArrival`]).
     pub fn validate(&self) -> Result<(), ActionError> {
+        if let Self::Bulldoze(Bulldoze::EdgeObjects { objects, .. }) = self {
+            if objects.len() != 2 {
+                return Err(ActionError::Bulldoze(
+                    "a two-sided stop removal must name both objects",
+                ));
+            }
+            if objects[0] == objects[1] {
+                return Err(ActionError::Bulldoze(
+                    "a two-sided stop removal must name distinct objects",
+                ));
+            }
+            if objects[0].model != objects[1].model {
+                return Err(ActionError::Bulldoze(
+                    "a two-sided stop removal must name one construction",
+                ));
+            }
+        }
         let changes = match self {
             Self::CalendarSpeed { millis_per_day } if *millis_per_day > i32::MAX as u32 => {
                 return Err(ActionError::CalendarSpeed);

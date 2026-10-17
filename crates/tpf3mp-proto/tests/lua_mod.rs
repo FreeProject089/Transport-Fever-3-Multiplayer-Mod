@@ -8492,6 +8492,25 @@ api.engine.getComponent = function(id, kind)
 end
 "#;
 
+/// Station groups and ownership for paired-stop replay and capture checks.
+const FAKE_STOP_GROUPS: &str = r#"
+api.type.ComponentType.STATION_GROUP, api.type.ComponentType.PLAYER_OWNED = 9, 15
+STOP_GROUPS, STOP_GROUPS_BY_ENTITY, STOP_OWNERS = {}, {}, {}
+api.engine.system.stationGroupSystem = { getStationGroup = function(entity)
+    return STOP_GROUPS_BY_ENTITY[entity] or -1
+end }
+local get = api.engine.getComponent
+api.engine.getComponent = function(entity, kind)
+    if kind == 9 then return STOP_GROUPS[entity] end
+    if kind == 15 then return STOP_OWNERS[entity] and { player = STOP_OWNERS[entity] } or nil end
+    return get(entity, kind)
+end
+function STOP_GROUP(group, stations)
+    STOP_GROUPS[group] = { stations = stations }
+    for _, station in ipairs(stations) do STOP_GROUPS_BY_ENTITY[station] = group end
+end
+"#;
+
 /// The stop tool's proposal for a stop left of edge 100, 6 m east of its
 /// middle, as build 40408 hands it to game scripts: the edge removed and
 /// added again between the same nodes, the new stop in its objects and in
@@ -9206,6 +9225,7 @@ fn the_bulldozer_removes_both_stops_of_a_two_sided_stop_in_every_game() {
     let (lua, _script) = engine();
     lua.load(FAKE_NETWORK).exec().unwrap();
     lua.load(FAKE_STOPS).exec().unwrap();
+    lua.load(FAKE_STOP_GROUPS).exec().unwrap();
     lua.load(
         "local two = '::/stations/street/small_stops/small_new_twosided.con' \
          OBJECTS[555] = { transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 56,0.2,0,1 }, edgeObjectConstruction = two } \
@@ -9221,6 +9241,7 @@ fn the_bulldozer_removes_both_stops_of_a_two_sided_stop_in_every_game() {
     )
     .exec()
     .unwrap();
+    lua.load("STOP_GROUP(600, { 555, 556 })").exec().unwrap();
     let removal: String = lua
         .load(
             "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
@@ -9293,6 +9314,127 @@ fn the_bulldozer_removes_both_stops_of_a_two_sided_stop_in_every_game() {
         refused,
         "0|false|no ::/stations/street/small_stops/small_new_twosided.con there"
     );
+}
+
+#[test]
+fn the_bulldozer_does_not_pair_two_different_stops() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    lua.load(FAKE_STOP_GROUPS).exec().unwrap();
+    let result: String = lua
+        .load(
+        "local model = '::/stations/street/small_stops/small_new_twosided.con' \
+         OBJECTS[555] = { transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 56,0.2,0,1 }, edgeObjectConstruction = model } \
+         OBJECTS[556] = { transf = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 44,0.2,0,1 }, edgeObjectConstruction = model } \
+         STOP_GROUP(600, { 555 }) STOP_GROUP(601, { 556 }) \
+         local function seg(entity, objects) return { entity = entity, type = 0, comp = { node0 = 8, node1 = 9, \
+             tangent0 = { x = 0, y = 80, z = 0 }, tangent1 = { x = 0, y = 80, z = 0 }, objects = objects } } end \
+         local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         local action, why = capture.bulldoze({ toAdd = {}, toRemove = {}, proposal = { addedNodes = {}, \
+             removedNodes = {}, removedSegments = { seg(100, { { 555, 0 }, { 556, 1 } }) }, \
+             addedSegments = { seg(-1, {}) }, edgeObjectsToAdd = {} } }) \
+         return tostring(action) .. '|' .. tostring(why)",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(result, "nil|the two stops are not one two-sided stop");
+}
+
+#[test]
+fn replay_refuses_malformed_or_unrelated_two_sided_stop_objects() {
+    let model = "::/stations/street/small_stops/small_new_twosided.con";
+    let first = format!("{{ at = {{ x = 56, y = 0.2, z = 0 }}, model = '{model}' }}");
+    let second = format!("{{ at = {{ x = 44, y = 0.2, z = 0 }}, model = '{model}' }}");
+    let cases = [
+        (
+            "empty removal",
+            "{}".to_owned(),
+            "",
+            "a two-sided stop removal must name both objects",
+            "Street",
+        ),
+        (
+            "one-sided removal",
+            format!("{{ {first} }}"),
+            "",
+            "a two-sided stop removal must name both objects",
+            "Street",
+        ),
+        (
+            "signals",
+            format!("{{ {first}, {second} }}"),
+            "EDGES[100].objects = { { 555, 2 }, { 556, 2 } }",
+            "resolved to a signal or waypoint",
+            "Street",
+        ),
+        (
+            "different stops",
+            format!("{{ {first}, {second} }}"),
+            "STOP_GROUP(600, { 555 }) STOP_GROUP(601, { 556 })",
+            "the two stops are not one two-sided stop",
+            "Street",
+        ),
+        (
+            "different places on one edge",
+            format!("{{ {first}, {{ at = {{ x = 44, y = 10.2, z = 0 }}, model = '{model}' }} }}"),
+            "OBJECTS[556].transf[14] = 10.2",
+            "the two stops are at different places on the edge",
+            "Street",
+        ),
+        (
+            "other company owns one stop",
+            format!("{{ {first}, {second} }}"),
+            "STOP_OWNERS[556] = 30",
+            "the stop belongs to another company",
+            "Street",
+        ),
+        (
+            "edge not in this game",
+            format!("{{ {first}, {second} }}"),
+            "STOP_GROUP(600, { 555, 556 })",
+            "no Street edge for the stop",
+            "Street",
+        ),
+    ];
+
+    for (name, refs, setup, expected, network) in cases {
+        let edge_ends = if name == "edge not in this game" {
+            "a = { x = 50, y = -400, z = 0 }, b = { x = 50, y = 400, z = 0 }"
+        } else {
+            "a = { x = 50, y = -40, z = 0 }, b = { x = 50, y = 40, z = 0 }"
+        };
+        let (lua, _script) = engine();
+        lua.load(FAKE_NETWORK).exec().unwrap();
+        lua.load(FAKE_STOPS).exec().unwrap();
+        lua.load(FAKE_STOP_GROUPS).exec().unwrap();
+        lua.load(format!(
+            "local model = '{model}' \
+             OBJECTS[555] = {{ transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 56,0.2,0,1 }}, edgeObjectConstruction = model }} \
+             OBJECTS[556] = {{ transf = {{ 1,0,0,0, 0,1,0,0, 0,0,1,0, 44,0.2,0,1 }}, edgeObjectConstruction = model }} \
+             EDGES[100].objects = {{ {{ 555, 0 }}, {{ 556, 1 }} }} STOP_GROUP(600, {{ 555, 556 }}) {setup} \
+             ACTION = {{ Bulldoze = {{ EdgeObjects = {{ edge = {{ network = '{network}', ends = {{ {edge_ends} }} }}, \
+                 objects = {refs} }} }} }} \
+             HOOK.batch = {{ ACTION }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let outcome: (usize, bool, String) = lua
+            .load(
+                "return #SENT, HOOK.applied[1] and HOOK.applied[1].ok == true, \
+                 HOOK.applied[1] and tostring(HOOK.applied[1].why) or 'missing result'",
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(outcome.0, 0, "{name} sent a build: {}", hook_log(&lua));
+        assert!(!outcome.1, "{name} applied: {}", hook_log(&lua));
+        assert!(
+            outcome.2.contains(expected),
+            "{name}: expected {expected:?}, got {:?}; {}",
+            outcome.2,
+            hook_log(&lua)
+        );
+    }
 }
 
 /// Junctions with traffic lights at both ends of edge 100: node 8, where

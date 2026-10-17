@@ -1243,15 +1243,48 @@ function removeStop(street)
 			model = resName(get(c, "edgeObjectConstruction"), "the stop's construction"),
 		}
 	end
-	local ref = edgeRef(old, network)
+	local ref, curve = edgeRef(old, network)
 	if #gone == 1 then
 		return { Bulldoze = { EdgeObject = { edge = ref, at = objects[1].at, model = objects[1].model } } }
 	end
 	local types = enum("EdgeObjectType")
 	local sides = { [types.STOP_LEFT] = "left", [types.STOP_RIGHT] = "right" }
-	if sides[gone[1][2]] == nil or sides[gone[2][2]] == nil or gone[1][2] == gone[2][2]
+	if gone[1][1] == gone[2][1] or sides[gone[1][2]] == nil or sides[gone[2][2]] == nil
+		or gone[1][2] == gone[2][2]
 		or objects[1].model ~= objects[2].model then
 		error("removing more than one stop at once", 0)
+	end
+	local function stationGroup(entity)
+		local ok, group = pcall(function()
+			return api.engine.system.stationGroupSystem.getStationGroup(entity)
+		end)
+		if not ok or type(group) ~= "number" or group < 0 then
+			error("a two-sided stop without a readable station group", 0)
+		end
+		local componentType = api.type.ComponentType.STATION_GROUP
+		if type(componentType) ~= "number" then
+			error("the station group component cannot be read", 0)
+		end
+		local component = api.engine.getComponent(group, componentType)
+		if component == nil then error("a two-sided stop with no station group component", 0) end
+		local count = 0
+		for _, member in ipairs(list(get(component, "stations"))) do
+			if member == entity then count = count + 1 end
+		end
+		if count ~= 1 then error("a two-sided stop not listed once in its station group", 0) end
+		return group
+	end
+	if stationGroup(gone[1][1]) ~= stationGroup(gone[2][1]) then
+		error("the two stops are not one two-sided stop", 0)
+	end
+	local function center(at)
+		local u = geom.parameterAt(curve.a, curve.ta, curve.b, curve.tb, at.x, at.y)
+		return geom.hermitePos(curve.a, curve.ta, curve.b, curve.tb, u)
+	end
+	local a, b = center(objects[1].at), center(objects[2].at)
+	local dx, dy, dz = a[1] - b[1], a[2] - b[2], a[3] - b[3]
+	if dx * dx + dy * dy + dz * dz > 0.25 then
+		error("the two stops are at different places on the edge", 0)
 	end
 	return { Bulldoze = { EdgeObjects = { edge = ref, objects = objects } } }
 end

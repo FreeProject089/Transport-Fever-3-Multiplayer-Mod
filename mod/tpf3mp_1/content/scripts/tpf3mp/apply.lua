@@ -1867,27 +1867,98 @@ end
 -- nearest where it stood, within 2 m, each a different one; the edge
 -- rebuilt once without them.
 function removeEdgeObject(edge, removed, context)
+	if type(removed) ~= "table" then error("the bulldozer has no edge-object list", 0) end
+	local count = 0
+	for k in pairs(removed) do
+		if type(k) ~= "number" or k ~= math.floor(k) or k < 1 or k > 2 then
+			error("the bulldozer has a malformed edge-object list", 0)
+		end
+		count = count + 1
+	end
+	if count ~= 2 or #removed ~= count then
+		error("a two-sided stop removal must name both objects", 0)
+	end
+	if removed[1].model ~= removed[2].model then
+		error("a two-sided stop removal must name one construction", 0)
+	end
 	local network = edge.network
 	local e = stopEdge(edge)
 	local taken, gone, names = {}, {}, {}
+	local edgeKinds = {}
+	for _, o in ipairs(e.comp.objects or {}) do
+		local id, kind = o[1], o[2]
+		if type(id) ~= "number" or id ~= math.floor(id) or id < 0 or kind == nil or edgeKinds[id] ~= nil then
+			error("the edge has an unreadable or repeated object", 0)
+		end
+		edgeKinds[id] = kind
+	end
+	local resolved = {}
 	for _, ref in ipairs(removed) do
-		local best, bestD
+		local best, bestD, bestKind, bestAt
 		for _, o in ipairs(e.comp.objects or {}) do
 			local c = not taken[o[1]] and api.engine.getComponent(o[1], api.type.ComponentType.EDGE_OBJECT)
 			local t = c and c.transf
 			if c and c.edgeObjectConstruction == ref.model and t then
 				local dx, dy, dz = t[13] - ref.at.x, t[14] - ref.at.y, t[15] - ref.at.z
 				local dist = dx * dx + dy * dy + dz * dz
-				if dist <= 4 and (bestD == nil or dist < bestD or (dist == bestD and o[1] < best)) then
-					best, bestD = o[1], dist
+				if dist <= 4 then
+					if bestD == nil or dist < bestD then
+						best, bestD, bestKind, bestAt = o[1], dist, edgeKinds[o[1]], { t[13], t[14], t[15] }
+					elseif dist == bestD then
+						error("two " .. tostring(ref.model) .. " objects equally near", 0)
+					end
 				end
 			end
 		end
 		if best == nil then error("no " .. tostring(ref.model) .. " there", 0) end
+		if bestKind == nil then error("an edge object with no stop or signal type", 0) end
 		mine(best, "stop")
 		taken[best] = true
 		gone[#gone + 1] = best
 		names[#names + 1] = tostring(ref.model) .. " " .. tostring(best)
+		resolved[#resolved + 1] = { entity = best, kind = bestKind, at = bestAt }
+	end
+	if count == 2 then
+		local types = enum("EdgeObjectType")
+		if resolved[1].kind ~= types.STOP_LEFT and resolved[1].kind ~= types.STOP_RIGHT then
+			error("a two-sided stop removal resolved to a signal or waypoint", 0)
+		end
+		if resolved[2].kind ~= types.STOP_LEFT and resolved[2].kind ~= types.STOP_RIGHT then
+			error("a two-sided stop removal resolved to a signal or waypoint", 0)
+		end
+		if resolved[1].kind == resolved[2].kind or resolved[1].entity == resolved[2].entity then
+			error("a two-sided stop removal needs opposite sides", 0)
+		end
+		local function stationGroup(entity)
+			local ok, group = pcall(function()
+				return api.engine.system.stationGroupSystem.getStationGroup(entity)
+			end)
+			if not ok or type(group) ~= "number" or group < 0 then
+				error("a two-sided stop without a readable station group", 0)
+			end
+			local componentType = api.type.ComponentType.STATION_GROUP
+			if type(componentType) ~= "number" then error("the station group component cannot be read", 0) end
+			local component = api.engine.getComponent(group, componentType)
+			if component == nil then error("a two-sided stop with no station group component", 0) end
+			local listed = 0
+			for _, member in ipairs(seq(component.stations or {})) do
+				if member == entity then listed = listed + 1 end
+			end
+			if listed ~= 1 then error("a two-sided stop not listed once in its station group", 0) end
+			return group
+		end
+		if stationGroup(resolved[1].entity) ~= stationGroup(resolved[2].entity) then
+			error("the two stops are not one two-sided stop", 0)
+		end
+		local function center(at)
+			local u = geom.parameterAt(e.a, e.ta, e.b, e.tb, at[1], at[2])
+			return geom.hermitePos(e.a, e.ta, e.b, e.tb, u)
+		end
+		local a, b = center(resolved[1].at), center(resolved[2].at)
+		local dx, dy, dz = a[1] - b[1], a[2] - b[2], a[3] - b[3]
+		if dx * dx + dy * dy + dz * dz > 0.25 then
+			error("the two stops are at different places on the edge", 0)
+		end
 	end
 	local objects = {}
 	for _, o in ipairs(e.comp.objects) do
