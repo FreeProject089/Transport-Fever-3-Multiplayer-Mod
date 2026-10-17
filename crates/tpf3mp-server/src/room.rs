@@ -24,7 +24,7 @@ use tpf3mp_proto::{
     Platform, PlayerId, RequestError, Resume, RoomDeclaration, RoomId, RoomListing, RoomMods,
     RoomPhase, RoomSettings, RoomView, RulesName, SavedWorld, Seal, Secret, ServerMessage,
     SnapshotId, Speed, StartSave, StartView, TURN_MAX_FRAME, Text, Turn, TurnMessage, TurnStart,
-    WorldOffer, decode_frame, encode_frame,
+    WorldOffer, decode_frame, encode_frame, native_term_version_is_full,
 };
 use tpf3mp_snapshot::{Manifest, ManifestId};
 use tracing::{debug, error, info, warn};
@@ -273,7 +273,9 @@ fn native_settings_match_version(native: &NativeMod) -> bool {
         .version
         .as_str()
         .rsplit_once('+')
-        .is_some_and(|(_, suffix)| suffix == expected)
+        .is_some_and(|(_, suffix)| {
+            native_term_version_is_full(native.version.as_str()) && suffix.starts_with(expected)
+        })
 }
 
 fn native_settings_are_persistable(declared: &Declared) -> bool {
@@ -307,6 +309,7 @@ pub(crate) enum RoomCommand {
         invite: Invite,
         password: Option<Text<64>>,
         resume: Option<Resume>,
+        scan_plan: tpf3mp_proto::ScanPlan,
         reply: Reply<RoomView>,
     },
     Leave {
@@ -949,6 +952,8 @@ pub(crate) enum RecoverError {
     Settings,
     #[error("the start record's native settings are missing or do not match its manifest")]
     NativeSettings,
+    #[error("the log's native room terms lack a full package identity")]
+    NativeIdentity,
     #[error("the room is played by rules \"{0}\", which this server no longer offers")]
     UnknownRules(String),
     #[error("the log's file name does not match its room")]
@@ -1092,7 +1097,9 @@ impl Room {
         let (version, _) = postcard::take_from_bytes::<u16>(&first).map_err(RecoverError::Start)?;
         if !matches!(
             version,
-            persist::FORMAT_VERSION | persist::LEGACY_NATIVE_FREE_FORMAT_VERSION
+            persist::FORMAT_VERSION
+                | persist::LEGACY_NATIVE_FORMAT_VERSION
+                | persist::LEGACY_NATIVE_FREE_FORMAT_VERSION
         ) {
             return Err(RecoverError::Version(version));
         }
@@ -1107,11 +1114,23 @@ impl Room {
         if (version == persist::LEGACY_NATIVE_FREE_FORMAT_VERSION && has_native_terms)
             || (version == persist::LEGACY_NATIVE_FREE_FORMAT_VERSION
                 && !start.native_mods.is_empty())
-            || (version == persist::FORMAT_VERSION
+            || (version >= persist::LEGACY_NATIVE_FORMAT_VERSION
                 && start.manifest.is_none()
                 && !start.native_mods.is_empty())
         {
             return Err(RecoverError::NativeSettings);
+        }
+        if version >= persist::LEGACY_NATIVE_FORMAT_VERSION
+            && start.manifest.as_ref().is_some_and(|stored| {
+                stored
+                    .clone()
+                    .manifest()
+                    .native
+                    .iter()
+                    .any(|term| !native_term_version_is_full(term.version.as_str()))
+            })
+        {
+            return Err(RecoverError::NativeIdentity);
         }
         // A room keeps its rules for good; the server must still have them.
         let mut ruleset = match menu.find(Some(start.rules.as_str())) {
@@ -1127,7 +1146,7 @@ impl Room {
             .clone()
             .map(|stored| {
                 let manifest = stored.manifest();
-                if version == persist::FORMAT_VERSION {
+                if version >= persist::LEGACY_NATIVE_FORMAT_VERSION {
                     Declared::restored_with_native(manifest, start.native_mods.clone())
                         .map_err(|_| RecoverError::NativeSettings)
                 } else {
@@ -1526,9 +1545,10 @@ impl Room {
                 invite,
                 password,
                 resume,
+                scan_plan,
                 reply,
             } => {
-                let result = self.join(member, &invite, password.as_ref(), resume);
+                let result = self.join(member, &invite, password.as_ref(), resume, scan_plan);
                 let joined = result.is_ok();
                 let _ = reply.send(result);
                 if joined {
@@ -1728,6 +1748,7 @@ impl Room {
         invite: &Invite,
         password: Option<&Text<64>>,
         resume: Option<Resume>,
+        scan_plan: tpf3mp_proto::ScanPlan,
     ) -> Result<RoomView, RequestError> {
         let now = Instant::now();
         let content = new.content.as_ref().map(|declared| declared.fingerprint);
@@ -1742,6 +1763,9 @@ impl Room {
                 return Err(RequestError::BadInvite);
             }
             _ => return Err(RequestError::BadInvite),
+        }
+        if !scan_plan.is_valid() || scan_plan != self.settings.scan_plan {
+            return Err(RequestError::ScanPlanMismatch);
         }
         if let Some(index) = self.members.iter().position(|m| m.player == new.player) {
             // The same player again, e.g. after reconnecting: the new
@@ -4211,8 +4235,12 @@ mod tests {
             value: NativeValue::Int(37),
         }];
         let settings_map = BTreeMap::from([("radius".to_owned(), Setting::Int(37))]);
-        let version =
-            Text::new(format!("1.2.3+{}", &settings_digest(&settings_map)[..10])).unwrap();
+        let version = Text::new(format!(
+            "1.2.3+{}{}",
+            &settings_digest(&settings_map)[..10],
+            "a".repeat(64)
+        ))
+        .unwrap();
         let term = ModRef {
             id: Text::new("native:bigmap").unwrap(),
             version: version.clone(),
@@ -4710,7 +4738,7 @@ mod tests {
         for (ordinal, native_mods) in [
             Vec::new(),
             vec![NativeMod {
-                version: Text::new("1.2.4+0123456789").unwrap(),
+                version: Text::new(format!("1.2.4+{}{}", "0".repeat(10), "a".repeat(64))).unwrap(),
                 ..valid_native[0].clone()
             }],
             vec![NativeMod {
@@ -4739,6 +4767,41 @@ mod tests {
             ));
             assert_eq!(std::fs::read(&path).unwrap(), before);
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn format9_legacy_short_native_terms_decode_but_recovery_fails_closed() {
+        let dir =
+            std::env::temp_dir().join(format!("tpf3mp-v9-native-short-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = RoomId(FixedBytes([0x8a; 16]));
+        let (manifest, mut native_mods) = native_terms();
+        let mut legacy_manifest = manifest.clone();
+        let legacy_version = Text::new(format!(
+            "1.2.3+{}",
+            &settings_digest(&BTreeMap::from([("radius".to_owned(), Setting::Int(37))]))[..10]
+        ))
+        .unwrap();
+        legacy_manifest.native[0].version = legacy_version.clone();
+        native_mods[0].version = legacy_version;
+
+        let mut start = recovery_start(id, persist::FORMAT_VERSION);
+        start.manifest = Some(persist::StoredManifest::from(&legacy_manifest));
+        start.native_mods = native_mods;
+        let payload = postcard::to_stdvec(&start).unwrap();
+        let decoded = persist::deserialize_start(&payload, persist::FORMAT_VERSION).unwrap();
+        assert_eq!(decoded.manifest.unwrap().manifest(), legacy_manifest);
+        let path = RoomLog::path_for(&dir, &id);
+        write_record(&path, &payload, &[]);
+        let before = std::fs::read(&path).unwrap();
+
+        assert!(matches!(
+            recover_by(&path, &dir, &recorder_menu()),
+            Err(RecoverError::NativeIdentity)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -4868,14 +4931,17 @@ mod tests {
             base: None,
             native_mods: native_mods.clone(),
         };
-        let mut log = RoomLog::create(&dir, &start).unwrap();
-        for frame in &frames {
-            log.append(frame).unwrap();
-        }
-        drop(log);
         let path = RoomLog::path_for(&dir, &id);
+        let legacy_frames: Vec<Vec<u8>> = frames.iter().map(|frame| frame.to_vec()).collect();
+        std::fs::create_dir_all(&dir).unwrap();
+        write_record(&path, &persist::format9_payload(&start), &legacy_frames);
+        // Recovery appends a history marker to the old log. A second
+        // recovery proves its old start and appended marker remain readable.
+        let restored = recover_room(&path, &dir);
+        assert_eq!(restored.settings.scan_plan, tpf3mp_proto::ScanPlan::DEFAULT);
+        drop(restored);
 
-        // A restored room compacts, keeping its last three turns.
+        // A restored format-9 room compacts to format 10, keeping its last three turns.
         let mut first = recover_room(&path, &dir);
         assert_native_terms(&first, &native_mods);
         assert_eq!(first.start_record(2, None).native_mods, native_mods);

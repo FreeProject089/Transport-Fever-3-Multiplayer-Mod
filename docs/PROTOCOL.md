@@ -1,6 +1,6 @@
 # Protocol
 
-Current integration: protocol **20**, bridge **28**, action schema **26**.
+Current integration: protocol **23**, bridge **29**, action schema **26**.
 This selective combination differs from both prior dev and PR #37; all
 participants and the relay must be upgraded together. Numbers in feature
 history below describe their original introduction.
@@ -95,6 +95,22 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   the server orders commands without judging them. The room view and every
   `TurnStart` name the room's rules, and they never change for the life of
   the room.
+- **World scans (protocol 23).** `RoomSettings.scan_plan` fixes the exact
+  world-check mode (`RollingV1`, `NativeCompareV2`, or `NativeV2`), part
+  count and update stride for the life of the room. The default remains
+  rolling-v1, `10x1`; native modes are experimental opt-ins. Create refuses
+  invalid plans. Every join, including reconnect/resume, supplies a matching
+  `JoinRoom.scan_plan`. After checking credentials, the room refuses a
+  mismatch with `ScanPlanMismatch` before changing a seat, replacing a
+  connection, appending events or sending a world. The launcher and hook
+  parse the same environment contract, including launcher `--game-env`
+  overrides; malformed values refuse multiplayer.
+  Control and turn streams can arrive in either order: the agent holds the
+  turn stream until both the fresh room view and mod declaration arrive,
+  and passes the agreed plan in bridge-29 `Begin` before any load. The hook
+  checks its cached local configuration against that plan before loading or
+  advancing room steps. Native readers still scan the whole entity table
+  per part; agreement establishes compatibility, without a latency bound.
 - **Closing.** A room closes when its last member leaves; a lobby also
   when its last member disconnects. A running game also closes when nobody
   has been connected to it for the server's grace period, 10 minutes by
@@ -219,8 +235,9 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   world loads them with (`ModParams`: per mod its `modParams` by name, up
   to 64 bytes, each a whole number; the id `""`, `GAME_SETTINGS`, carries
   the game's own: difficulty, costs, the economy's). The room takes it
-  whole or not at all: every mod listed (no `Unlisted` tail), at most 256,
-  each valid and once, TPF3-MP's own exactly once and last, a Mod Hub
+  whole or not at all: every ordinary mod listed (no `Unlisted` tail), at
+  most 256, each valid and once, TPF3-MP's own exactly once and last; up to
+  16 native terms are additional (272 terms total). A Mod Hub
   number only for a mod from `mod.io`, settings only for the room's mods
   and the game's own, at most 512, each mod once, all within 60 KiB;
   otherwise `InvalidContent`. Only the owner sends it (`NotOwner`), only
@@ -248,15 +265,21 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   game restored after a restart tells its mods again from it, each by its
   id, with no names, Mod Hub numbers or settings (its world carries its
   own settings); a manifest that is no room's list tells none.
-- **Native mods** (protocol 20; D29, [NATIVE_MODS.md](NATIVE_MODS.md)).
+- **Native mods** (protocol 22; D29, [NATIVE_MODS.md](NATIVE_MODS.md)).
   A manifest also names the game's native mods that change the simulation
   (`ContentManifest::native`, at most 16, ordered by id): each a `ModRef`
   whose id is `native:` and the package's id (no mod folder can be named
-  so) and whose version is the package's version, `+`, and the first ten
-  hex digits of a SHA-256 of its settings, defaults included
-  (`0.3.0+0123456789`). They compare as mods do: `ContentDiff` lists a
+  so) and whose version is the package's version, `+`, the first ten hex
+  digits of a SHA-256 of its settings, defaults included, followed by the
+  full 64-digit SHA-256 package identity (`0.3.0+0123456789<64 hex digits>`).
+  The first ten digits let the server verify the settings named in the room
+  declaration; only the full identity binds package contents. It covers the
+  package metadata, simulation flag, features, declared and effective
+  settings, dependencies, sorted file paths, sizes and SHA-256s, every
+  platform's plugin descriptors and declared hooks. They compare as mods do:
+  `ContentDiff` lists a
   missing, extra or other native mod under its `native:` id, so two games
-  with different native mods, or other settings, never share a room. The
+  with different native mods, package bytes or settings never share a room. The
   fingerprint covers them only when there are any: without native mods it
   is the fingerprint protocol 19 derived, so a room logged before keeps
   taking its players back. The owner's `RoomConfig` carries, beside its
@@ -265,16 +288,34 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
   and every setting, `NativeSetting`, keyed once in order, each a
   `NativeValue`: a boolean, a whole number or text of up to 128 bytes), and
   `RoomMods::native` tells them to every member, whose launcher installs
-  that version from the project's signed index with those settings
-  (never from another player). The room refuses a declaration whose
+  that version from the room server's authenticated index or the project's
+  optional signed index with those settings (never from another player).
+  The launcher requires local consent for the same full package identity
+  and source before fetching, installing or enabling executable plugins;
+  the consent choice is not sent to the room. The room refuses a declaration whose
   native mods do not match its manifest's one for one (`InvalidContent`).
   An owner cannot start a game with native terms until its valid room
   declaration supplies their settings.
-  The room log's start record (format 9) keeps each native mod's full
+  The room log's start record (format 10) keeps each native mod's full
   settings beside the manifest terms, and a restored game tells new members
-  the same settings. Native-free format-8 logs remain readable. A format-8
-  log that names native mods is refused and kept for diagnosis because its
-  settings were not recorded.
+  the same settings. Format-9 and native-free format-8 logs remain readable through explicit legacy layouts and recover with the default rolling-v1 scan plan. Format 10 persists the agreed scan plan. Turn record layouts are unchanged, so recovered older logs can safely append turns and compact into format 10. Historical
+  format-9 records with ten-digit native terms still decode, but recovery
+  refuses them with an explicit missing-package-identity error and preserves
+  the log for diagnosis. A format-8 log that names native mods is refused
+  and kept for diagnosis because its settings were not recorded.
+- **A server's native mods** (protocol 21). `NativeIndex { proposed,
+  page }` asks for one page of the native mods the server offers: its
+  index of native mods, the JSON of [NATIVE_MODS.md](NATIVE_MODS.md)'s
+  format, or with `proposed` the mods open pull requests to its registry
+  would add (`Proposals`). The answer is `Response::NativeIndex(Some(
+  NativeIndexPage))`: the index's serial, the page, how many pages there
+  are and up to 48 KiB of its bytes, at most 32 pages; or `None` from a
+  server that offers none. A page past the last answers with the first. A
+  client reads pages 0, 1, … until it has them all, every one with the same
+  serial, and starts again once if the serial changed between pages. The
+  launcher keeps each server's index apart, refuses one older than the one
+  it kept from that server, and rejects different index bytes that reuse the
+  same serial. It installs from the accepted index as from a signed index.
 - **Starting.** In the lobby, members declare their content and toggle
   **ready**. The owner can start the game only when every member is ready,
   all fingerprints are equal, and the world the owner handed over, if any,

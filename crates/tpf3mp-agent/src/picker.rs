@@ -975,7 +975,7 @@ mod tests {
     fn native_mods_go_with_the_room_but_never_into_a_worlds_mods() {
         let big_maps = |version: &str| NativeMod {
             id: Text::lossy("bigmap"),
-            version: Text::lossy(version),
+            version: Text::lossy(&format!("{}{}", version, "a".repeat(64))),
             name: Text::lossy("Big Maps"),
             settings: vec![tpf3mp_proto::NativeSetting {
                 key: Text::lossy("depth"),
