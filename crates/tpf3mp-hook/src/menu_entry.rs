@@ -39,7 +39,7 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 use tpf3mp_hookcore::detour::InlineDetour;
 use tpf3mp_hookcore::pe::PeHeaders;
@@ -61,6 +61,17 @@ use crate::lobby;
 /// path stays the module's cache key, so the rest of the menu sees the same
 /// `MainPage` value it always did. Requests to the hook pass straight
 /// through to the original, where the detour answers them.
+const MANAGER_WINDOW_BUILD_SHA256: &str =
+    "74861ac43b041aebc5179154345b3cf1ec83154c8e6cc58e0d9e02ff5fa602e4";
+
+pub fn manager_window_supported(profile: &Profile) -> bool {
+    profile.build.sha256 == MANAGER_WINDOW_BUILD_SHA256
+}
+
+fn menu_patch(manager_window_supported: bool) -> String {
+    format!("local tpf3mp_manager_window_supported = {manager_window_supported}\n{PATCH}")
+}
+
 const PATCH: &str = r#"
 local ru = resolveutil
 if type(ru) ~= "table" then
@@ -79,7 +90,7 @@ ru.loadfile = function(path, ...)
 		end
 		pcall(debugPrint, "[tpf3mp] main menu: the mod's main_page.tl is not loadable (" .. tostring(ok and err or chunk) .. "); the menu stays the game's")
 	end
-	if type(path) == "string" and path:find("gui/line_vehicle_mgmt/manager_window%.tl$") and not path:find("^tpf3mp_1::") then
+	if tpf3mp_manager_window_supported and type(path) == "string" and path:find("gui/line_vehicle_mgmt/manager_window%.tl$") and not path:find("^tpf3mp_1::") then
 		local ok, chunk, err = pcall(orig, "tpf3mp_1::/gui/line_vehicle_mgmt/manager_window.tl", ...)
 		if ok and chunk then
 			pcall(debugPrint, "[tpf3mp] line manager: " .. path .. " is served from tpf3mp_1::/gui/line_vehicle_mgmt/manager_window.tl")
@@ -147,6 +158,7 @@ static LUA_PCALLK: AtomicUsize = AtomicUsize::new(0);
 static LUA_SETTOP: AtomicUsize = AtomicUsize::new(0);
 static LUA_PUSHLSTRING: AtomicUsize = AtomicUsize::new(0);
 static LUA_TOLSTRING: AtomicUsize = AtomicUsize::new(0);
+static MANAGER_WINDOW_SUPPORTED: AtomicBool = AtomicBool::new(false);
 /// The Lua states already patched.
 static PATCHED: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 /// Keeps the detour armed for the life of the process.
@@ -224,7 +236,12 @@ pub fn resolve_targets(profile: &Profile) -> Result<Targets, String> {
 ///
 /// Call once, before the game's code runs (the launcher loads the hook into
 /// the suspended game), with targets resolved from a matching profile.
-pub unsafe fn install(targets: &Targets, log_path: Option<&Path>) -> Result<(), String> {
+pub unsafe fn install(
+    targets: &Targets,
+    log_path: Option<&Path>,
+    manager_window_supported: bool,
+) -> Result<(), String> {
+    MANAGER_WINDOW_SUPPORTED.store(manager_window_supported, Ordering::Release);
     if let Some(path) = log_path {
         let file = OpenOptions::new().create(true).append(true).open(path).ok();
         *LOG.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = file;
@@ -430,9 +447,10 @@ fn patch_once(state: *mut c_void) {
             std::mem::transmute::<usize, LuaSettop>(settop),
         )
     };
+    let patch = menu_patch(MANAGER_WINDOW_SUPPORTED.load(Ordering::Acquire));
     let mut chunk = Chunk {
-        ptr: PATCH.as_ptr(),
-        len: PATCH.len(),
+        ptr: patch.as_ptr(),
+        len: patch.len(),
         done: false,
     };
     // SAFETY: a live lua_State on its own thread, a reader over a static
@@ -878,7 +896,7 @@ mod tests {
         )
         .exec()
         .unwrap();
-        lua.load(PATCH).exec().unwrap();
+        lua.load(menu_patch(true)).exec().unwrap();
         let load = |path: &str| -> String {
             lua.load(format!("return resolveutil.loadfile({path:?})()"))
                 .eval()
@@ -898,6 +916,46 @@ mod tests {
             "::/gui/line_vehicle_mgmt/manager_window.tl",
             "the game's own when the copy does not load"
         );
+    }
+
+    #[test]
+    fn the_line_manager_copy_is_not_served_for_an_other_build() {
+        let lua = mlua::Lua::new();
+        lua.load(
+            r#"
+            debugPrint = function() end
+            resolveutil = { loadfile = function(path)
+                return function() return path end
+            end }
+            "#,
+        )
+        .exec()
+        .unwrap();
+        lua.load(menu_patch(false)).exec().unwrap();
+        let path: String = lua
+            .load(r#"return resolveutil.loadfile("::/gui/line_vehicle_mgmt/manager_window.tl")()"#)
+            .eval()
+            .unwrap();
+        assert_eq!(path, "::/gui/line_vehicle_mgmt/manager_window.tl");
+        let menu: String = lua
+            .load(r#"return resolveutil.loadfile("::/gui/menu/main_page.tl")()"#)
+            .eval()
+            .unwrap();
+        assert_eq!(menu, "tpf3mp_1::/gui/menu/main_page.tl");
+    }
+
+    #[test]
+    fn the_line_manager_copy_is_pinned_to_the_verified_40420_executable() {
+        let current = Profile::from_toml(include_str!(
+            "../../../profiles/tf3_build40420_steam_windows/hooks.toml"
+        ))
+        .unwrap();
+        let previous = Profile::from_toml(include_str!(
+            "../../../profiles/tf3_build40408_steam_windows/hooks.toml"
+        ))
+        .unwrap();
+        assert!(manager_window_supported(&current));
+        assert!(!manager_window_supported(&previous));
     }
 
     #[test]
