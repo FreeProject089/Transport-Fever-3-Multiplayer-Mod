@@ -107,6 +107,67 @@ local function seq(list)
 	return out
 end
 
+-- What the action running now costs, by part, for the log only (apply.run,
+-- apply.proposalOf): os.clock around the engine's calls that can take long
+-- in a big world, the elapsed time on Windows and the process's CPU time on
+-- Linux and macOS (the C library's clock). Nothing read from it reaches
+-- the world. Each part is
+-- { n = calls, s = seconds, items = what the calls went through }, in
+-- `order` by first use; nil while no action runs.
+local costs = nil
+
+local function clock()
+	local ok, t = pcall(function() return os.clock() end)
+	if ok and type(t) == "number" then return t end
+	return nil
+end
+
+local function spend(part, t0, items)
+	if costs == nil or t0 == nil then return end
+	local t1 = clock()
+	if t1 == nil then return end
+	local c = costs.parts[part]
+	if c == nil then
+		c = { n = 0, s = 0, items = 0 }
+		costs.parts[part] = c
+		costs.order[#costs.order + 1] = part
+	end
+	c.n, c.s, c.items = c.n + 1, c.s + (t1 - t0), c.items + (items or 0)
+end
+
+-- The parts of a cost as one line: "nodes Street 1x 180.2 ms (41022), ...".
+function apply.costText(cost)
+	if type(cost) ~= "table" or type(cost.order) ~= "table" then return "" end
+	local out = {}
+	for _, part in ipairs(cost.order) do
+		local c = cost.parts[part]
+		out[#out + 1] = string.format("%s %dx %.1f ms", part, c.n, c.s * 1000)
+			.. (c.items > 0 and (" (" .. c.items .. ")") or "")
+	end
+	return table.concat(out, ", ")
+end
+
+-- The last action's cost (apply.run, apply.proposalOf): { kind =, ms =,
+-- parts =, order = }, or nil where the clock cannot say.
+apply.lastCost = nil
+-- Actions that took at least this long are said in the log, with their parts.
+apply.SLOW_MS = 20
+
+local function costStart(kind)
+	costs = { kind = kind, parts = {}, order = {}, t0 = clock() }
+	apply.lastCost = nil
+end
+
+local function costEnd()
+	local c = costs
+	costs = nil
+	local t1 = clock()
+	if c == nil or c.t0 == nil or t1 == nil then return nil end
+	c.ms = (t1 - c.t0) * 1000
+	apply.lastCost = c
+	return c
+end
+
 -- Whether this Lua state's game takes a command's callback here; the game
 -- runs game scripts on a pool of states, so each learns on its own.
 local callbacks = true
@@ -114,8 +175,7 @@ local callbacks = true
 -- Sends `command`, which runs at once, and returns what the game answered,
 -- its command data and result entities (nil, where it answers nothing
 -- here). A command the game refuses raises, and apply.run reports it.
-local function send(command)
-	if dry then error({ dry = "a command that is not a build" }, 0) end
+local function sendNow(command)
 	if callbacks then
 		local heard, went, data, entities = false, nil, nil, nil
 		local sent, err = pcall(api.cmd.sendCommand, command, function(d, success, e)
@@ -133,6 +193,14 @@ local function send(command)
 	end
 	api.cmd.sendCommand(command)
 	return nil, nil
+end
+
+local function send(command)
+	if dry then error({ dry = "a command that is not a build" }, 0) end
+	local t0 = costs and clock()
+	local data, entities = sendNow(command)
+	spend("commands", t0)
+	return data, entities
 end
 
 local function run(command)
@@ -405,7 +473,9 @@ local function buildProposal(proposal, context)
 	if dry then error({ dry = true, proposal = proposal, context = context }, 0) end
 	local proposals = api.engine.util.proposal
 	if proposals and proposals.makeProposalData then
+		local t0 = costs and clock()
 		local data = proposals.makeProposalData(proposal, context)
+		spend("verdict", t0)
 		local state = data and data.errorState
 		local messages = {}
 		for _, m in ipairs(state and state.messages or {}) do messages[#messages + 1] = tostring(m) end
@@ -535,7 +605,9 @@ end
 -- proposals only ("SimpleProposal expected, got Proposal", build 40408): a
 -- refresh the game refuses fails in the command's own answer instead (run).
 local function refreshOf(con)
+	local t0 = costs and clock()
 	local refresh = api.engine.util.proposal.refreshConstruction(con)
+	spend("refresh", t0)
 	local street, shape = refresh.proposal, {}
 	for i = 1, #street.addedSegments do
 		local s = street.addedSegments[i]
@@ -632,7 +704,9 @@ local function railReplacement(build, old, entity)
 	if not util or not util.createProposalReplaceConstruction then
 		error("the game cannot regenerate the rail station edit", 0)
 	end
+	local t0 = costs and clock()
 	local full = util.createProposalReplaceConstruction(old, entity.params)
+	spend("regenerate", t0)
 	if full == nil then error("the game could not regenerate the rail station edit", 0) end
 	if #full.toRemove ~= 1 or full.toRemove[1] ~= old or #full.toAdd ~= 1 then
 		error("the game regenerated a different rail station edit", 0)
@@ -831,6 +905,7 @@ end
 -- Held while it is read (on TPF2 a pairs() straight off the call let the
 -- GC free the map mid-loop).
 local function readNodes(network)
+	local t0 = costs and clock()
 	local streets = api.engine.system.streetSystem
 	local map
 	if network == "Track" then map = streets.getNode2TrackEdgeMap() else map = streets.getNode2StreetEdgeMap() end
@@ -839,20 +914,115 @@ local function readNodes(network)
 		local c = api.engine.getComponent(node, api.type.ComponentType.BASE_NODE)
 		if c and c.position then nodes[#nodes + 1] = { id = node, pos = arr(c.position) } end
 	end
+	spend("nodes " .. tostring(network), t0, #nodes)
 	return nodes
 end
 
--- The node of `nodes` at `p`: within `tol` horizontally and
--- HEIGHT_TOLERANCE in height, the nearest in three dimensions; nil when none
--- is. Two as near refuse it, never chosen between by this game's own
--- entities (D8).
-local function nearest(nodes, p, tol)
+-- How far past a search's distance the octree is asked (nodesNear): the
+-- float rounding of the edges' boxes.
+local NEAR_MARGIN = 2
+
+-- The existing edges whose boxes reach within `reach` of `p` horizontally,
+-- at any height, as the engine's octree holds them: their ids, each once;
+-- nil where this game has no octree to ask or it did not answer. Only ids
+-- are collected in the engine's callback (tpf3mp/lanes.lua, spatial): a
+-- Lua error there is fatal.
+local function edgesNear(p, reach)
+	local octree = api.engine.system and api.engine.system.octreeSystem
+	if not (octree and octree.findIntersectingEntities and api.type.Box3) then return nil end
+	local found = {}
+	local ok, out = pcall(function()
+		local box = api.type.Box3.new(api.type.Vec3f.new(p[1] - reach, p[2] - reach, -1000000),
+			api.type.Vec3f.new(p[1] + reach, p[2] + reach, 1000000))
+		octree.findIntersectingEntities(box, function(e) found[#found + 1] = e end)
+		local edges, seen = {}, {}
+		for _, e in ipairs(found) do
+			if not seen[e] then
+				seen[e] = true
+				if api.engine.getComponent(e, api.type.ComponentType.BASE_EDGE) then edges[#edges + 1] = e end
+			end
+		end
+		return edges
+	end)
+	if not ok then return nil end
+	return out
+end
+
+-- The nodes of `network` within `tol` of `p` horizontally, as readNodes
+-- gives them, found through the engine's octree instead of every node of
+-- the network (2026-10-16: a late game's street network took 130-150 ms to
+-- read whole in the GUI, once for each preview of another player's road,
+-- several a second). Every node of the network has an edge of it, which
+-- runs through the node's position, so the edges the octree finds there
+-- (edgesNear) name such nodes at one of their ends; each is then read
+-- afresh, as readNodes reads it, and kept where it is near enough. Nil
+-- where the octree cannot say: then the caller reads them all. For
+-- previews only (nodesOfNetwork).
+local function nodesNear(network, p, tol)
+	local t0 = costs and clock()
+	local ids = edgesNear(p, tol + NEAR_MARGIN)
+	if ids == nil then return nil end
+	local ok, nodes = pcall(function()
+		local C = api.type.ComponentType
+		local streets = api.engine.system.streetSystem
+		local seen, out = {}, {}
+		for _, e in ipairs(ids) do
+			local edge = api.engine.getComponent(e, C.BASE_EDGE)
+			for _, node in ipairs(edge and { edge.node0, edge.node1 } or {}) do
+				if not seen[node] then
+					seen[node] = true
+					local segments
+					if network == "Track" then segments = streets.getNodeTrackSegments(node)
+					else segments = streets.getNodeStreetSegments(node) end
+					local c = segments and #segments > 0 and api.engine.getComponent(node, C.BASE_NODE)
+					if c and c.position then
+						local pos = arr(c.position)
+						local dx, dy = pos[1] - p[1], pos[2] - p[2]
+						if dx * dx + dy * dy <= tol * tol then out[#out + 1] = { id = node, pos = pos } end
+					end
+				end
+			end
+		end
+		return out
+	end)
+	spend("near " .. tostring(network), t0, #ids)
+	if not ok then return nil end
+	return nodes
+end
+
+-- A network's nodes for one action of the kinds a preview shows, as
+-- nearest and edgeBetween take them: a function of a place `p`, a distance
+-- `tol` and `whole`, which answers a list of the network's nodes. An action the room
+-- applies reads every node of the network (readNodes, once an action), as
+-- it always did: the octree is not known to hold every edge, nor one built
+-- earlier in the same update, and an edge it missed could make one game
+-- choose another node, or pass a node it should refuse, than another game
+-- (2026-10-16, Codex). A preview (dry), which nothing of reaches the world,
+-- takes the nodes the octree finds near `p` (nodesNear) and reads them all
+-- only where it finds none near enough (`whole`): a whole read cost
+-- 130-150 ms of each preview of another player's road in the GUI.
+local function nodesOfNetwork(network)
+	local all
+	return function(p, tol, whole)
+		if dry and not whole then
+			local near = nodesNear(network, p, tol)
+			if near ~= nil then return near end
+		end
+		if all == nil then all = readNodes(network) end
+		return all
+	end
+end
+
+-- The node of `list` within `tol` horizontally and HEIGHT_TOLERANCE
+-- vertically, nearest in three dimensions. Refuse a tie rather than choose
+-- using this game's entity ids (D8).
+local function nearestIn(list, p, tol)
 	local best, bestD, tie
-	for _, n in ipairs(nodes) do
+	for _, n in ipairs(list) do
 		local dx, dy, dz = n.pos[1] - p[1], n.pos[2] - p[2], n.pos[3] - p[3]
-		local h = dx * dx + dy * dy
-		if h <= tol * tol and math.abs(dz) <= HEIGHT_TOLERANCE then
-			local d = h + dz * dz
+		local horizontal = dx * dx + dy * dy
+		if horizontal <= tol * tol and math.abs(dz) <= HEIGHT_TOLERANCE then
+			local d = horizontal + dz * dz
 			if bestD == nil or d < bestD then
 				best, bestD, tie = n, d, false
 			elseif d == bestD then
@@ -864,6 +1034,13 @@ local function nearest(nodes, p, tol)
 		error(string.format("two nodes as near (%.3f, %.3f, %.3f)", p[1], p[2], p[3]), 0)
 	end
 	return best
+end
+
+-- `nodes` may be a list or a network's preview search. Applied builds pass
+-- the complete list so a missing octree edge cannot change their outcome.
+local function nearest(nodes, p, tol)
+	if type(nodes) ~= "function" then return nearestIn(nodes, p, tol) end
+	return nearestIn(nodes(p, tol), p, tol) or nearestIn(nodes(p, tol, true), p, tol)
 end
 
 -- The existing edge of `network` between the nodes at `a` and `b`: its id,
@@ -1006,7 +1183,7 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 		removed_nodes = polyline.removed_nodes, junctions = settings }
 	local nodesOf = {}
 	local function nodes(n)
-		if nodesOf[n] == nil then nodesOf[n] = readNodes(n) end
+		if nodesOf[n] == nil then nodesOf[n] = nodesOfNetwork(n) end
 		return nodesOf[n]
 	end
 	local templates = {}
@@ -1235,7 +1412,9 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 	-- they draw nothing, and a snapped build's may name a node only its
 	-- originator's tool has.
 	if not dry then
+		local t0 = costs and clock()
 		local left = junctions.into(proposal, polyline.junctions, ends, mine, gone)
+		spend("junctions", t0)
 		if left and #left > 0 then
 			log("left to the construction: the settings of " .. #left .. " junction(s) at its old edges")
 		end
@@ -1589,7 +1768,7 @@ end
 
 -- The existing edge a stop action names, as edgeBetween finds it.
 local function stopEdge(ref)
-	local e = edgeBetween(readNodes(ref.network), ref.network, arr(ref.ends.a), arr(ref.ends.b))
+	local e = edgeBetween(nodesOfNetwork(ref.network), ref.network, arr(ref.ends.a), arr(ref.ends.b))
 	if e == nil then error("no " .. ref.network .. " edge for the stop", 0) end
 	return e
 end
@@ -2050,6 +2229,7 @@ end
 -- The construction of `ref.file` whose origin is within 2 m of `ref.at`, the
 -- nearest, the lower entity on a tie.
 function constructionAt(ref)
+	local t0 = costs and clock()
 	local CONSTRUCTION = api.type.ComponentType.CONSTRUCTION
 	local list = api.engine.getEntitiesWithComponent(CONSTRUCTION)
 	local best, bestD
@@ -2063,6 +2243,7 @@ function constructionAt(ref)
 			if d <= 4 and (bestD == nil or d < bestD or (d == bestD and e < best)) then best, bestD = e, d end
 		end
 	end
+	spend("constructionAt", t0, #list)
 	if best == nil then error("no " .. tostring(ref.file) .. " there", 0) end
 	return best, api.engine.getComponent(best, CONSTRUCTION)
 end
@@ -2807,8 +2988,14 @@ function apply.run(action, ctx)
 		if readLocal then localBefore = valueLocal end
 	end
 	acting = ctx
+	costStart(kind)
 	local ok, applied, detail = pcall(handler, body, ctx)
+	local cost = costEnd()
 	acting = nil
+	if cost and cost.ms >= apply.SLOW_MS then
+		local parts = apply.costText(cost)
+		log(string.format("applying %s took %.1f ms", kind, cost.ms) .. (parts ~= "" and (": " .. parts) or ""))
+	end
 	local outcome = diagnosticOutcome(ok, applied)
 	if kind == "CompanyOp" then
 		local actorAfter, localAfter = "unavailable", "unavailable"
@@ -2852,7 +3039,9 @@ function apply.proposalOf(action, ctx)
 	local allowed, why = acceptance.check(action)
 	if not allowed then return nil, why end
 	dry, acting = true, ctx
+	costStart(kind)
 	local ok, stopped = pcall(HANDLERS[kind], body, ctx)
+	costEnd()
 	dry, acting = false, nil
 	if not ok and type(stopped) == "table" and stopped.proposal ~= nil then
 		return stopped.proposal, stopped.context
