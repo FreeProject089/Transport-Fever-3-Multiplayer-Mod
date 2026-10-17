@@ -1157,6 +1157,59 @@ fn a_signal_the_tool_puts_back_is_kept_on_its_piece() {
     );
 }
 
+/// As the game proposes it (run-1017-033551): the curved track 30-31, its
+/// signal 558 half way, where the curve bulges 7.5 m east of the straight
+/// line. A track started close to node 31: the tool removes 31, adds its
+/// own node -1 near it and -5 on the old curve, the piece 30>-5 the old
+/// curve up to three quarters (its tangents scaled so), and puts a new
+/// signal on that piece.
+#[test]
+fn a_signal_the_tool_puts_back_on_a_curve_near_a_removed_node_is_kept() {
+    let track = |tangent: &str| {
+        format!(
+            "{{ addedNodes = {{ {{ entity = -1, comp = {{ position = v(301, 31, 0) }} }},
+                              {{ entity = -5, comp = {{ position = v(305.625, 15, 0) }} }},
+                              {{ entity = -2, comp = {{ position = v(340, 31, 0) }} }} }},
+                addedSegments = {{
+                    {{ entity = -3, type = 1, comp = {{ node0 = 30, node1 = -5,
+                        tangent0 = v(22.5, 45, 0), tangent1 = {tangent}, type = 0, typeIndex = -1,
+                        roadTemplate = 'track/standard.track_template', roadStyle = '',
+                        objects = {{ {{ -400000000, 2 }} }} }} }},
+                    {{ entity = -4, type = 1, comp = {{ node0 = -5, node1 = -1,
+                        tangent0 = v(-4.6, 16, 0), tangent1 = v(-4.6, 16, 0), type = 0, typeIndex = -1,
+                        roadTemplate = 'track/standard.track_template', roadStyle = '', objects = {{}} }} }},
+                    {{ entity = -6, type = 1, comp = {{ node0 = -1, node1 = -2,
+                        tangent0 = v(39, 0, 0), tangent1 = v(39, 0, 0), type = 0, typeIndex = -1,
+                        roadTemplate = 'track/standard.track_template', roadStyle = '', objects = {{}} }} }} }},
+                removedSegments = {{ {{ entity = 110, type = 1, comp = {{ node0 = 30, node1 = 31,
+                    tangent0 = v(30, 60, 0), tangent1 = v(-30, 60, 0), objects = {{ {{ 558, 2 }} }} }} }} }},
+                removedNodes = {{ {{ entity = 31, comp = {{ position = v(300, 30, 0) }} }} }},
+                edgeObjectsToAdd = {NEW_SIGNAL}, edgeObjectsToRemove = {{ 558 }} }}"
+        )
+    };
+    let decoded = decode(capture_refit(&track("v(-11.25, 45, 0)")).unwrap());
+    let Action::BuildTrack(built) = &decoded else {
+        panic!("{decoded:?}")
+    };
+    let kept: Vec<_> = built
+        .polyline
+        .links
+        .iter()
+        .flat_map(|link| link.kept.iter())
+        .collect();
+    assert_eq!(kept.len(), 1, "{decoded:?}");
+    assert_eq!(kept[0].removal, 0);
+    assert_eq!(kept[0].at, Fraction(500_000));
+    assert_eq!(
+        kept[0].model.as_str(),
+        "::/infrastructure/signal/signal_path_a.con"
+    );
+    // The piece bent the other way at its far end: it still goes on from
+    // node 30 the same way, but no longer runs where the signal stood.
+    let why = capture_refit(&track("v(30, 45, 0)")).unwrap_err();
+    assert!(why.contains("replaces a signal elsewhere"), "{why}");
+}
+
 #[test]
 fn a_signal_the_tool_replaces_otherwise_is_refused() {
     let refused = |street: String, why: &str| {
