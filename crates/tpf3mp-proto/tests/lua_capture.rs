@@ -112,6 +112,8 @@ fn tangent(x: i32, y: i32, z: i32) -> Tangent {
 fn link(from: u16, to: u16, t0: Tangent, t1: Tangent, structure: Structure) -> Link {
     Link {
         precedence: None,
+        position0: None,
+        position1: None,
         kept: BoundedVec::default(),
 
         from,
@@ -674,6 +676,107 @@ fn a_stop_moves_with_a_road_only_on_the_edge_rebuilt_in_place() {
     assert!(why.contains("adds a stop or signal"), "{why}");
 }
 
+/// The bulldozer over a track's stub that ends on the country street 8-9-10
+/// at its node 9 (a level crossing), as build 40420 proposed it in a room
+/// (2026-10-16): the stub 120 (9-32) and its far node 32 go, the crossing
+/// node 9 goes, and its street edges 100 and 101 are joined into one edge
+/// 8-10. `JOIN` names the added edge's ends, `OBJECTS` the objects on the
+/// street edge 100, `TO_REMOVE` the constructions the bulldozer takes.
+const STUB_PROPOSAL: &str = "{ toAdd = {}, toRemove = TO_REMOVE, proposal = {
+    addedNodes = {},
+    addedSegments = {
+        { entity = -1, type = 0, comp = { node0 = 8, node1 = JOIN, tangent0 = v(0, 80, 0), tangent1 = v(0, 80, 0),
+          type = 0, typeIndex = -1, roadTemplate = 'street/country.street_template', roadStyle = '',
+          objects = {} } },
+    },
+    removedSegments = { { entity = 120, type = 1, comp = { node0 = 9, node1 = 32, objects = {} } },
+                        { entity = 100, type = 0, comp = { node0 = 8, node1 = 9, objects = OBJECTS } },
+                        { entity = 101, type = 0, comp = { node0 = 9, node1 = 10, objects = {} } },
+                        EXTRA_REMOVED },
+    removedNodes = { { entity = 9, comp = { position = v(50, 1, 0) } },
+                     { entity = 32, comp = { position = v(10, 1, 0) } } },
+} }";
+
+/// The bulldozer's capture of [`STUB_PROPOSAL`], the stub on node 9.
+fn capture_stub(join: &str, objects: &str, to_remove: &str) -> Result<LuaValue, String> {
+    capture_stub_with_extra(join, objects, to_remove, "")
+}
+
+fn capture_stub_with_extra(
+    join: &str,
+    objects: &str,
+    to_remove: &str,
+    extra_removed: &str,
+) -> Result<LuaValue, String> {
+    let proposal = STUB_PROPOSAL
+        .replace("JOIN", join)
+        .replace("OBJECTS", objects)
+        .replace("TO_REMOVE", to_remove)
+        .replace("EXTRA_REMOVED", extra_removed);
+    capture_with(
+        "nil",
+        &format!(
+            "(function() NODES[32] = v(10, 1, 0) TRACKS[9] = {{ 120 }} TRACKS[32] = {{ 120 }} \
+             return engine.bulldoze({proposal}) end)()"
+        ),
+    )
+}
+
+/// The game's own removal of such a stub joins nothing, and the game
+/// refused it ("Construction Not Possible", a room on build 40420): the
+/// stub travels with the join, as the build the bulldozer proposes, its
+/// stub removed in its own network.
+#[test]
+fn a_stub_bulldozed_off_a_street_travels_with_the_street_joined() {
+    let action = decode(capture_stub("10", "{}", "{}").unwrap());
+    let Action::BuildRoad(road) = action else {
+        panic!("{action:?}")
+    };
+    assert_eq!(road.street.as_str(), "street/country.street_template");
+    let polyline = &road.polyline;
+    assert_eq!(polyline.links.len(), 1);
+    assert_eq!(polyline.vertices.len(), 2);
+    assert!(
+        polyline
+            .vertices
+            .iter()
+            .all(|v| matches!(v.resolve, Resolve::Node(Network::Street)))
+    );
+    let networks: Vec<_> = polyline.removals.iter().map(|r| r.network).collect();
+    assert_eq!(networks, [Network::Track, Network::Street, Network::Street]);
+    let nodes: Vec<_> = polyline.removed_nodes.iter().map(|n| n.network).collect();
+    assert_eq!(nodes, [Network::Street, Network::Track]);
+}
+
+#[test]
+fn a_bulldozer_join_the_room_cannot_account_for_is_refused() {
+    // An added edge that joins no two removed edges at a removed node.
+    let why = capture_stub("32", "{}", "{}").unwrap_err();
+    assert_eq!(why, "a bulldozer proposal that builds");
+    // A signal on a street edge it joins: it would move onto the new edge.
+    let why = capture_stub("10", "{ { 555, 1 } }", "{}").unwrap_err();
+    assert!(
+        why.contains("removes an edge with a stop or signal"),
+        "{why}"
+    );
+    // Town buildings along a street it removes.
+    let why = capture_stub("10", "{}", "{ 900 }").unwrap_err();
+    assert_eq!(
+        why,
+        "removing a street with town buildings where the bulldozer joins the streets left"
+    );
+}
+
+#[test]
+fn a_join_does_not_carry_an_unpaired_removed_edge() {
+    // Edge 102 is a valid, existing street, but it is unrelated to the
+    // 100/101 pair joined at removed node 9. It must not pass through as an
+    // extra action removal.
+    let extra = "{ entity = 102, type = 0, comp = { node0 = 20, node1 = 21, objects = {} } }";
+    let why = capture_stub_with_extra("10", "{}", "{}", extra).unwrap_err();
+    assert_eq!(why, "a bulldozer proposal that builds");
+}
+
 /// A road the tool draws through a town's house: the house goes with the
 /// build, which every game's build clears again; a station in the way does
 /// not.
@@ -728,6 +831,46 @@ fn a_track_modifier_carries_its_type_catenary_and_speed() {
     );
     assert_eq!(track.polyline.removals.len(), 1);
     assert_eq!(track.polyline.removals[0].network, Network::Track);
+}
+
+/// The track tool's proposal for a track laid onto the end of street 104 at
+/// node 7 (0, 0, 0), as build 40420 makes it: the new edge starts 2 m beside
+/// the node, on the street's tram lane, and ends at its new node.
+const TRACK_ONTO_STREET_END: &str = "{
+    addedNodes = { { entity = -1, comp = { position = v(-50, -10, 0) } } },
+    addedSegments = {
+        { entity = -2, type = 1, comp = { node0 = 7, node1 = -1,
+          position0 = v(-0.3146, -1.9752, 0), position1 = v(-50, -10, 0),
+          tangent0 = v(-50, -8, 0), tangent1 = v(-50, -8, 0),
+          type = 0, typeIndex = -1, roadTemplate = 'track/standard.track_template', roadStyle = '' } },
+    },
+    removedSegments = {},
+}";
+
+#[test]
+fn a_track_onto_a_street_end_starts_where_the_tool_put_it() {
+    let action = decode(
+        capture_with(
+            TRACK_ONTO_STREET_END,
+            "engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Track')",
+        )
+        .unwrap(),
+    );
+    let Action::BuildTrack(track) = action else {
+        panic!("{action:?}")
+    };
+    assert_eq!(
+        track.polyline.vertices[0],
+        node(0, 0, 0, Network::Street),
+        "the street's end node"
+    );
+    let link = &track.polyline.links[0];
+    assert_eq!(
+        link.position0,
+        Some(pos(-315, -1975, 0)),
+        "the start on the tram lane, beside its node, rounded to millimetres"
+    );
+    assert_eq!(link.position1, None, "the end is its new node");
 }
 
 #[test]
@@ -894,7 +1037,8 @@ fn capture_track(street: &str) -> Result<LuaValue, String> {
 /// A track started or ended between a track's signals cuts that track in
 /// two: the signal goes with the piece it stands on, the one the tool put
 /// it on, named by where it stood (playtest 2026-10-17, "a build that moves
-/// a stop or signal"). Behind its gate until a two-player game passes.
+/// a stop or signal"). The accepted case is enabled; the gate-off check below
+/// confirms that it refuses the action when disabled.
 #[test]
 fn a_track_cut_between_its_signals_keeps_each_on_its_piece() {
     let action = capture_track(&track_split("{ { 556, 2 } }", "{}", "{ { 556, 2 } }")).unwrap();
