@@ -3305,8 +3305,8 @@ never hands the callback a result of its own:
 
 The click is dropped, and the tool left as the game left it, when the
 player starts a segment (even one let go again before the room built),
-the native builder resets its proposal after the click was captured,
-the tool misses frames (closed), the room
+the native builder resets its proposal again after the click's own reset
+(below), the tool misses frames (closed), the room
 refuses or does not apply the build or applies it without such an edge,
 the game leaves the room, or 15 s pass. The direction rule is the
 game's, counted in the GUI's state as the game counts it, with one
@@ -3316,9 +3316,17 @@ click's end snapped to something does not matter: a track snapped to a
 street beside it, as a guide, still goes on in its direction.)
 A right-click while the click waits passes through the tool's own input
 handler with no start point (`UI::StreetBuilder` vf2, 0x581479..0x5814d7).
-The native proposal-reset detour now drops a kept click if that path resets
+The native proposal-reset detour drops a kept click if that path resets
 the builder; continuation remains off even with test opt-in if this detour
-fails to install. Closing the tool also drops it after missed frames. Whether
+fails to install. `UpdateEngine` itself resets the proposal right after
+`Add` returns (40420 0x58935a, 40418 0x58a06a, 40408 0x58a07a: the path
+from `Add` there is unconditional), with `all` 0; every other caller of
+`ResetProposal` (the abort in vf2, the frame's lambda, vf5, vf16 and the
+rest, nine sites in all) passes 1. So the click's first reset with `all` 0
+is its own and keeps the click; any other reset of that builder drops it,
+before or after the room's answer. A click whose own reset has not come by
+the tool's next frame is dropped too. (The 2026-10-19 launcher run, before
+this rule, dropped every click at its own reset.) Closing the tool also drops it after missed frames. Whether
 the parent handler can leave the tool open without resetting remains to be
 checked in game, so default continuation stays off. "Closed" is three GUI frames without the
 tool's frame, counted from the click's own; a tool closed and opened

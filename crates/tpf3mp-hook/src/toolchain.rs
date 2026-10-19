@@ -45,9 +45,10 @@
 //!
 //! The click is dropped, and the tool left as the game left it, when the
 //! player starts a segment (even one let go again before the room
-//! built), the tool is closed (it missed frames, as when another tool is
-//! picked), the room refuses the action or applies it without such an edge, the game
-//! leaves the room, or [`LIMIT`] passes. Nothing is built and no command is
+//! built), the tool resets its proposal other than right after the click
+//! (an abort; [`Chain::reset`]), the tool is closed (it missed frames, as
+//! when another tool is picked), the room refuses the action or applies it
+//! without such an edge, the game leaves the room, or [`LIMIT`] passes. Nothing is built and no command is
 //! queued, so lockstep is untouched.
 
 #![allow(unsafe_code)]
@@ -380,6 +381,9 @@ struct Pending {
     since: Instant,
     /// The GUI frame of the tool's last frame.
     stepped: Option<u64>,
+    /// `UpdateEngine` resets the proposal right after `Add` returns; that
+    /// reset is still to come.
+    own_reset: bool,
 }
 
 /// What the tool's frame is to do.
@@ -421,23 +425,27 @@ impl Chain {
             stage: Stage::Queued,
             since: now,
             stepped: Some(frame),
+            own_reset: true,
         });
     }
 
-    /// The game's proposal reset follows its own click before `Add` calls
-    /// [`before_add`]. Any later reset of this builder withdraws its kept
-    /// click, including an abort before the room replies.
-    fn reset(&mut self, builder: usize) -> bool {
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.click.tool == builder)
-        {
-            self.pending = None;
-            true
-        } else {
-            false
+    /// The builder `builder` reset its proposal, `all` as the game passed
+    /// it. `UpdateEngine` resets the tool's proposal right after `Add`
+    /// returns, unconditionally and with `all` 0, the only caller that
+    /// passes 0 (an abort, the tool's other resets and its frame's pass 1;
+    /// 40408, 40418 and 40420). That first `all` 0 reset after the click is
+    /// the click's own and keeps it. Any other reset of this builder
+    /// withdraws the kept click, before or after the room replies.
+    fn reset(&mut self, builder: usize, all: u8) -> bool {
+        let Some(pending) = self.pending.as_mut().filter(|p| p.click.tool == builder) else {
+            return false;
+        };
+        if all == 0 && pending.own_reset {
+            pending.own_reset = false;
+            return false;
         }
+        self.pending = None;
+        true
     }
 
     /// The GUI handed click `number` to the room with `ticket`, or did not
@@ -579,6 +587,13 @@ impl Chain {
         if missed {
             self.pending = None;
             return Step::Drop("the tool was closed");
+        }
+        // `UpdateEngine` resets the proposal before it returns from the
+        // click, so the tool's next frame comes after it. Without it, which
+        // reset was the click's own is not known.
+        if p.own_reset {
+            self.pending = None;
+            return Step::Drop("the click's own proposal reset did not follow it");
         }
         // The tool's own state, from the click's callback on, whatever the
         // room has done: a start point of the player's ends the click for
@@ -743,13 +758,14 @@ pub fn before_add(return_address: usize, callback: usize, number: u64) {
     rearm(&chain);
 }
 
-/// Called by the already-installed proposal-reset detour. A reset after the
-/// click's Add callback means the player (or game) abandoned that proposal;
-/// continuing it after the room replies would revive an old start point.
-pub fn proposal_reset(builder: usize) {
+/// Called by the already-installed proposal-reset detour with the game's
+/// `all`. Past the click's own reset ([`Chain::reset`]), a reset means the
+/// player (or game) abandoned that proposal; continuing it after the room
+/// replies would revive an old start point.
+pub fn proposal_reset(builder: usize, all: u8) {
     let reset = {
         let mut chain = chain();
-        let reset = chain.reset(builder);
+        let reset = chain.reset(builder, all);
         rearm(&chain);
         reset
     };
@@ -1290,13 +1306,20 @@ mod tests {
         }
     }
 
+    /// A click of the tool as `UpdateEngine` makes it: the add's detour
+    /// keeps it, then the tool resets its proposal with `all` 0.
+    fn tool_click(chain: &mut Chain, number: u64, now: Instant, frame: u64) {
+        chain.click(number, Some(click(true, 1)), now, frame);
+        assert!(!chain.reset(TOOL, 0), "the click's own reset keeps it");
+    }
+
     /// One click at GUI frame 0, handed over and applied.
     fn built(chain: &mut Chain, now: Instant) {
         built_at(chain, now, 0);
     }
 
     fn built_at(chain: &mut Chain, now: Instant, frame: u64) {
-        chain.click(7, Some(click(true, 1)), now, frame);
+        tool_click(chain, 7, now, frame);
         assert_eq!(chain.bind(7, Some(900)), None);
         assert_eq!(chain.ordered(), Some(900));
         assert_eq!(
@@ -1306,29 +1329,74 @@ mod tests {
     }
 
     #[test]
-    fn a_later_proposal_reset_cancels_continuation_before_or_after_room_ack() {
+    fn the_clicks_own_proposal_reset_keeps_its_continuation() {
+        // In a room, UpdateEngine resets the proposal right after Add (the
+        // 2026-10-19 launcher run: every click was dropped by this reset).
         let now = Instant::now();
         let mut chain = Chain::default();
-        // The build's own reset happens before Add captures a click.
-        assert!(!chain.reset(TOOL));
+        let read = |_: usize| Some(tool_now());
         chain.click(7, Some(click(true, 1)), now, 0);
-        assert!(!chain.reset(TOOL + 1), "another builder cannot cancel it");
+        assert!(!chain.reset(TOOL, 0), "the click's own reset");
         chain.bind(7, Some(900));
-        assert!(
-            chain.reset(TOOL),
-            "a later native reset cancels while ack is pending"
-        );
-        assert_eq!(chain.ordered(), None);
+        assert_eq!(chain.step(TOOL, 1, now, true, &read), Step::Wait);
         chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]);
-        chain.seen(11, 1, 0, 1);
+        chain.seen(11, 1, 0, 2);
+        assert!(matches!(
+            chain.step(TOOL, 2, now, true, &read),
+            Step::Start { number: 7, .. }
+        ));
+    }
+
+    #[test]
+    fn a_click_without_its_own_reset_does_not_continue() {
+        // Which reset was the click's own is not known: fail closed at the
+        // tool's next frame.
+        let now = Instant::now();
+        let mut chain = Chain::default();
+        chain.click(7, Some(click(true, 1)), now, 0);
+        chain.bind(7, Some(900));
         assert_eq!(
             chain.step(TOOL, 1, now, true, &|_| Some(tool_now())),
-            Step::Nothing
+            Step::Drop("the click's own proposal reset did not follow it")
         );
+        assert_eq!(chain.ordered(), None);
+    }
 
-        built(&mut chain, now);
-        assert!(chain.reset(TOOL), "a reset after ack also cancels");
-        assert_eq!(chain.poll(now, true), (None, None));
+    #[test]
+    fn a_later_proposal_reset_cancels_continuation_before_or_after_room_ack() {
+        let now = Instant::now();
+        // An abort (or any reset with `all` 1) cancels, while the room's
+        // answer is pending and after it.
+        for all in [1, 0] {
+            let mut chain = Chain::default();
+            assert!(!chain.reset(TOOL, all), "nothing kept");
+            tool_click(&mut chain, 7, now, 0);
+            assert!(
+                !chain.reset(TOOL + 1, 1),
+                "another builder cannot cancel it"
+            );
+            chain.bind(7, Some(900));
+            assert!(
+                chain.reset(TOOL, all),
+                "a later native reset cancels while ack is pending"
+            );
+            assert_eq!(chain.ordered(), None);
+            chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]);
+            chain.seen(11, 1, 0, 1);
+            assert_eq!(
+                chain.step(TOOL, 1, now, true, &|_| Some(tool_now())),
+                Step::Nothing
+            );
+
+            built(&mut chain, now);
+            assert!(chain.reset(TOOL, all), "a reset after ack also cancels");
+            assert_eq!(chain.poll(now, true), (None, None));
+        }
+        // An abort between the click's Add and its own reset cannot happen
+        // (one call), but an `all` 1 reset there is not taken for it.
+        let mut chain = Chain::default();
+        chain.click(7, Some(click(true, 1)), now, 0);
+        assert!(chain.reset(TOOL, 1));
     }
 
     #[test]
@@ -1336,7 +1404,7 @@ mod tests {
         let now = Instant::now();
         let mut chain = Chain::default();
         let read = |_: usize| Some(tool_now());
-        chain.click(7, Some(click(true, 1)), now, 0);
+        tool_click(&mut chain, 7, now, 0);
         assert_eq!(
             chain.step(TOOL, 1, now, true, &read),
             Step::Wait,
@@ -1434,23 +1502,23 @@ mod tests {
 
         // Not handed to the room.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, 1)), now, 0);
+        tool_click(&mut chain, 7, now, 0);
         assert_eq!(chain.bind(6, None), None, "another click's hand-over");
         assert!(chain.bind(7, None).is_some());
         assert_eq!(chain.ordered(), None);
 
         // Refused, or not applied.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, 1)), now, 0);
+        tool_click(&mut chain, 7, now, 0);
         chain.bind(7, Some(900));
         assert_eq!(chain.refused(901), None);
         assert!(chain.refused(900).is_some());
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, 1)), now, 0);
+        tool_click(&mut chain, 7, now, 0);
         chain.bind(7, Some(900));
         assert!(chain.applied(Some(900), false, Vec::new()).is_some());
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, 1)), now, 0);
+        tool_click(&mut chain, 7, now, 0);
         chain.bind(7, Some(900));
         assert!(
             chain.applied(Some(900), true, Vec::new()).is_some(),
@@ -1459,7 +1527,7 @@ mod tests {
 
         // Applied without an edge ending there.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, 1)), now, 0);
+        tool_click(&mut chain, 7, now, 0);
         chain.bind(7, Some(900));
         chain.applied(Some(900), true, vec![edge(5, [1, 2], [[0.0; 3], [1.0; 3]])]);
         assert!(chain.poll(now, true).1.is_some());
@@ -1554,7 +1622,7 @@ mod tests {
                 ..tool_now()
             })
         };
-        chain.click(7, Some(click(true, 1)), now, 0);
+        tool_click(&mut chain, 7, now, 0);
         chain.bind(7, Some(900));
         assert_eq!(chain.step(TOOL, 1, now, true, &idle), Step::Wait);
         assert_eq!(
@@ -1569,7 +1637,7 @@ mod tests {
         // Before the click's callback ran (busy), the tool's state is not
         // yet the player's.
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, 1)), now, 0);
+        tool_click(&mut chain, 7, now, 0);
         let busy = |_: usize| {
             Some(ToolNow {
                 busy: 1,
@@ -1611,9 +1679,9 @@ mod tests {
         // not click 8's.
         let now = Instant::now();
         let mut chain = Chain::default();
-        chain.click(7, Some(click(true, 1)), now, 0);
+        tool_click(&mut chain, 7, now, 0);
         chain.bind(7, Some(900));
-        chain.click(8, Some(click(true, 1)), now, 0);
+        tool_click(&mut chain, 8, now, 0);
         chain.bind(8, Some(901));
         assert_eq!(
             chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]),
