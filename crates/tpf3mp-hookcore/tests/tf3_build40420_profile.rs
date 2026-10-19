@@ -58,7 +58,7 @@ const SHA256: &str = "74861ac43b041aebc5179154345b3cf1ec83154c8e6cc58e0d9e02ff5f
 const SIZE: u64 = 69_755_832;
 const PE_TIMESTAMP: u32 = 0x6ac5_0427;
 
-/// All 164 profile targets, including optional targets, at their RVAs in the
+/// All 165 profile targets, including optional targets, at their RVAs in the
 /// public build 25754343 executable (image base 0x140000000).
 const TARGETS: &[(&str, u64)] = &[
     ("GameSim::Step", 0x1593d0),
@@ -267,8 +267,8 @@ fn profile_pins_public_steam_build_40420_and_all_target_names() {
     assert_eq!(profile.build.size, Some(SIZE));
     assert_eq!(profile.build.pe_timestamp, Some(PE_TIMESTAMP));
     assert_eq!(profile.image_base, Some(0x0001_4000_0000));
-    assert_eq!(profile.targets.len(), 164);
-    assert_eq!(TARGETS.len(), 164);
+    assert_eq!(profile.targets.len(), 165);
+    assert_eq!(TARGETS.len(), 165);
     for &(name, _) in TARGETS {
         assert!(
             profile.targets.iter().any(|target| target.name == name),

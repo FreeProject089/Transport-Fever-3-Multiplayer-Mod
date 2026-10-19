@@ -134,7 +134,8 @@ pub unsafe fn install(
                 Err(why) => format!("every reset ends the tools' continuation: {why}"),
             };
             format!(
-                "build previews: street and track proposal resets withdraw the player's preview;                  {swap}"
+                "build previews: street and track proposal resets withdraw the player's preview; \
+                 {swap}"
             )
         }
         Err(why) => format!("build previews: proposal reset withdrawal unavailable: {why}"),

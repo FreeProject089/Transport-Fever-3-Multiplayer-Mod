@@ -447,13 +447,25 @@ impl Chain {
     /// after the click is the click's own and keeps it. The tool's
     /// game-state swap resets when an entity the proposal snaps to changed
     /// revision, as the room's build landing under the cursor does; that
-    /// reset is not the player's and keeps it too. Any other reset of this
-    /// builder withdraws the kept click, before or after the room replies.
-    fn reset(&mut self, builder: usize, all: u8, from: ResetFrom) -> bool {
+    /// reset is not the player's and keeps it too, if the tool (`read`
+    /// before the game's reset clears it) has no start point and drags
+    /// nothing: one the player picked since the tool's last frame would
+    /// otherwise be lost to the reset unseen, and the old click revived.
+    /// Any other reset of this builder withdraws the kept click, before or
+    /// after the room replies.
+    fn reset(
+        &mut self,
+        builder: usize,
+        all: u8,
+        from: ResetFrom,
+        read: &dyn Fn(usize) -> Option<ToolNow>,
+    ) -> bool {
         let Some(pending) = self.pending.as_mut().filter(|p| p.click.tool == builder) else {
             return false;
         };
-        if from == ResetFrom::StateSwap {
+        if from == ResetFrom::StateSwap
+            && read(builder).is_some_and(|tool| tool.has_start == 0 && tool.dragging == 0)
+        {
             return false;
         }
         if all == 0 && pending.own_reset {
@@ -783,24 +795,29 @@ pub fn before_add(return_address: usize, callback: usize, number: u64) {
 pub fn proposal_reset(builder: usize, all: u8, from: ResetFrom, at: usize) {
     let reset = {
         let mut chain = chain();
+        // Read before the game's reset runs, which clears the start point.
+        let read = |tool| read_tool(&crate::modules::Process, tool);
+        let reset = chain.reset(builder, all, from, &read);
         if from == ResetFrom::StateSwap
+            && !reset
             && chain
                 .pending
                 .as_ref()
                 .is_some_and(|p| p.click.tool == builder)
         {
             log_once(
-                "street tool: the tool's state swap reset its proposal; the clicked segment                  still continues"
+                "street tool: the tool's state swap reset its proposal; the clicked segment \
+                 still continues"
                     .into(),
             );
         }
-        let reset = chain.reset(builder, all, from);
         rearm(&chain);
         reset
     };
     if reset {
         log_once(format!(
-            "street tool: does not continue from the clicked segment: the tool's proposal was              reset (all {all}, returning to +{at:#x})"
+            "street tool: does not continue from the clicked segment: the tool's proposal was \
+             reset (all {all}, returning to +{at:#x})"
         ));
     }
 }
@@ -1342,7 +1359,7 @@ mod tests {
     fn tool_click(chain: &mut Chain, number: u64, now: Instant, frame: u64) {
         chain.click(number, Some(click(true, 1)), now, frame);
         assert!(
-            !chain.reset(TOOL, 0, ResetFrom::Elsewhere),
+            !chain.reset(TOOL, 0, ResetFrom::Elsewhere, &|_| Some(tool_now())),
             "the click's own reset keeps it"
         );
     }
@@ -1371,7 +1388,7 @@ mod tests {
         let read = |_: usize| Some(tool_now());
         chain.click(7, Some(click(true, 1)), now, 0);
         assert!(
-            !chain.reset(TOOL, 0, ResetFrom::Elsewhere),
+            !chain.reset(TOOL, 0, ResetFrom::Elsewhere, &|_| Some(tool_now())),
             "the click's own reset"
         );
         chain.bind(7, Some(900));
@@ -1407,17 +1424,17 @@ mod tests {
         for all in [1, 0] {
             let mut chain = Chain::default();
             assert!(
-                !chain.reset(TOOL, all, ResetFrom::Elsewhere),
+                !chain.reset(TOOL, all, ResetFrom::Elsewhere, &|_| Some(tool_now())),
                 "nothing kept"
             );
             tool_click(&mut chain, 7, now, 0);
             assert!(
-                !chain.reset(TOOL + 1, 1, ResetFrom::Elsewhere),
+                !chain.reset(TOOL + 1, 1, ResetFrom::Elsewhere, &|_| Some(tool_now())),
                 "another builder cannot cancel it"
             );
             chain.bind(7, Some(900));
             assert!(
-                chain.reset(TOOL, all, ResetFrom::Elsewhere),
+                chain.reset(TOOL, all, ResetFrom::Elsewhere, &|_| Some(tool_now())),
                 "a later native reset cancels while ack is pending"
             );
             assert_eq!(chain.ordered(), None);
@@ -1430,7 +1447,7 @@ mod tests {
 
             built(&mut chain, now);
             assert!(
-                chain.reset(TOOL, all, ResetFrom::Elsewhere),
+                chain.reset(TOOL, all, ResetFrom::Elsewhere, &|_| Some(tool_now())),
                 "a reset after ack also cancels"
             );
             assert_eq!(chain.poll(now, true), (None, None));
@@ -1439,7 +1456,7 @@ mod tests {
         // (one call), but an `all` 1 reset there is not taken for it.
         let mut chain = Chain::default();
         chain.click(7, Some(click(true, 1)), now, 0);
-        assert!(chain.reset(TOOL, 1, ResetFrom::Elsewhere));
+        assert!(chain.reset(TOOL, 1, ResetFrom::Elsewhere, &|_| Some(tool_now())));
     }
 
     #[test]
@@ -1451,12 +1468,21 @@ mod tests {
         let read = |_: usize| Some(tool_now());
         let mut chain = Chain::default();
         chain.click(7, Some(click(true, 1)), now, 0);
-        assert!(!chain.reset(TOOL, 0, ResetFrom::Elsewhere), "its own");
+        assert!(
+            !chain.reset(TOOL, 0, ResetFrom::Elsewhere, &|_| Some(tool_now())),
+            "its own"
+        );
         chain.bind(7, Some(900));
-        assert!(!chain.reset(TOOL, 1, ResetFrom::StateSwap), "ack pending");
+        assert!(
+            !chain.reset(TOOL, 1, ResetFrom::StateSwap, &|_| Some(tool_now())),
+            "ack pending"
+        );
         assert_eq!(chain.ordered(), Some(900));
         chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]);
-        assert!(!chain.reset(TOOL, 1, ResetFrom::StateSwap), "after ack");
+        assert!(
+            !chain.reset(TOOL, 1, ResetFrom::StateSwap, &|_| Some(tool_now())),
+            "after ack"
+        );
         chain.seen(11, 1, 0, 1);
         assert!(matches!(
             chain.step(TOOL, 1, now, true, &read),
@@ -1466,7 +1492,7 @@ mod tests {
         // a right-click abort (vf2, `all` 1, from elsewhere) still drops.
         let mut chain = Chain::default();
         chain.click(7, Some(click(true, 1)), now, 0);
-        assert!(!chain.reset(TOOL, 1, ResetFrom::StateSwap));
+        assert!(!chain.reset(TOOL, 1, ResetFrom::StateSwap, &|_| Some(tool_now())));
         chain.bind(7, Some(900));
         assert_eq!(
             chain.step(TOOL, 1, now, true, &read),
@@ -1474,10 +1500,45 @@ mod tests {
         );
         let mut chain = Chain::default();
         chain.click(7, Some(click(true, 1)), now, 0);
-        assert!(!chain.reset(TOOL, 0, ResetFrom::Elsewhere));
-        assert!(!chain.reset(TOOL, 1, ResetFrom::StateSwap));
-        assert!(chain.reset(TOOL, 1, ResetFrom::Elsewhere), "the abort");
+        assert!(!chain.reset(TOOL, 0, ResetFrom::Elsewhere, &|_| Some(tool_now())));
+        assert!(!chain.reset(TOOL, 1, ResetFrom::StateSwap, &|_| Some(tool_now())));
+        assert!(
+            chain.reset(TOOL, 1, ResetFrom::Elsewhere, &|_| Some(tool_now())),
+            "the abort"
+        );
         assert_eq!(chain.ordered(), None);
+        // A start point the player picked since the tool's last frame (or a
+        // drag), which the swap's reset is about to clear, ends the click
+        // there, and the room's answer does not revive it; so does a tool
+        // that does not read.
+        let started = |_: usize| {
+            Some(ToolNow {
+                has_start: 1,
+                ..tool_now()
+            })
+        };
+        let dragging = |_: usize| {
+            Some(ToolNow {
+                dragging: 1,
+                ..tool_now()
+            })
+        };
+        let unread = |_: usize| None;
+        let reads: [&dyn Fn(usize) -> Option<ToolNow>; 3] = [&started, &dragging, &unread];
+        for read in reads {
+            let mut chain = Chain::default();
+            tool_click(&mut chain, 7, now, 0);
+            chain.bind(7, Some(900));
+            assert!(chain.reset(TOOL, 1, ResetFrom::StateSwap, read));
+            assert_eq!(chain.ordered(), None);
+            chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]);
+            chain.seen(11, 1, 0, 1);
+            assert_eq!(
+                chain.step(TOOL, 1, now, true, &|_| Some(tool_now())),
+                Step::Nothing,
+                "the idle tool after the reset does not get the old click"
+            );
+        }
     }
 
     #[test]
@@ -1748,11 +1809,12 @@ mod tests {
         built(&mut chain(), Instant::now());
         before_add(0x1_4058_91b4, CALLBACK, 9);
         assert!(!chain().take(7));
-        // Through the reset detour: the state swap's reset keeps it, an
-        // abort's drops it.
+        // Through the reset detour: the state swap's reset reads the tool
+        // first (this one is not mapped: dropped, fail closed), an abort's
+        // drops it.
         built(&mut chain(), Instant::now());
         proposal_reset(TOOL, 1, ResetFrom::StateSwap, 0x56_ce04);
-        assert!(chain().take(7), "kept through the state swap's reset");
+        assert!(!chain().take(7), "a tool that does not read");
         built(&mut chain(), Instant::now());
         proposal_reset(TOOL, 1, ResetFrom::Elsewhere, 0x58_d100);
         assert!(!chain().take(7), "dropped by the abort");

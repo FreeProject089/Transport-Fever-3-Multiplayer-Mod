@@ -3334,8 +3334,11 @@ one click of eleven in the 2026-10-19 room test. The detour's entry passes
 the reset's return address along (`[rsp]` in `r8`; the reset takes two
 arguments), and a reset returning past the swap callback's call (profile
 target `StreetBuilder state swap/ResetProposal call`, checked to call the
-reset itself) keeps the click; it does not stand in for the click's own
-reset. When that target does not resolve or check, every reset other than
+reset itself) keeps the click, if the tool, read before the game's reset
+runs, has no start point and drags nothing (a start the player picked
+since the tool's last frame would otherwise be cleared unseen and the old
+click revived; an unreadable tool drops it). It does not stand in for the
+click's own reset. When that target does not resolve or check, every reset other than
 the click's own drops it, as before. A right-click abort still drops it.
 Closing the tool also drops it after missed frames. Whether
 the parent handler can leave the tool open without resetting remains to be
