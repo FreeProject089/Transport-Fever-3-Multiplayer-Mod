@@ -1079,7 +1079,10 @@ fn a_long_bridge_window_rebuild_carries_only_the_junction_settings_it_changes() 
         track.polyline.junctions
     );
     // And it fits one action's payload.
-    assert_eq!(Action::from_payload(&action.to_payload().unwrap()).unwrap(), action);
+    assert_eq!(
+        Action::from_payload(&action.to_payload().unwrap()).unwrap(),
+        action
+    );
     let summary = capture_with(
         &long_bridge(""),
         "roads.upgradeSummary(require('tpf3mp.capture').windowBuild(nil, \
@@ -1113,7 +1116,13 @@ fn a_long_bridge_window_rebuild_carries_only_the_junction_settings_it_changes() 
         .map(|change| change.node.at.x)
         .collect();
     assert_eq!(at, [1_500_000, 1_700_000]);
-    assert!(track.polyline.junctions[0].config.as_ref().unwrap().double_slip);
+    assert!(
+        track.polyline.junctions[0]
+            .config
+            .as_ref()
+            .unwrap()
+            .double_slip
+    );
 
     // A node whose settings go, and one that had none and gets the game's:
     // both changes, both carried.
