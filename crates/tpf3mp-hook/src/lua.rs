@@ -4679,6 +4679,14 @@ my_timetables";
         assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
         // The asset groups a build adds: a count, armed the same way, and
         // only with the apply's detour in, which gives them their lists.
+        // The flag goes back to off however the test ends.
+        struct Detours;
+        impl Drop for Detours {
+            fn drop(&mut self) {
+                crate::builds::set_installed(false);
+            }
+        }
+        let _detours = Detours;
         crate::builds::set_installed(false);
         let refused = lua
             .run("return tpf3mp_native.terrain({ groups = 2 })")
@@ -4709,7 +4717,6 @@ my_timetables";
             );
         }
         assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
-        crate::builds::set_installed(false);
     }
 
     #[test]
