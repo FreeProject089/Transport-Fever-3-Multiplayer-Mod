@@ -18433,6 +18433,27 @@ fn every_game_keeps_a_cut_streets_stops_on_their_pieces() {
         hook_log(&pair)
     );
 
+    // Two stops facing each other, one each way, 0.1 m apart along the
+    // street: found together, as a two-sided stop's two.
+    let facing = cut_street_game(true);
+    facing
+        .load(format!(
+            "OBJECTS[301].param = 0.251              HOOK.batch = {{ {} }} UPDATE({{}}, STATE, 0.2)",
+            cut_street(
+                &format!("{{ {}, {} }}", kept_stop(0.25), kept_stop(0.251)),
+                "{}"
+            )
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}
+{}", hook_log(&facing)));
+    assert_eq!(
+        cut_track_sent(&facing),
+        "-1[300:0,301:1] -2[] -3[] | -200",
+        "{}",
+        hook_log(&facing)
+    );
+
     // With its gate off, no game builds it.
     let off = cut_street_game(false);
     off.load(format!(

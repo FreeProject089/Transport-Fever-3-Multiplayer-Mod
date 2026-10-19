@@ -1427,9 +1427,10 @@ end
 -- stood, the same way (geom.keepsSignal, as the capture asks).
 -- A stop on a street the same, on a link of street (acceptance.lua's
 -- keptStops): a stop of either side, found by its construction and place.
--- Both stops of a two-sided stop share both, so the entries of one link
--- that name the same removal, construction and place are found together:
--- as many stops there as entries, each a different side, all onto that
+-- Both stops of a two-sided stop share both, and two stops facing each
+-- other nearly do, so the entries of one link that name the same removal
+-- and construction within twice the tolerance are found together: as
+-- many stops near them as entries, each a different side, all onto that
 -- link, each on its side as the room's removal runs (from its `a` end),
 -- which the link runs too: where this game's edge runs the other way, a
 -- stop's side on it is the other one, so every game puts it on the same
@@ -1465,33 +1466,41 @@ local function keptSignals(polyline, removalEdges, network, at, dangling)
 				elseif r.network ~= "Track" or own ~= "Track" then
 					error(what .. ": not on track", 0)
 				end
-				-- The entries found together: this one, and for a stop the
-				-- link's later ones of the same removal, construction and place.
-				local group = { n }
-				if stop then
-					for m = n + 1, #link.kept do
-						local other = link.kept[m]
-						if other.removal == kept.removal and other.model == kept.model and other.at == kept.at then
-							group[#group + 1] = m
-						end
-					end
-					if #group > 2 then error(what .. ": more than two stops at one place", 0) end
-				end
 				-- The place is from the removal's `a` end; this game's edge may
 				-- run from its `b`.
 				local ea = arr(r.ends.a)
 				local dx, dy = e.a[1] - ea[1], e.a[2] - ea[2]
 				local flipped = dx * dx + dy * dy > END_TOLERANCE * END_TOLERANCE
-				local want = kept.at
-				if flipped then want = 1 - want end
 				lengths[e.id] = lengths[e.id] or edgeLength(e)
+				-- The entries found together: this one, and for a stop the
+				-- link's later ones of the same removal and construction whose
+				-- places one stop could match both of (a stop each way facing
+				-- each other, a two-sided stop's two).
+				local group = { n }
+				if stop then
+					for m = n + 1, #link.kept do
+						local other = link.kept[m]
+						if other.removal == kept.removal and other.model == kept.model
+							and math.abs(other.at - kept.at) * lengths[e.id] <= 2 * KEPT_TOLERANCE then
+							group[#group + 1] = m
+						end
+					end
+					if #group > 2 then error(what .. ": more than two stops at one place", 0) end
+				end
+				local function near(param)
+					for _, m in ipairs(group) do
+						local want = link.kept[m].at
+						if flipped then want = 1 - want end
+						if math.abs(param - want) * lengths[e.id] <= KEPT_TOLERANCE then return true end
+					end
+					return false
+				end
 				local found = {}
 				for _, o in ipairs(e.comp.objects or {}) do
 					local ofKind
 					if stop then ofKind = o[2] == types.STOP_LEFT or o[2] == types.STOP_RIGHT else ofKind = o[2] == SIGNAL end
 					local c = ofKind and not seen[o[1]] and api.engine.getComponent(o[1], C.EDGE_OBJECT)
-					if c and c.edgeObjectConstruction == kept.model
-						and math.abs(c.param - want) * lengths[e.id] <= KEPT_TOLERANCE then
+					if c and c.edgeObjectConstruction == kept.model and near(c.param) then
 						if #found >= #group then
 							error(what .. (stop and ": more stops there than are kept" or ": two signals where one is kept"), 0)
 						end
@@ -1525,8 +1534,10 @@ local function keptSignals(polyline, removalEdges, network, at, dangling)
 				local from = e
 				if flipped then from = { a = e.b, b = e.a, ta = scaled(e.tb, -1), tb = scaled(e.ta, -1) } end
 				local to = { a = at[link.from + 1], b = at[link.to + 1], ta = arr(link.tangent0), tb = arr(link.tangent1) }
-				local ok, why = geom.keepsSignal(from, kept.at, to)
-				if not ok then error(what .. ": " .. why, 0) end
+				for _, m in ipairs(group) do
+					local ok, why = geom.keepsSignal(from, link.kept[m].at, to)
+					if not ok then error(what .. ": " .. why, 0) end
+				end
 				for _, f in ipairs(found) do
 					seen[f.entity] = true
 					local pos

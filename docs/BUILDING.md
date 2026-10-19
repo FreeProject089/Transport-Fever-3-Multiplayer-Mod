@@ -869,8 +869,9 @@ positions, the originator's decisions included:
   also tells a two-sided stop's two apart), on a piece of street, and the
   same geometry as a signal's. Every game finds it by its construction
   within 0.25 m of that place; both stops of a two-sided stop share both,
-  so a link's entries of one removal, construction and place are found
-  together, as many stops there as entries, one a side. Each goes onto
+  and two stops facing each other nearly do, so a link's entries of one
+  removal and construction within 0.5 m of each other are found together,
+  as many stops near them as entries, one a side. Each goes onto
   the link on its side as the room's removal runs, flipped where this
   game's edge runs the other way. No new edge may take two stops on one
   side (a fatal assert in the game's lane creation, above), whatever brought
