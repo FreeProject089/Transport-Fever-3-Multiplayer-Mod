@@ -14648,8 +14648,112 @@ fn a_road_modifier_is_built_with_its_lanes_decorations_lock_and_owner() {
     let said = "upgrade applied: street upgrade of 1 edge(s) rebuilt in place; \
                 template ::/street/country.street_template; 2 lane(s) carrying PERSON CARGO CAR BUS \
                 TRUCK TRAM ELECTRIC_TRAM; lane speeds 22.22 to 22.22; decorations \
-                ::/infrastructure/edge_addons/barrier_b.edge; locked 1, owned 1";
+                ::/infrastructure/edge_addons/barrier_b.edge; locked 1, owned 1; junction settings 0";
     assert!(logged.iter().any(|l| l == said), "{logged:?}");
+}
+
+/// A long track bridge's type changed in its window carries no junction
+/// settings it does not change (tpf3mp/junctions.lua capture): every game
+/// gives each of the bridge's 128 nodes its settings again itself, the turn
+/// from the piece before onto the next naming the rebuilt pieces, in the
+/// one proposal that rebuilds them.
+#[test]
+fn every_game_keeps_the_junction_settings_along_a_long_bridge_it_rebuilds() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(
+        r#"
+        local N = 127
+        local find = api.res.streetTemplateRep.find
+        api.res.streetTemplateRep.find = function(name)
+            if name == '::/track/standard.street_template' then return 6 end
+            return find(name)
+        end
+        local get = api.res.streetTemplateRep.get
+        api.res.streetTemplateRep.get = function(id)
+            if id == 6 then return { laneConfigs = { 'track lanes' }, streetStyle = '::/style/track.street_style' } end
+            return get(id)
+        end
+        local TRACKS = {}
+        for i = 0, N do
+            NODES[1000 + i] = { x = 1000 + 10 * i, y = 0, z = 20 }
+            TRACKS[1000 + i] = {}
+            CONFIGS[1000 + i] = { laneConnections = {}, crosswalks = {}, trafficLightPreference = 0,
+                trafficLightConfig = { trafficLightType = -1, states = {} },
+                doubleSlipSwitch = false, userModifiedTrafficLightStates = false }
+        end
+        for i = 0, N - 1 do
+            EDGES[2000 + i] = { node0 = 1000 + i, node1 = 1001 + i, tangent0 = { x = 10, y = 0, z = 0 },
+                tangent1 = { x = 10, y = 0, z = 0 }, objects = {}, type = 0, typeIndex = -1,
+                roadTemplate = '::/track/standard.street_template', laneConfigs = { 'track lanes' } }
+            table.insert(TRACKS[1000 + i], 2000 + i)
+            table.insert(TRACKS[1001 + i], 2000 + i)
+        end
+        for i = 1, N - 1 do
+            CONFIGS[1000 + i].laneConnections = { { segment0 = 1999 + i, lane0 = 0, segment1 = 2000 + i, lane1 = 0,
+                withRoad = false, withTram = false } }
+        end
+        local system = api.engine.system.streetSystem
+        system.getNode2TrackEdgeMap = function()
+            local m = {}
+            for node, edges in pairs(TRACKS) do m[node] = edges end
+            return m
+        end
+        system.getNodeTrackSegments = function(node) return TRACKS[node] or {} end
+        local vertices, links, removals = {}, {}, {}
+        for i = 0, N do
+            vertices[#vertices + 1] = { pos = NODES[1000 + i], resolve = { Node = 'Track' } }
+        end
+        for i = 0, N - 1 do
+            links[#links + 1] = { from = i, to = i + 1, tangent0 = { x = 10, y = 0, z = 0 },
+                tangent1 = { x = 10, y = 0, z = 0 }, structure = { Bridge = '::/bridge/stone.lua' } }
+            removals[#removals + 1] = { network = 'Track', ends = { a = NODES[1000 + i], b = NODES[1001 + i] } }
+        end
+        ACTION = { BuildTrack = { track = '::/track/standard.street_template', catenary = false,
+            polyline = { vertices = vertices, links = links, removals = removals, removed_nodes = {} } } }
+        assert(schema_check(ACTION))
+        HOOK.batch = { ACTION }
+        UPDATE({}, STATE, 0.2)
+        "#,
+    )
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    let (sends, removed, added, turns): (usize, usize, usize, String) = lua
+        .load(
+            r#"
+            local s = SENT[1] and SENT[1].proposal.streetProposal
+            if not s then return #SENT, 0, 0, '' end
+            local ends = {}
+            for _, e in ipairs(s.edgesToAdd) do ends[e.entity] = e.comp end
+            local wrong = {}
+            for _, n in ipairs(s.nodeConfigsToAdd or {}) do
+                local i = n.entity - 1000
+                local t = n.comp.laneConnections
+                local inner = i > 0 and i < 127
+                local ok = #t == (inner and 1 or 0)
+                if ok and inner then
+                    local a, b = ends[t[1].segment0], ends[t[1].segment1]
+                    ok = a and b and a.node1 == n.entity and b.node0 == n.entity
+                end
+                if not ok then wrong[#wrong + 1] = tostring(n.entity) end
+            end
+            return #SENT, #(s.nodeConfigsToRemove or {}), #(s.nodeConfigsToAdd or {}), table.concat(wrong, ',')
+            "#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert_eq!(sends, 1, "{}", hook_log(&lua));
+    assert_eq!(
+        (removed, added),
+        (128, 128),
+        "every node's settings go with its old pieces and come back"
+    );
+    assert_eq!(
+        turns,
+        "",
+        "each turn names the rebuilt pieces at its node: {}",
+        hook_log(&lua)
+    );
 }
 
 /// With three companies, a loan one founded company takes is its own: it
@@ -16807,7 +16911,7 @@ fn an_upgrade_handed_to_the_room_is_said_in_the_log() {
     let said = "upgrade handed to the room: street upgrade of 1 edge(s) rebuilt in place; \
                 template ::/street/country.street_template; 1 lane(s) carrying PERSON TRAM_TRACK; \
                 lane speeds 22.22 to 22.22; decorations ::/infrastructure/edge_addons/barrier_b.edge; \
-                locked 1, owned 1";
+                locked 1, owned 1; junction settings 0";
     assert!(logged.iter().any(|l| l == said), "{logged:?}");
     let handed: usize = lua.load("return #HOOK.commands").eval().unwrap();
     assert_eq!(handed, 1);

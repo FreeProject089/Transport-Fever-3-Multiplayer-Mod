@@ -1005,7 +1005,10 @@ refused. The crossing tool's tram lanes stay refused until the tool is
 seen in the game. The refusal names what it saw, after the
 `strict_junctions` reason, with the old and new light settings and the
 lanes' count. Road and track builds carry their junction settings as
-before, unchecked by this; the log's `handed the player's build` and
+before, unchecked by this; a rebuild of edges in place (the road and
+track modifiers, a bridge's type from its window) carries only the nodes
+whose settings it changes, since every game keeps the others across the
+rebuilt edges itself (see HOOKS.md). The log's `handed the player's build` and
 `building` lines name each node's settings they carry (`+j<node>{lanes
 N tram M}`) and take out (`-j<node>`).
 

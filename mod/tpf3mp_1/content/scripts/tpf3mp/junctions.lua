@@ -193,22 +193,75 @@ local function captureConfig(c, w, source, memo)
 	return config
 end
 
+-- A captured configuration (nil for none) in one line, to compare two of
+-- them at the same node as the wire carries them: edges by their ends in
+-- either order, phases in whole milliseconds.
+local function configWords(config)
+	if config == nil then return "none" end
+	local function ms(seconds)
+		local scaled = seconds * 1000
+		local whole = math.floor(scaled)
+		if scaled - whole >= 0.5 then whole = whole + 1 end
+		return string.format("%d", whole)
+	end
+	local out = { config.preference, tostring(config.light), tostring(config.double_slip),
+		tostring(config.custom_phases) }
+	for _, t in ipairs(config.connections) do
+		out[#out+1] = edgeKey(t.incoming) .. ":" .. t.lane_in .. ">" .. edgeKey(t.outgoing) .. ":" .. t.lane_out
+			.. ":" .. tostring(t.road) .. ":" .. tostring(t.tram)
+	end
+	for _, e in ipairs(config.crosswalks) do out[#out+1] = "walk " .. edgeKey(e) end
+	for _, p in ipairs(config.phases) do
+		out[#out+1] = "phase " .. ms(p.duration) .. "/" .. ms(p.minimum) .. "/" .. tostring(p.skip)
+			.. ":" .. table.concat(p.locked, ",")
+	end
+	return table.concat(out, "|")
+end
+
 -- Capture both updates and explicit resets; preserve order within a config
 -- because a traffic-light phase's indices address that order.
-function junctions.capture(street)
+--
+-- `changedOnly` leaves out a node's settings that are those it has now, a
+-- configuration named by the ends of its edges (or a reset of a node with
+-- none): for a rebuild of edges between the nodes they joined (the road and
+-- track modifiers, a bridge's or tunnel's type from its window). The game's
+-- proposal names the new edges at every node at a rebuilt edge, and a long
+-- bridge has more of them than an action carries (MAX_JUNCTIONS); every game
+-- keeps a node's settings across the edges rebuilt at it itself
+-- (junctions.into, `preserve`), so such a node needs nothing carried. Returns
+-- the changes, and how many were left out.
+function junctions.capture(street, changedOnly)
 	local adds, removes = list(get(street, "nodeConfigsToAdd")), list(get(street, "nodeConfigsToRemove"))
-	if #adds == 0 and #removes == 0 then return {} end
+	if #adds == 0 and #removes == 0 then return {}, 0 end
 	local w, changes, seen = world(street), {}, {}
+	local base, same = changedOnly and world(nil), 0
+	local function kept(id, config)
+		if not changedOnly or id < 0 then return true end
+		-- Settings it cannot read now are carried, as before.
+		local read, now = pcall(function()
+			local old = component(id, "BASE_NODE_CONFIG")
+			return configWords(old and captureConfig(old, base))
+		end)
+		if not read or now ~= configWords(config) then return true end
+		same = same + 1
+		return false
+	end
 	for _, record in ipairs(adds) do
 		if seen[record.entity] then error("a junction configured twice", 0) end
 		seen[record.entity] = true
-		changes[#changes+1] = { node = w.node(record.entity), config = captureConfig(record.comp, w) }
+		local config = captureConfig(record.comp, w)
+		if kept(record.entity, config) then
+			changes[#changes+1] = { node = w.node(record.entity), config = config }
+		end
 	end
 	for _, id in ipairs(removes) do
-		if not seen[id] then changes[#changes+1] = { node = w.node(id) } seen[id] = true end
+		if not seen[id] then
+			seen[id] = true
+			if kept(id, nil) then changes[#changes+1] = { node = w.node(id) } end
+		end
 	end
 	table.sort(changes, function(a,b) return nodeKey(a.node) < nodeKey(b.node) end)
-	return changes
+	return changes, same
 end
 
 -- A node configuration's settings in this game's own terms (edge entities,
