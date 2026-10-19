@@ -1591,8 +1591,15 @@ local function settleKept(carried)
 				.. (group == c.group and "" or (", was " .. tostring(c.group))))
 		end
 	end
+	local stops = 0
+	for _, c in ipairs(carried) do
+		if c.stop then stops = stops + 1 end
+	end
 	if #carried > 0 then
-		log("kept " .. #carried .. " signal(s) on the track's new pieces"
+		local what = stops == 0 and (#carried .. " signal(s) on the track's new pieces")
+			or stops == #carried and (stops .. " stop(s) on the street's new pieces")
+			or (#carried .. " stop(s) and signal(s) on the new pieces")
+		log("kept " .. what
 			.. (farthest and string.format(", the farthest moved %.2f m", farthest) or ", where they stand unread"))
 	end
 end

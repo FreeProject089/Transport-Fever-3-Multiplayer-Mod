@@ -18388,6 +18388,11 @@ fn every_game_keeps_a_cut_streets_stops_on_their_pieces() {
         hook_log(&lua)
     );
     assert!(
+        hook_log(&lua).contains("kept 2 stop(s) on the street's new pieces"),
+        "{}",
+        hook_log(&lua)
+    );
+    assert!(
         hook_log(&lua).contains("kept stop 300 in station group"),
         "{}",
         hook_log(&lua)

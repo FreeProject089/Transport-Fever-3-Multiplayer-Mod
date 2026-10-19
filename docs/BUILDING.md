@@ -629,9 +629,11 @@ removed streets, each a `STOP_LEFT` or `STOP_RIGHT` listed once, with no
 construction but the town buildings along them; every game removes the
 streets with the stops it finds on them, each one the acting company may
 touch, and refuses a signal there. A two-sided stop's two stand on one
-edge, so they go together. Behind `acceptance.lua`'s `bulldozeStops`
-(off until a two-player game), which the capture and every game's replay
-ask; with it off, the replay refuses a stop on a street as before. Every
+edge, so they go together. Behind `acceptance.lua`'s `bulldozeStops`,
+which the capture and every game's replay ask; with it off, the replay
+refuses a stop on a street as before. Off until the owner takes it or an
+ordinary-start run, after the same staged room (a street with a stop and
+one with a two-sided stop, removed in both games). Every
 game removes the stops it finds, not ones the originator named: a stop
 placed on that street by the same company in the moment between the
 click and the room's order would go too, as a track's signal does. Signals and waypoints go the same way, with
@@ -876,9 +878,13 @@ positions, the originator's decisions included:
   game's edge runs the other way. No new edge may take two stops on one
   side (a fatal assert in the game's lane creation, above), whatever brought
   them there. The log says each kept stop's station group before and
-  after the build. Behind `acceptance.lua`'s `keptStops` (off until a
-  two-player game), which `acceptance.check` asks of any `kept` entry
-  whose removal is a street's, on sending and on applying;
+  after the build. Behind `acceptance.lua`'s `keptStops`, which
+  `acceptance.check` asks of any `kept` entry whose removal is a street's,
+  on sending and on applying; off until the owner takes it or an
+  ordinary-start run, after a staged two-game room on build 40420
+  (run-1019-221901, Japan_2: four street builds beside junctions, one the
+  tool's put-back of a two-sided stop, every kept stop in its station
+  group in both games and moved 0.00 m, every rolling world check equal);
 - `removals`: existing edges the build removes, of either network, by their
   ends: an upgrade's, a span the build passes under, the stretch the tool
   rebuilds around a new junction or crossing. A split parent is no removal;

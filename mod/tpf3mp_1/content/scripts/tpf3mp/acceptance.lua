@@ -47,7 +47,13 @@
 -- stops it finds on those streets; the capture and every game's replay ask
 -- it); keptStops lets a street build keep a stop on the piece that goes on
 -- from its street or runs where it stood (a stop's Link.kept, its removal a
--- street's). Off until two-player game acceptance.
+-- street's). Both passed a staged two-game room on build 40420,
+-- 2026-10-19 (run-1019-221901, Japan_2, room.ps1 with both on locally):
+-- four street builds beside junctions, one the tool's put-back of a
+-- two-sided stop, each kept stop in its station group in both games and
+-- moved 0.00 m; a street bulldozed with a stop and one with a two-sided
+-- stop, removed in both; every rolling world check equal through step
+-- 400. Off until the owner takes them, or an ordinary-start run.
 local acceptance = {
     subsidies = true,
     rename = true,
