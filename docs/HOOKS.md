@@ -3852,7 +3852,7 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
   construction or town building, and their ids).
 - **Paced by their cost.** Drawing a long track's preview takes the
   watching game 60 to 170 ms, a frame it stutters (Japan_2, build 40420:
-  the game's evaluation 35 to 100 ms, filling the renderer 3 to 57 ms,
+  the game's evaluation 13 to 100 ms, filling the renderer 3 to 57 ms,
   `makeProposalData`'s conversions between Lua and the game 15 to 86 ms,
   the terrain nothing), and the builder's tool changes it up to five
   times a second while it drags: drawn as it came, 23 to 31 a 10 s,
