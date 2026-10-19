@@ -37,7 +37,8 @@
 --   member's at most a frame: what comes in between replaces the one
 --   waiting, so the latest is always drawn. A short street's preview, a
 --   few milliseconds, still shows as often as it comes; a preview gone
---   goes at once.
+--   goes at once. One the hook could not draw (every renderer busy) is
+--   tried again the same way, in a frame that draws nothing new.
 --
 -- Ported from TpF2 Multiplayer's shared build previews (mp/previews.lua in
 -- tpf2-multiplayer), on the room's own action schema.
@@ -301,6 +302,13 @@ local function unshown(link, kind, why)
 	link:log("another member's " .. tostring(kind) .. " preview does not show here: " .. tostring(why))
 end
 
+-- Whether member `from`'s next preview may be drawn at `t`: never drawn
+-- yet, or due; a clock gone back (os.clock wraps) is never waited out.
+local function isDue(from, t)
+	local due = dueAt[from]
+	return due == nil or t >= due or due - t > previews.MAX_WAIT
+end
+
 -- Makes member `from`'s preview `action` into its proposal and draws it
 -- (`previews.take`). Answers what that cost, in milliseconds.
 local function show(link, make, draw, from, action)
@@ -385,10 +393,8 @@ function previews.take(link, make, draw)
 	local t = now()
 	local next_, nextDue = nil, nil
 	for from in pairs(pending) do
-		local due = dueAt[from]
-		-- A clock gone back (os.clock wraps) is never waited out.
-		if due == nil or t >= due or due - t > previews.MAX_WAIT then
-			due = due or -math.huge
+		if isDue(from, t) then
+			local due = dueAt[from] or -math.huge
 			if nextDue == nil or due < nextDue or (due == nextDue and from < next_) then
 				next_, nextDue = from, due
 			end
@@ -399,22 +405,27 @@ function previews.take(link, make, draw)
 		pending[next_] = nil
 		local ms = show(link, make, draw, next_, action)
 		dueAt[next_] = now() + math.min(previews.MAX_WAIT, previews.PACE * ms / 1000)
-	end
-	-- The ones made but not drawn, tried again now and then: a renderer may
-	-- have come free since.
-	if draw then
-		t = now()
+	-- Else one made but not drawn, tried again now and then (a renderer may
+	-- have come free since), paced as a new one: never one whose member
+	-- sent a newer, which is drawn instead once they are due.
+	elseif draw then
 		if retriedAt == nil or t - retriedAt >= RETRY_EVERY or t < retriedAt then
 			retriedAt = t
+			local again = nil
 			for from, kept in pairs(remote) do
-				if kept.undrawn then
-					local r0 = now()
-					local called, drawn, data = pcall(draw, from, kept)
-					spent("retry", r0)
-					if called and drawn then
-						kept.undrawn = nil
-						judged(link, from, kept.kind, data)
-					end
+				if kept.undrawn and pending[from] == nil and isDue(from, t) and (again == nil or from < again) then
+					again = from
+				end
+			end
+			if again ~= nil then
+				local kept = remote[again]
+				local r0 = now()
+				local called, drawn, data = pcall(draw, again, kept)
+				local ms = spent("retry", r0)
+				dueAt[again] = now() + math.min(previews.MAX_WAIT, previews.PACE * ms / 1000)
+				if called and drawn then
+					kept.undrawn = nil
+					judged(link, again, kept.kind, data)
 				end
 			end
 		end

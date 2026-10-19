@@ -3863,7 +3863,10 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
   tenth of the watcher's time; one member's at most a frame. A preview
   that comes while its member waits replaces the one waiting, so the
   latest always shows; a short street's, a few milliseconds, still shows
-  as often as it comes, and a preview gone goes at once. The log's
+  as often as it comes, and a preview gone goes at once. One the hook
+  could not draw (all 16 renderers busy) is tried again paced the same
+  way, in a frame that draws nothing new, and never while its member has
+  sent a newer one. The log's
   "build previews in the last 10 s" line says the previews made and drawn
   and, for the longest draw, its parts: the game's evaluation, filling
   the renderer and composing the terrain (`tpf3mp_native.drawcost()`),

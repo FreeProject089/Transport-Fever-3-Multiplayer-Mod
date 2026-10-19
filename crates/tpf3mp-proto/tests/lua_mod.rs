@@ -4343,19 +4343,67 @@ fn a_costly_preview_is_redrawn_paced_by_its_cost_and_always_the_latest() {
         )
         .eval()
         .unwrap_or_else(|error| panic!("{error}"));
+    // The track's first at once, the next due 1.8 s after it; at 2.05 s the
+    // latest, 2 replaced while it waited; gone at once. The street's, 5 ms
+    // a draw, as often as they come. Both due: one a frame, the one waiting
+    // longest first.
     assert_eq!(
         drawn,
         [
-            "ab 1", // the first at once; the next due 1.8 s after it
-            "ab 3", // at 2.05, the latest: 2 was replaced while it waited
-            "ab gone",
-            "cd 1",
-            "cd 2",
-            "cd 3", // 5 ms a draw: as often as they come
-            "ab 4", // both due: one a frame, the one waiting longest first
-            "cd 4",
+            "ab 1", "ab 3", "ab gone", "cd 1", "cd 2", "cd 3", "ab 4", "cd 4"
         ]
     );
+}
+
+#[test]
+fn a_costly_preview_the_hook_could_not_draw_is_tried_again_paced_and_never_over_a_newer() {
+    let (lua, _script) = engine();
+    // Every renderer busy at first: a long track's draw still costs the
+    // game's evaluation, 200 ms on the fake clock, drawn or not.
+    let tries: Vec<String> = lua
+        .load(
+            "local previews = ug_require('tpf3mp_1::/scripts/tpf3mp/previews.lua') \
+             previews.reset() \
+             local T = 0 \
+             previews.clock = function() return T end \
+             local from = string.rep('ab', 32) \
+             local incoming = {} \
+             local link = { previews = function() local c = incoming incoming = {} return c end, \
+                            log = function() end } \
+             local full, tries = true, {} \
+             local function make(action) return { n = action.BuildTrack.n }, {}, 1 end \
+             local function draw(_, kept) \
+                 if kept == nil then return true end \
+                 T = T + 0.2 \
+                 tries[#tries + 1] = kept.proposal.n .. (full and ' busy' or ' drawn') \
+                 if full then return nil, 'every renderer is busy' end \
+                 return true \
+             end \
+             local function at(t, n) \
+                 T = t \
+                 if n then incoming = { { from = from, action = { BuildTrack = { n = n } } } } end \
+                 previews.take(link, make, draw) \
+             end \
+             at(0.0, 1) \
+             at(0.6) \
+             at(1.2) \
+             full = false \
+             at(2.1) \
+             at(3.0) \
+             full = true \
+             at(5.0, 2) \
+             at(6.0, 3) \
+             full = false \
+             at(7.3) \
+             at(8.0) \
+             return tries",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    // Not again at 0.6 or 1.2 s: the first try is due 1.8 s after it. At
+    // 2.1 s drawn, then nothing more to try. The second fails; at 7.3 s the
+    // third, sent since, is drawn instead of the second tried again.
+    assert_eq!(tries, ["1 busy", "1 drawn", "2 busy", "3 drawn"]);
 }
 
 #[test]
@@ -4368,6 +4416,8 @@ fn what_this_game_says_of_a_preview_goes_to_the_log_as_it_changes() {
         .load(
             "local previews = ug_require('tpf3mp_1::/scripts/tpf3mp/previews.lua') \
              previews.reset() \
+             local T = 0 \
+             previews.clock = function() return T end \
              local logged, incoming = {}, {} \
              local link = { previews = function() local c = incoming incoming = {} return c end, \
                             log = function(_, line) logged[#logged + 1] = line end } \
@@ -4376,6 +4426,7 @@ fn what_this_game_says_of_a_preview_goes_to_the_log_as_it_changes() {
              local function draw(from, kept) return true, data end \
              local from = string.rep('ab', 32) \
              local function show(action, d) \
+                 T = T + 10 \
                  data = d \
                  incoming = { { from = from, action = action } } \
                  previews.take(link, make, draw) \
@@ -4468,10 +4519,13 @@ fn the_plugin_has_the_hook_draw_each_other_members_preview_and_mounts_nothing() 
     )
     .exec()
     .unwrap();
+    // Two members' previews in one frame: one member's a frame, so the
+    // second frame makes the other's.
     lua.load(
         "M = mount(loadPlugin()) M.step() M.render() \
          HOOK.incoming = { { from = string.rep('ab', 32), action = { BuildTrack = {} } }, \
                            { from = string.rep('cd', 32), action = { BuildRoad = {} } } } \
+         M.step() M.render() \
          M.step() M.render()",
     )
     .exec()
