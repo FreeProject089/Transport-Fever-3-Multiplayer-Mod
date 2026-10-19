@@ -4297,6 +4297,68 @@ fn a_preview_the_hook_could_not_draw_is_drawn_once_a_renderer_frees() {
 }
 
 #[test]
+fn a_costly_preview_is_redrawn_paced_by_its_cost_and_always_the_latest() {
+    let (lua, _script) = engine();
+    // A fake clock: making and drawing a member's preview moves it on by
+    // what that member's previews cost here, a long track's 200 ms or a
+    // short street's 5 ms.
+    let drawn: Vec<String> = lua
+        .load(
+            "local previews = ug_require('tpf3mp_1::/scripts/tpf3mp/previews.lua') \
+             previews.reset() \
+             local T = 0 \
+             previews.clock = function() return T end \
+             local long, short = string.rep('ab', 32), string.rep('cd', 32) \
+             local costs = { [long] = 0.2, [short] = 0.005 } \
+             local incoming = {} \
+             local link = { previews = function() local c = incoming incoming = {} return c end, \
+                            log = function() end } \
+             local drawn = {} \
+             local function make(action, from) return { n = action.BuildTrack.n }, {}, 1 end \
+             local function draw(from, kept) \
+                 if kept == nil then drawn[#drawn + 1] = from:sub(1, 2) .. ' gone' return true end \
+                 T = T + costs[from] \
+                 drawn[#drawn + 1] = from:sub(1, 2) .. ' ' .. kept.proposal.n \
+                 return true \
+             end \
+             local function at(t, from, n) \
+                 T = t \
+                 if from then incoming = { { from = from, action = n and { BuildTrack = { n = n } } } } end \
+                 previews.take(link, make, draw) \
+             end \
+             at(0.0, long, 1) \
+             at(0.4, long, 2) \
+             at(0.6, long, 3) \
+             at(1.9) \
+             at(2.05) \
+             at(2.3, long, nil) \
+             at(10.0, short, 1) \
+             at(10.2, short, 2) \
+             at(10.4, short, 3) \
+             incoming = { { from = long, action = { BuildTrack = { n = 4 } } }, \
+                          { from = short, action = { BuildTrack = { n = 4 } } } } \
+             at(20.0) \
+             at(20.0) \
+             return drawn",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        drawn,
+        [
+            "ab 1", // the first at once; the next due 1.8 s after it
+            "ab 3", // at 2.05, the latest: 2 was replaced while it waited
+            "ab gone",
+            "cd 1",
+            "cd 2",
+            "cd 3", // 5 ms a draw: as often as they come
+            "ab 4", // both due: one a frame, the one waiting longest first
+            "cd 4",
+        ]
+    );
+}
+
+#[test]
 fn what_this_game_says_of_a_preview_goes_to_the_log_as_it_changes() {
     let (lua, _script) = engine();
     // The hook drew each one and answered the game's ProposalData: a track

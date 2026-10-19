@@ -63,6 +63,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::ThreadId,
+    time::Instant,
 };
 
 use tpf3mp_proto::PlayerId;
@@ -370,6 +371,31 @@ thread_local! {
     static ARMED: Cell<Option<PlayerId>> = const { Cell::new(None) };
     /// What the armed call came to, until disarmed.
     static OUTCOME: RefCell<Option<Result<(), String>>> = const { RefCell::new(None) };
+    /// What the last armed call cost, until the next is armed.
+    static COST: Cell<Option<Cost>> = const { Cell::new(None) };
+}
+
+/// What drawing a member's preview cost here, in microseconds: the game's
+/// evaluation of its proposal (`CreateProposalData`), filling the member's
+/// renderer from it (`AddToRenderer`), and composing the view terrain
+/// again. What `makeProposalData` spends besides (converting the proposal
+/// and the `ProposalData` between Lua and the game) is the rest of what
+/// the mod times.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Cost {
+    pub evaluate_us: u64,
+    pub fill_us: u64,
+    pub terrain_us: u64,
+}
+
+fn micros(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+/// What the last armed draw on this thread cost, or `None` when the game
+/// evaluated nothing for it.
+pub fn cost() -> Option<Cost> {
+    COST.with(Cell::get)
 }
 
 /// The game's functions this module calls, and the layout it reads.
@@ -592,6 +618,7 @@ pub fn arm(from: PlayerId) -> Result<(), String> {
     }
     ARMED.with(|armed| armed.set(Some(from)));
     OUTCOME.with(|outcome| outcome.replace(None));
+    COST.with(|cost| cost.set(None));
     Ok(())
 }
 
@@ -674,6 +701,7 @@ unsafe fn draw_made(
     toolkit: usize,
     proposal: usize,
     data: usize,
+    cost: &mut Cost,
 ) -> Result<(), String> {
     if !on_gui_thread() {
         return Err("only the GUI thread draws".into());
@@ -711,6 +739,7 @@ unsafe fn draw_made(
         // terrain heights stay out of the view terrain every renderer shares.
         unsafe { std::ptr::write_volatile((renderer + layout.upload) as *mut u8, 0) };
     }
+    let filling = Instant::now();
     game.clear(renderer);
     // SAFETY: as the game's ProposalViewer calls it (0x2aa3b0d): its model
     // data, the toolkit and proposal the game just used, the data it made,
@@ -730,10 +759,13 @@ unsafe fn draw_made(
             1,
         );
     }
+    cost.fill_us = micros(filling);
     if heights {
         // The clear reset every renderer's heights, the fill uploaded this
         // one's: all of them again, this player's own tools last.
+        let composing = Instant::now();
         recompose();
+        cost.terrain_us = micros(composing);
     } else {
         // The upload flag again: the fill may set it for its own pass.
         // SAFETY: as above.
@@ -757,13 +789,19 @@ unsafe extern "C-unwind" fn evaluate_redirect(
     let Some(game) = GAME.get() else {
         return out;
     };
+    let evaluating = Instant::now();
     // SAFETY: the game's call, passed through as it made it.
     let made =
         unsafe { (game.evaluate)(out, toolkit, r8, proposal, preprocess, optional, context) };
     if let Some(from) = ARMED.with(Cell::take) {
+        let mut cost = Cost {
+            evaluate_us: micros(evaluating),
+            ..Cost::default()
+        };
         // SAFETY: the game's own arguments, after its call returned.
-        let outcome = unsafe { draw_made(game, from, toolkit, proposal, out) };
+        let outcome = unsafe { draw_made(game, from, toolkit, proposal, out, &mut cost) };
         OUTCOME.with(|slot| slot.replace(Some(outcome)));
+        COST.with(|slot| slot.set(Some(cost)));
     }
     made
 }
