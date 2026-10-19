@@ -3326,7 +3326,13 @@ rest, nine sites in all) passes 1. So the click's first reset with `all` 0
 is its own and keeps the click; any other reset of that builder drops it,
 before or after the room's answer. A click whose own reset has not come by
 the tool's next frame is dropped too. (The 2026-10-19 launcher run, before
-this rule, dropped every click at its own reset.) Closing the tool also drops it after missed frames. Whether
+this rule, dropped every click at its own reset.) Not yet told apart from an
+abort: the tool's game-state-swap callback (the constructor's lambda_11,
+40420 0x56caa0) also resets with `all` 1 when an entity the proposal snaps
+to changed revision, so a room build landing under the cursor can drop a
+click (most likely the one click of eleven dropped in the 2026-10-19 room
+test, which no abort explains). That only loses one continuation; telling
+it apart needs the reset's caller. Closing the tool also drops it after missed frames. Whether
 the parent handler can leave the tool open without resetting remains to be
 checked in game, so default continuation stays off. "Closed" is three GUI frames without the
 tool's frame, counted from the click's own; a tool closed and opened
