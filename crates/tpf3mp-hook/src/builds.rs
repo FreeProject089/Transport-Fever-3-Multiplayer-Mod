@@ -67,6 +67,12 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
+/// For tests: as if both detours were in, or not.
+#[cfg(test)]
+pub(crate) fn set_installed(on: bool) {
+    INSTALLED.store(on, Ordering::Release);
+}
+
 /// The player's builds queued in the room's game so far.
 pub fn clicks() -> u64 {
     CLICKS.load(Ordering::Acquire)

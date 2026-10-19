@@ -4021,7 +4021,9 @@ So the game script arms the hook with how many groups the build adds
 detour, before the game builds the proposal's data (`sub_a212d0` at
 0x9e29b5 on 40420, `sub_a1fd10` at 0x9e1215 on 40408, both inside the
 apply it calls), gives each group that list, in a vector of the game's
-own allocator (`terrain::align_groups`). The build must add exactly
+own allocator (`terrain::align_groups`). A hook whose build detours
+are not in refuses the arming, so nothing is sent: the build would go
+through as the script made it. The build must add exactly
 those `n` entities, each an auto-removable construction of no file with
 one subconstruction whose list vector is empty; anything else refuses
 the build, and nothing is written. `terrain()` then answers whether it

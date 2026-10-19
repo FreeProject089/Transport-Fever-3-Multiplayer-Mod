@@ -2936,6 +2936,12 @@ unsafe extern "C-unwind" fn native_terrain(l: State) -> c_int {
                 if !(1.0..=crate::terrain::MAX_ASSET_GROUPS as f64).contains(&count) {
                     return Err(format!("asset groups to align: not a count ({groups:?})"));
                 }
+                // Without the apply's detour the build would go through as
+                // the script made it, levelling the ground: refused before
+                // anything is sent.
+                if !crate::builds::installed() {
+                    return Err("the build detours are not in: asset groups cannot be built".into());
+                }
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 crate::terrain::arm_groups(count as usize);
                 return Ok(());
@@ -4671,7 +4677,18 @@ my_timetables";
             "{refused}"
         );
         assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
-        // The asset groups a build adds: a count, armed the same way.
+        // The asset groups a build adds: a count, armed the same way, and
+        // only with the apply's detour in, which gives them their lists.
+        crate::builds::set_installed(false);
+        let refused = lua
+            .run("return tpf3mp_native.terrain({ groups = 2 })")
+            .unwrap();
+        assert!(
+            refused.starts_with("nil|") && refused.contains("detours are not in"),
+            "{refused}"
+        );
+        assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
+        crate::builds::set_installed(true);
         assert_eq!(
             lua.run("return tpf3mp_native.terrain({ groups = 2 })"),
             Ok("true".into())
@@ -4692,6 +4709,7 @@ my_timetables";
             );
         }
         assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
+        crate::builds::set_installed(false);
     }
 
     #[test]
