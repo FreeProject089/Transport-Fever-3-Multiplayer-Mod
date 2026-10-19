@@ -432,7 +432,8 @@ Dev C:
   action cannot prove or reproduce those changes. The type the road and
   track tools pick for a new crossing (`rcType`) goes with
   `BuildRoad`/`BuildTrack` (schema 28), behind `crossingTypes`
-  (off; staged two-game runs on 2026-10-17 passed, ordinary-start acceptance not yet). Open: ordinary-start two-player acceptance of the window's
+  (on: staged two-game runs on 2026-10-17 and ordinary-start acceptance on
+  2026-10-19 passed). Open: ordinary-start two-player acceptance of the window's
   path ([HOOKS.md](HOOKS.md), "Level crossing types").
 - [ ] Landmarks, built once: the second on the same turn is refused and
   pays nothing.
