@@ -406,6 +406,16 @@ pub enum Step {
     },
 }
 
+/// Where a proposal reset was called from, as its return address tells.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ResetFrom {
+    /// The tool's game-state swap callback, at the profile's checked call
+    /// site.
+    StateSwap,
+    /// Anywhere else, or the call site is unknown.
+    Elsewhere,
+}
+
 /// The click kept, and where it stands. The hook keeps one, behind a lock;
 /// the tests drive their own.
 #[derive(Default)]
@@ -430,16 +440,22 @@ impl Chain {
     }
 
     /// The builder `builder` reset its proposal, `all` as the game passed
-    /// it. `UpdateEngine` resets the tool's proposal right after `Add`
-    /// returns, unconditionally and with `all` 0, the only caller that
-    /// passes 0 (an abort, the tool's other resets and its frame's pass 1;
-    /// 40408, 40418 and 40420). That first `all` 0 reset after the click is
-    /// the click's own and keeps it. Any other reset of this builder
-    /// withdraws the kept click, before or after the room replies.
-    fn reset(&mut self, builder: usize, all: u8) -> bool {
+    /// it, called `from` where. `UpdateEngine` resets the tool's proposal
+    /// right after `Add` returns, unconditionally and with `all` 0, the
+    /// only caller that passes 0 (an abort, the tool's other resets and its
+    /// frame's pass 1; 40408, 40418 and 40420). That first `all` 0 reset
+    /// after the click is the click's own and keeps it. The tool's
+    /// game-state swap resets when an entity the proposal snaps to changed
+    /// revision, as the room's build landing under the cursor does; that
+    /// reset is not the player's and keeps it too. Any other reset of this
+    /// builder withdraws the kept click, before or after the room replies.
+    fn reset(&mut self, builder: usize, all: u8, from: ResetFrom) -> bool {
         let Some(pending) = self.pending.as_mut().filter(|p| p.click.tool == builder) else {
             return false;
         };
+        if from == ResetFrom::StateSwap {
+            return false;
+        }
         if all == 0 && pending.own_reset {
             pending.own_reset = false;
             return false;
@@ -759,18 +775,33 @@ pub fn before_add(return_address: usize, callback: usize, number: u64) {
 }
 
 /// Called by the already-installed proposal-reset detour with the game's
-/// `all`. Past the click's own reset ([`Chain::reset`]), a reset means the
-/// player (or game) abandoned that proposal; continuing it after the room
-/// replies would revive an old start point.
-pub fn proposal_reset(builder: usize, all: u8) {
+/// `all`, and where the reset was called from (`at`, relative to the
+/// game's image, for the log). Past the click's own reset and other than
+/// from the state swap ([`Chain::reset`]), a reset means the player (or
+/// game) abandoned that proposal; continuing it after the room replies
+/// would revive an old start point.
+pub fn proposal_reset(builder: usize, all: u8, from: ResetFrom, at: usize) {
     let reset = {
         let mut chain = chain();
-        let reset = chain.reset(builder, all);
+        if from == ResetFrom::StateSwap
+            && chain
+                .pending
+                .as_ref()
+                .is_some_and(|p| p.click.tool == builder)
+        {
+            log_once(
+                "street tool: the tool's state swap reset its proposal; the clicked segment                  still continues"
+                    .into(),
+            );
+        }
+        let reset = chain.reset(builder, all, from);
         rearm(&chain);
         reset
     };
     if reset {
-        dropped(Some("the tool's proposal was reset"));
+        log_once(format!(
+            "street tool: does not continue from the clicked segment: the tool's proposal was              reset (all {all}, returning to +{at:#x})"
+        ));
     }
 }
 
@@ -934,7 +965,7 @@ pub fn on_step(this: usize) {
 }
 
 /// The call's target at `call`, if `code` reads a `call rel32` there.
-fn call_target(code: &dyn Fn(usize) -> Option<[u8; 5]>, call: usize) -> Option<usize> {
+pub(crate) fn call_target(code: &dyn Fn(usize) -> Option<[u8; 5]>, call: usize) -> Option<usize> {
     let bytes = code(call)?;
     if bytes[0] != 0xE8 {
         return None;
@@ -1310,7 +1341,10 @@ mod tests {
     /// keeps it, then the tool resets its proposal with `all` 0.
     fn tool_click(chain: &mut Chain, number: u64, now: Instant, frame: u64) {
         chain.click(number, Some(click(true, 1)), now, frame);
-        assert!(!chain.reset(TOOL, 0), "the click's own reset keeps it");
+        assert!(
+            !chain.reset(TOOL, 0, ResetFrom::Elsewhere),
+            "the click's own reset keeps it"
+        );
     }
 
     /// One click at GUI frame 0, handed over and applied.
@@ -1336,7 +1370,10 @@ mod tests {
         let mut chain = Chain::default();
         let read = |_: usize| Some(tool_now());
         chain.click(7, Some(click(true, 1)), now, 0);
-        assert!(!chain.reset(TOOL, 0), "the click's own reset");
+        assert!(
+            !chain.reset(TOOL, 0, ResetFrom::Elsewhere),
+            "the click's own reset"
+        );
         chain.bind(7, Some(900));
         assert_eq!(chain.step(TOOL, 1, now, true, &read), Step::Wait);
         chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]);
@@ -1369,15 +1406,18 @@ mod tests {
         // answer is pending and after it.
         for all in [1, 0] {
             let mut chain = Chain::default();
-            assert!(!chain.reset(TOOL, all), "nothing kept");
+            assert!(
+                !chain.reset(TOOL, all, ResetFrom::Elsewhere),
+                "nothing kept"
+            );
             tool_click(&mut chain, 7, now, 0);
             assert!(
-                !chain.reset(TOOL + 1, 1),
+                !chain.reset(TOOL + 1, 1, ResetFrom::Elsewhere),
                 "another builder cannot cancel it"
             );
             chain.bind(7, Some(900));
             assert!(
-                chain.reset(TOOL, all),
+                chain.reset(TOOL, all, ResetFrom::Elsewhere),
                 "a later native reset cancels while ack is pending"
             );
             assert_eq!(chain.ordered(), None);
@@ -1389,14 +1429,55 @@ mod tests {
             );
 
             built(&mut chain, now);
-            assert!(chain.reset(TOOL, all), "a reset after ack also cancels");
+            assert!(
+                chain.reset(TOOL, all, ResetFrom::Elsewhere),
+                "a reset after ack also cancels"
+            );
             assert_eq!(chain.poll(now, true), (None, None));
         }
         // An abort between the click's Add and its own reset cannot happen
         // (one call), but an `all` 1 reset there is not taken for it.
         let mut chain = Chain::default();
         chain.click(7, Some(click(true, 1)), now, 0);
-        assert!(chain.reset(TOOL, 1));
+        assert!(chain.reset(TOOL, 1, ResetFrom::Elsewhere));
+    }
+
+    #[test]
+    fn the_state_swaps_reset_keeps_the_click_and_an_abort_still_drops_it() {
+        // The room's build lands under the cursor: the tool's state swap
+        // resets the proposal (`all` 1) because the entity it snaps to
+        // changed revision (one click of eleven in run-1019-201255).
+        let now = Instant::now();
+        let read = |_: usize| Some(tool_now());
+        let mut chain = Chain::default();
+        chain.click(7, Some(click(true, 1)), now, 0);
+        assert!(!chain.reset(TOOL, 0, ResetFrom::Elsewhere), "its own");
+        chain.bind(7, Some(900));
+        assert!(!chain.reset(TOOL, 1, ResetFrom::StateSwap), "ack pending");
+        assert_eq!(chain.ordered(), Some(900));
+        chain.applied(Some(900), true, vec![edge(11, [2, 3], [START, END])]);
+        assert!(!chain.reset(TOOL, 1, ResetFrom::StateSwap), "after ack");
+        chain.seen(11, 1, 0, 1);
+        assert!(matches!(
+            chain.step(TOOL, 1, now, true, &read),
+            Step::Start { number: 7, .. }
+        ));
+        // A swap's reset does not stand in for the click's own reset, and
+        // a right-click abort (vf2, `all` 1, from elsewhere) still drops.
+        let mut chain = Chain::default();
+        chain.click(7, Some(click(true, 1)), now, 0);
+        assert!(!chain.reset(TOOL, 1, ResetFrom::StateSwap));
+        chain.bind(7, Some(900));
+        assert_eq!(
+            chain.step(TOOL, 1, now, true, &read),
+            Step::Drop("the click's own proposal reset did not follow it")
+        );
+        let mut chain = Chain::default();
+        chain.click(7, Some(click(true, 1)), now, 0);
+        assert!(!chain.reset(TOOL, 0, ResetFrom::Elsewhere));
+        assert!(!chain.reset(TOOL, 1, ResetFrom::StateSwap));
+        assert!(chain.reset(TOOL, 1, ResetFrom::Elsewhere), "the abort");
+        assert_eq!(chain.ordered(), None);
     }
 
     #[test]
@@ -1667,6 +1748,14 @@ mod tests {
         built(&mut chain(), Instant::now());
         before_add(0x1_4058_91b4, CALLBACK, 9);
         assert!(!chain().take(7));
+        // Through the reset detour: the state swap's reset keeps it, an
+        // abort's drops it.
+        built(&mut chain(), Instant::now());
+        proposal_reset(TOOL, 1, ResetFrom::StateSwap, 0x56_ce04);
+        assert!(chain().take(7), "kept through the state swap's reset");
+        built(&mut chain(), Instant::now());
+        proposal_reset(TOOL, 1, ResetFrom::Elsewhere, 0x58_d100);
+        assert!(!chain().take(7), "dropped by the abort");
         ADD_RETURN.store(0, Ordering::Release);
         STEP_HOOKED.store(false, Ordering::Release);
         RESET_HOOKED.store(false, Ordering::Release);

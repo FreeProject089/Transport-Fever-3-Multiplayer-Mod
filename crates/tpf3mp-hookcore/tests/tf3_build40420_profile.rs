@@ -241,6 +241,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("UI::BuilderRenderer::EndHeightMod", 0x7bd9d0),
     ("terrain::ViewTerrain::ApplyBlocks", 0x3968e0),
     ("UI::StreetBuilder::ResetProposal", 0x575650),
+    ("StreetBuilder state swap/ResetProposal call", 0x56cdff),
     ("view: findBestDepot depot owner test", 0x268d26b),
     ("view: findBestDepot owner test", 0x268d6b5),
     ("simperf: EmissionGridSystem::Update", 0xaaa700),
