@@ -1140,6 +1140,42 @@ fn a_long_bridge_window_rebuild_carries_only_the_junction_settings_it_changes() 
         .map(|change| (change.node.at.x, change.config.is_some()))
         .collect();
     assert_eq!(changes, [(1_100_000, false), (1_200_000, true)]);
+
+    // A bridge the room built has no settings at its nodes (the room's
+    // track builds give none), and the window gives each the game's empty
+    // one (seen on build 40420, 2026-10-19: no turns, no light, preference
+    // Auto): nothing to carry. One node given a preference too goes.
+    let empty = "for _, c in pairs(byNode) do c.laneConnections = {} end \
+                 local getComponent = api.engine.getComponent \
+                 api.engine.getComponent = function(id, kind) \
+                     if kind == 6 and id >= 1000 and id <= 1127 then return nil end \
+                     return getComponent(id, kind) end";
+    let action = decode(window_build(&long_bridge(empty), true).unwrap());
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    assert!(
+        track.polyline.junctions.is_empty(),
+        "{:?}",
+        track.polyline.junctions
+    );
+    let action = decode(
+        window_build(
+            &long_bridge(&format!("{empty} byNode[1030].trafficLightPreference = 2")),
+            true,
+        )
+        .unwrap(),
+    );
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    let at: Vec<i32> = track
+        .polyline
+        .junctions
+        .iter()
+        .map(|change| change.node.at.x)
+        .collect();
+    assert_eq!(at, [1_300_000], "the node set to No");
 }
 
 /// The track tool's proposal for a track started from the middle of the

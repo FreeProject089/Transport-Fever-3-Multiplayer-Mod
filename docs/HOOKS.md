@@ -2930,7 +2930,9 @@ construction's window its edits:
     for the modifiers. The game's proposal gives every node at a rebuilt
     edge its junction settings again, naming the new edges; the build
     carries only those that differ from the node's settings now (by the
-    ends of the edges they name), as every game keeps a node's settings
+    ends of the edges they name; the game's empty settings, which the
+    window gives every node of a track the room built, count as none, as
+    such a node has), as every game keeps a node's settings
     across the edges it rebuilds at it (`junctions.capture`
     `changedOnly`, `junctions.into` `preserve`). A long track bridge
     (2026-10-19, build 40420) named 128 nodes and was refused before it

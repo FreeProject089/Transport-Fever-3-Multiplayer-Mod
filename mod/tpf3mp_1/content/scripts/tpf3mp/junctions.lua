@@ -195,9 +195,17 @@ end
 
 -- A captured configuration (nil for none) in one line, to compare two of
 -- them at the same node as the wire carries them: edges by their ends in
--- either order, phases in whole milliseconds.
+-- either order, phases in whole milliseconds. The game's empty one (no
+-- turns, crosswalks, light or phases, preference Auto, no double slip
+-- switch, no phases set by hand) is none: the bridge window gives it to
+-- every node of a track the room built, which has no configuration
+-- (build 40420, 2026-10-19), and a node without one is the same to the game.
 local function configWords(config)
 	if config == nil then return "none" end
+	if #config.connections == 0 and #config.crosswalks == 0 and #config.phases == 0 and config.light == nil
+		and config.preference == "Auto" and not config.double_slip and not config.custom_phases then
+		return "none"
+	end
 	local function ms(seconds)
 		local scaled = seconds * 1000
 		local whole = math.floor(scaled)
@@ -222,8 +230,8 @@ end
 -- because a traffic-light phase's indices address that order.
 --
 -- `changedOnly` leaves out a node's settings that are those it has now, a
--- configuration named by the ends of its edges (or a reset of a node with
--- none): for a rebuild of edges between the nodes they joined (the road and
+-- configuration named by the ends of its edges (configWords; the game's
+-- empty one where it has none, or a reset of a node with none): for a rebuild of edges between the nodes they joined (the road and
 -- track modifiers, a bridge's or tunnel's type from its window). The game's
 -- proposal names the new edges at every node at a rebuilt edge, and a long
 -- bridge has more of them than an action carries (MAX_JUNCTIONS); every game
