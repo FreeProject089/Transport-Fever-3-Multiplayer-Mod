@@ -305,7 +305,9 @@ the hook):
   the junction window's double slip switch, exactly as seen in a
   two-game room on build 40420 (BUILDING.md, "Junction edits"), with a
   regression scenario `double_slip`. The crossing tool's tram lanes
-  stay refused until the tool is seen in the game.
+  stay refused until the tool is seen in the game. *Proposed (D30
+  amendment, 2026-10-19, awaiting the owner):* the switch also at a
+  track crossing with no settings yet, as a newly built one has.
 - [ ] Line priority per line; loading rules per station or line.
 - [ ] The new click-to-assign line creation: a new UI flow, captured from
   scratch.
