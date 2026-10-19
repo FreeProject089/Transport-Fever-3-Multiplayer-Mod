@@ -3092,7 +3092,11 @@ construction's window its edits:
   2026-10-19: the second was refused in both games). Where more than one
   group holds them, only the one of the captured size with the first
   asset among them is taken; none, or no single such one, refuses it in
-  every game alike. It builds the same full proposal
+  every game alike. A group of another size than captured must be owned
+  as the click saw it (the acting company's where `owned`, no one's
+  otherwise), else it is refused: another player's brush stroke may have
+  replaced it with a group of their company's, which the rebuild would
+  hand to another owner. It builds the same full proposal
   (`api.type.Proposal`) from its own copy less those assets, sends it as
   the player's company's build, and logs the group, its assets before,
   and the group holding the first asset kept (or, with none kept, the

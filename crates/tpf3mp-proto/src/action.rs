@@ -640,7 +640,8 @@ pub struct AssetRef {
 /// earlier removal from the same group in the room rebuilt it smaller), and
 /// builds it again from its own copy without them. Where more than one
 /// group holds them, only the one of that many assets with the first among
-/// them is taken; none, or no single such one, refuses it.
+/// them is taken; none, or no single such one, refuses it. A group of
+/// another size than `count` is taken only when owned as `owned` says.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetRemoval {
     pub first: AssetRef,

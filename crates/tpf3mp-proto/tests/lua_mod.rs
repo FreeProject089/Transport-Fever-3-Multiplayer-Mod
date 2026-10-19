@@ -9634,10 +9634,14 @@ GROUPS = {
     [7004] = { fir(800, 70, 1.5) },
 }
 FULL = { [7002] = { boulder(602, 50) }, [7003] = { boulder(700, 60) } }
+-- Who owns a group (PLAYER_OWNED), where anyone does.
+api.type.ComponentType.PLAYER_OWNED = 32
+OWNERS = {}
 local get = api.engine.getComponent
 api.engine.getComponent = function(e, kind)
     if kind == 30 and GROUPS[e] then return {} end
     if kind == 31 and GROUPS[e] then return { fatInstances = FULL[e] or {}, thinInstances = GROUPS[e] } end
+    if kind == 32 and GROUPS[e] then return OWNERS[e] and { player = OWNERS[e] } end
     return get(e, kind)
 end
 api.engine.util.octree = { findEntitiesInCircle = function(at, r, kind)
@@ -9682,8 +9686,8 @@ end
 /// player's game names the group by its first tree and how many it holds,
 /// and the trees taken out by model and place; every game rebuilds its own
 /// copy of the group without them, for the acting company, and says so in
-/// its log. Without the flag, and wherever the group is not exactly the
-/// player's, nothing is removed.
+/// its log. Without the flag, and wherever no group holds the trees taken
+/// out, nothing is removed.
 #[test]
 fn trees_bulldozed_go_in_every_game_behind_the_flag() {
     let (lua, _script) = engine();
@@ -9787,7 +9791,9 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
 /// "no asset group of 19 assets with those trees here"). The first takes
 /// the group's first fir; the game rebuilds the group as another entity
 /// of three. The second is found by the fir it takes, in the group as it
-/// stands now, and every game rebuilds it with the two firs left. Where
+/// stands now, and every game rebuilds it with the two firs left, owned as
+/// the click saw it. A group of another size owned otherwise than the
+/// click saw it (another's brush stroke replaced it) is refused. Where
 /// more than one group holds the trees, only the one of the captured size
 /// with the first tree among them is taken; else the removal is refused.
 #[test]
@@ -9847,6 +9853,26 @@ fn two_quick_tree_bulldozes_in_one_group_both_go() {
     )
     .exec()
     .unwrap();
+    // Owned by a company since (another's brush stroke replaced it), not
+    // no one's as the click saw it: refused, nothing sent.
+    assert_eq!(
+        eval("OWNERS[7010] = 902 local r = APPLY(SECOND) OWNERS[7010] = nil return r"),
+        "false:asset group 7010, of 3 assets since the click's 4, is company 902's, not no one's \
+         as the click saw it|0"
+    );
+    // A click that saw its own company's group, on a group no one owns now:
+    // refused too.
+    assert_eq!(
+        eval(
+            "SECOND.Bulldoze.Assets.owned = true local r = APPLY(SECOND) \
+             SECOND.Bulldoze.Assets.owned = false return r"
+        ),
+        format!(
+            "false:asset group 7010, of 3 assets since the click's 4, is no one's, not company {}'s \
+             as the click saw it|0",
+            eval("return tostring(api.engine.util.getPlayer())")
+        )
+    );
     assert_eq!(eval("return APPLY(SECOND)"), "true|1|7010|14,21|22,20");
     let logged = eval("return table.concat(HOOK.logged, '|')");
     assert!(

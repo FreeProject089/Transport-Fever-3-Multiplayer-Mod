@@ -2073,6 +2073,28 @@ local function removeAssets(a, context)
 				.. " assets with the first of them"), 0)
 	end
 	local group = found[1]
+	-- A group of another size than captured was rebuilt in between: by an
+	-- earlier removal's replay, owned as `owned` says, or by another's
+	-- brush stroke (PlantAssets), owned by its company. Its rebuild takes
+	-- the captured ownership, so it must be the group's now: the acting
+	-- company's where `owned`, no one's otherwise; else refused, so no
+	-- rebuild hands a group to another owner.
+	if #group.assets ~= a.count then
+		local C = api.type.ComponentType
+		local read, owner = pcall(function()
+			local c = api.engine.getComponent(group.entity, C.PLAYER_OWNED)
+			return c and c.player or -1
+		end)
+		if not read or C.PLAYER_OWNED == nil or type(owner) ~= "number" then
+			error("the owner of asset group " .. tostring(group.entity) .. " does not read", 0)
+		end
+		local want = a.owned and company() or -1
+		if (owner < 0 and -1 or owner) ~= want then
+			error(string.format("asset group %d, of %d assets since the click's %d, is %s, not %s as the click saw it",
+				group.entity, #group.assets, a.count, owner < 0 and "no one's" or ("company " .. owner .. "'s"),
+				want < 0 and "no one's" or ("company " .. want .. "'s")), 0)
+		end
+	end
 	for _, r in ipairs(a.removed) do
 		if engine.assetsAt(group.assets, r.model, r.at.x, r.at.y, r.at.z) > 1 then
 			error(string.format("two assets of %s at %.3f, %.3f, %.3f here: which one went is not clear",
@@ -2144,8 +2166,8 @@ local function removeAssets(a, context)
 end
 
 -- An asset brush stroke (action::AssetStroke): every group it replaces found
--- here as the asset bulldozer finds one, the one group that holds exactly
--- that many assets with its first one where it stood; then one build that
+-- here by the one group that holds exactly that many assets with its first
+-- one where it stood; then one build that
 -- removes them and adds the stroke's groups, each as the tool builds one
 -- (construction_builder_util::CreateProposalAddAsset, as removeAssets
 -- rebuilds a group): a construction entity at the world's origin whose desc
