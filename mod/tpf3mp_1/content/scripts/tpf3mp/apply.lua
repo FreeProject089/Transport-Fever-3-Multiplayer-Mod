@@ -492,7 +492,12 @@ local function buildProposal(proposal, context)
 	-- What is not critical the tool builds through once the player clicks,
 	-- town buildings in the way included: ignoreErrors, as the player's own
 	-- build (with it false the game drops such a build unseen).
-	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	-- Made apart from its sending: the game converts and prepares the
+	-- proposal again here (15-95 ms for a long track, 2026-10-19).
+	local t0 = costs and clock()
+	local command = api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true)
+	spend("command made", t0)
+	return run(command)
 end
 
 local HANDLERS = {}
@@ -929,18 +934,16 @@ local function find(rep, name)
 	return id
 end
 
--- The nodes of a network: each node with an edge of it, and its position.
--- Held while it is read (on TPF2 a pairs() straight off the call let the
--- GC free the map mid-loop).
-local function readNodes(network)
+-- The nodes of a network: each node its map lists (every node of the
+-- street system), and its position, through `index` (junctions.nodeIndex:
+-- one proposal's, which its junctions read again; a fresh one otherwise).
+local function readNodes(network, index)
 	local t0 = costs and clock()
-	local streets = api.engine.system.streetSystem
-	local map
-	if network == "Track" then map = streets.getNode2TrackEdgeMap() else map = streets.getNode2StreetEdgeMap() end
+	index = index or junctions.nodeIndex()
 	local nodes = {}
-	for node in pairs(map) do
-		local c = api.engine.getComponent(node, api.type.ComponentType.BASE_NODE)
-		if c and c.position then nodes[#nodes + 1] = { id = node, pos = arr(c.position) } end
+	for node in pairs(index.map(network == "Track" and "Track" or "Street")) do
+		local p = index.position(node)
+		if p then nodes[#nodes + 1] = { id = node, pos = { p.x, p.y, p.z } } end
 	end
 	spend("nodes " .. tostring(network), t0, #nodes)
 	return nodes
@@ -1029,14 +1032,14 @@ end
 -- takes the nodes the octree finds near `p` (nodesNear) and reads them all
 -- only where it finds none near enough (`whole`): a whole read cost
 -- 130-150 ms of each preview of another player's road in the GUI.
-local function nodesOfNetwork(network)
+local function nodesOfNetwork(network, index)
 	local all
 	return function(p, tol, whole)
 		if dry and not whole then
 			local near = nodesNear(network, p, tol)
 			if near ~= nil then return near end
 		end
-		if all == nil then all = readNodes(network) end
+		if all == nil then all = readNodes(network, index) end
 		return all
 	end
 end
@@ -1536,9 +1539,12 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 	-- The junctions' settings go with it (junctions.into, below).
 	polyline = { vertices = polyline.vertices, links = links, removals = polyline.removals,
 		removed_nodes = polyline.removed_nodes, junctions = settings }
+	-- The nodes, read once for the vertices, removals and junctions below:
+	-- nothing is sent before junctions.into, so the world stays as read.
+	local index = junctions.nodeIndex()
 	local nodesOf = {}
 	local function nodes(n)
-		if nodesOf[n] == nil then nodesOf[n] = nodesOfNetwork(n) end
+		if nodesOf[n] == nil then nodesOf[n] = nodesOfNetwork(n, index) end
 		return nodesOf[n]
 	end
 	local templates = {}
@@ -1815,7 +1821,7 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 	-- originator's tool has.
 	if not dry then
 		local t0 = costs and clock()
-		local left = junctions.into(proposal, polyline.junctions, ends, mine, gone)
+		local left = junctions.into(proposal, polyline.junctions, ends, mine, gone, nil, index)
 		spend("junctions", t0)
 		if left and #left > 0 then
 			log("left to the construction: the settings of " .. #left .. " junction(s) at its old edges")

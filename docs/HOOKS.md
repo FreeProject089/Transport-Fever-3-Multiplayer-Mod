@@ -1250,9 +1250,11 @@ part (`tpf3mp/apply.lua`, `apply.costText`): `nodes <network>` a read of
 a whole network (its nodes), `near <network>` a preview's octree lookup of
 nodes (the edges found; docs/BUILDING.md), `constructionAt` the search of every
 construction (how many), `junctions` the junction settings it keeps,
-`verdict` the game's `makeProposalData`, `refresh` and `regenerate` the
-game's own proposals for a construction, and `commands` every command it
-sent. The second at each checkpoint, by kind of action. A preview of
+`verdict` the game's `makeProposalData`, `command made` the making of a
+build's command (`makeWorldBuildProposalCmd`, which converts and prepares
+the proposal again: 15-95 ms of a long track), `refresh` and `regenerate`
+the game's own proposals for a construction, and `commands` every command
+it sent. The second at each checkpoint, by kind of action. A preview of
 another member's build is made the same way in the GUI (`tpf3mp/previews.lua`),
 and every 10 s while any arrive:
 

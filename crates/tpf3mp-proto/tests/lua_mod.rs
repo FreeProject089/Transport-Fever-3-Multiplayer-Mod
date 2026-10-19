@@ -7702,6 +7702,152 @@ fn a_junction_edge_named_twice_is_still_refused() {
     assert!(log.contains("ambiguous junction edge"), "{log}");
 }
 
+/// A road the room applies reads each network's map once, and the position
+/// of each node of the world once (a node far from the build, 20 and 21
+/// here), though its vertices, its removals and its junctions all look
+/// nodes up (2026-10-19: the split lookup and the junctions each read every
+/// node of a ~5,800-node world, 60-200 ms of a long track's apply in the
+/// watching game). Only the few nodes a kept junction's turns name are read
+/// again. It builds what it built before.
+#[test]
+fn a_rebuilt_street_reads_each_node_once() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(
+        "NODES[11] = { x = 50, y = 0, z = 0 } NODES[12] = { x = 50, y = 90, z = 0 } \
+         NODES[20] = { x = 900, y = 900, z = 0 } NODES[21] = { x = 990, y = 900, z = 0 } \
+         EDGES[100].node1 = 11 \
+         EDGES[102] = { node0 = 11, node1 = 9, tangent0 = { x = 0, y = 40, z = 0 }, \
+                        tangent1 = { x = 0, y = 40, z = 0 }, objects = {}, laneConfigs = { 'country lanes' } } \
+         EDGES[103] = { node0 = 9, node1 = 12, tangent0 = { x = 0, y = 50, z = 0 }, \
+                        tangent1 = { x = 0, y = 50, z = 0 }, objects = {}, laneConfigs = { 'town lanes' } } \
+         EDGES[200] = { node0 = 20, node1 = 21, tangent0 = { x = 90, y = 0, z = 0 }, \
+                        tangent1 = { x = 90, y = 0, z = 0 }, objects = {}, laneConfigs = { 'town lanes' } } \
+         STREETS[8], STREETS[11], STREETS[9], STREETS[12] = { 100 }, { 100, 102 }, { 102, 103 }, { 103 } \
+         STREETS[20], STREETS[21] = { 200 }, { 200 } \
+         CONFIGS[9] = { laneConnections = { { segment0 = 102, lane0 = 0, segment1 = 103, lane1 = 0, \
+             withRoad = true, withTram = false } }, crosswalks = { 103 }, trafficLightPreference = 1, \
+             trafficLightConfig = { trafficLightType = -1, states = {} }, doubleSlipSwitch = false, \
+             userModifiedTrafficLightStates = false } \
+\
+         api.engine.system.streetSystem.getNode2TrackEdgeMap = function() \
+             local m = {} for node in pairs(STREETS) do m[node] = {} end return m \
+         end \
+         NODE_READS = {} \
+         local get = api.engine.getComponent \
+         api.engine.getComponent = function(id, kind) \
+             if kind == api.type.ComponentType.BASE_NODE then NODE_READS[id] = (NODE_READS[id] or 0) + 1 end \
+             return get(id, kind) \
+         end",
+    )
+    .exec()
+    .unwrap();
+    lua.globals().set("OCTREE", "none").unwrap();
+    lua.load(FAKE_OCTREE).exec().unwrap();
+    lua.load(format!(
+        "HOOK.batch = {{ {JUNCTION} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    let (shape, whole, far): (String, u32, String) = lua
+        .load(
+            "local p = SENT[1].proposal.streetProposal
+             local out = { #p.nodesToAdd, table.concat(p.edgesToRemove, ','), table.concat(p.nodesToRemove, ','),
+                           table.concat(p.nodeConfigsToRemove, ',') }
+             for _, e in ipairs(p.edgesToAdd) do
+                 out[#out + 1] = e.entity .. ':' .. e.comp.node0 .. '>' .. e.comp.node1
+             end
+             for _, n in ipairs(p.nodeConfigsToAdd or {}) do
+                 local turns = {}
+                 for _, t in ipairs(n.comp.laneConnections) do turns[#turns + 1] = t.segment0 .. '>' .. t.segment1 end
+                 out[#out + 1] = 'config ' .. n.entity .. ' ' .. table.concat(turns, ',')
+                     .. ' walk ' .. table.concat(n.comp.crosswalks, ',')
+             end
+             return table.concat(out, ' | '), WHOLE, NODE_READS[20] .. ',' .. NODE_READS[21]",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert_eq!(
+        shape,
+        "1 | 100,102 | 11 | 8,9 | -1:7>-4 | -2:8>-4 | -3:-4>9 | config 8  walk  | config 9 -3>103 walk 103",
+        "the same build as before"
+    );
+    assert_eq!(whole, 2, "each network's map read once");
+    assert_eq!(far, "1,1", "each far node's position read once");
+}
+
+/// A junction's node is found by its place within 2 mm in three dimensions,
+/// though the nodes are looked for by the metre square they are in: across
+/// a square's edge, below zero, as -0; of the change's network only, never a
+/// node the proposal removes; and two such nodes are still refused. A
+/// position that reads only by index, or whose `x` raises, is read guarded
+/// as before.
+#[test]
+fn a_junction_node_is_found_across_metre_squares() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    let outcomes: Vec<String> = lua
+        .load(
+            r#"
+        local J = ug_require('tpf3mp_1::/scripts/tpf3mp/junctions.lua')
+        NODES[30] = { x = 9.9995, y = -0.0005, z = 3 }
+        NODES[31] = { x = -20.0005, y = 5.9995, z = 0 }
+        NODES[32] = { x = -0.0, y = 70, z = 0 }
+        NODES[33] = { x = 300.0015, y = 300, z = 0 } NODES[34] = { x = 299.9985, y = 300, z = 0 }
+        NODES[35] = { x = 400, y = 400.001, z = 0 }
+        NODES[36] = { x = 500, y = 500, z = 0 }
+        NODES[37] = { 600, 600, 0 }
+        NODES[38] = setmetatable({}, { __index = function(_, k)
+            if k == 'x' then error('unreadable') end
+            return ({ 700, 700, 0 })[k]
+        end })
+        for _, n in ipairs({ 30, 31, 32, 33, 34, 36, 37, 38 }) do STREETS[n] = {} CONFIGS[n] = true end
+        TRACK_ONLY = { [35] = {} } CONFIGS[35] = true
+        api.engine.system.streetSystem.getNode2TrackEdgeMap = function()
+            local m = {} for n, e in pairs(TRACK_ONLY) do m[n] = e end return m
+        end
+        local function reset(network, x, y, z, removed)
+            local p = api.type.SimpleProposal.new()
+            if removed then p.streetProposal.nodesToRemove = { removed } end
+            local ok, why = pcall(J.into, p,
+                { { node = { network = network, at = { x = x, y = y, z = z } } } }, {})
+            if not ok then return why end
+            return table.concat(p.streetProposal.nodeConfigsToRemove or {}, ",")
+        end
+        return {
+            reset('Street', 10.0005, 0.0005, 3.001),
+            reset('Street', -19.9995, 6.0005, 0),
+            reset('Street', 0.001, 70, 0),
+            reset('Street', -0.001, 70, 0),
+            reset('Street', 300, 300, 0),
+            reset('Street', 400, 400, 0),
+            reset('Track', 400, 400, 0),
+            reset('Street', 500, 500, 0, 36),
+            reset('Street', 10.003, 0, 3),
+            reset('Street', 600, 600, 0),
+            reset('Street', 700, 700, 0),
+        }"#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert_eq!(
+        outcomes,
+        [
+            "30",
+            "31",
+            "32",
+            "32",
+            "ambiguous junction position",
+            "the junction no longer exists",
+            "35",
+            "the junction no longer exists",
+            "the junction no longer exists",
+            "37",
+            "38",
+        ]
+    );
+}
+
 /// A preview of another player's road finds its nodes near them through
 /// the engine's octree, not by reading the whole network, and makes the
 /// same proposal (2026-10-16: 130-150 ms a preview in the GUI of a late
