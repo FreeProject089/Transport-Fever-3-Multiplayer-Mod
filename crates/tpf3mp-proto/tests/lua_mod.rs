@@ -9873,6 +9873,19 @@ fn two_quick_tree_bulldozes_in_one_group_both_go() {
             eval("return tostring(api.engine.util.getPlayer())")
         )
     );
+    // A click that saw its own company's group, on that company's group:
+    // it goes, the rebuild the company's again.
+    assert_eq!(
+        eval(
+            "SECOND.Bulldoze.Assets.owned = true OWNERS[7010] = api.engine.util.getPlayer() \
+             local r = APPLY(SECOND) .. '|' .. SENT[1].proposal.toAdd[1].playerEntity \
+             SECOND.Bulldoze.Assets.owned = false OWNERS[7010] = nil return r"
+        ),
+        format!(
+            "true|1|7010|14,21|22,20|{}",
+            eval("return tostring(api.engine.util.getPlayer())")
+        )
+    );
     assert_eq!(eval("return APPLY(SECOND)"), "true|1|7010|14,21|22,20");
     let logged = eval("return table.concat(HOOK.logged, '|')");
     assert!(
