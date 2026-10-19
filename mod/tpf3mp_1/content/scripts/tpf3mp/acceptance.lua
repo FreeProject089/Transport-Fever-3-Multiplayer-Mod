@@ -41,6 +41,13 @@
 -- without a toolbar preference; the engine picks the crossing type.
 -- Construction rejoin's two native commands have no proven atomic failure
 -- path; while off, a refused first proposal cannot remove any existing track.
+-- Stops on streets, as tracks' signals go (2026-10-19, refused in a room
+-- before, single player does both): bulldozeStops lets the bulldozer remove
+-- a street with the stops on it (Bulldoze::Edges, every game removing the
+-- stops it finds on those streets; the capture and every game's replay ask
+-- it); keptStops lets a street build keep a stop on the piece that goes on
+-- from its street or runs where it stood (a stop's Link.kept, its removal a
+-- street's). Off until two-player game acceptance.
 local acceptance = {
     subsidies = true,
     rename = true,
@@ -57,10 +64,25 @@ local acceptance = {
     crossings = false,
     crossingTypes = false,
     rejoinConstruction = false,
+    bulldozeStops = false,
+    keptStops = false,
 }
 
 function acceptance.check(action)
     local feature
+    -- A stop kept on a street's new piece: its removal is a street's (only
+    -- stops stand on streets; signals on tracks). Asked apart from the
+    -- feature below, which a later one may replace.
+    local polyline = (action.BuildTrack or action.BuildRoad or {}).polyline
+        or (action.BuildConstruction or {}).connection
+    for _, link in ipairs(polyline and polyline.links or {}) do
+        for _, kept in ipairs(link.kept or {}) do
+            local removal = type(kept.removal) == "number" and (polyline.removals or {})[kept.removal + 1]
+            if type(removal) == "table" and removal.network ~= "Track" and acceptance.keptStops ~= true then
+                return false, "keptStops awaits two-player game acceptance"
+            end
+        end
+    end
     if action.Subsidy then feature = "subsidies" end
     if action.Terraform then feature = "terraform" end
     -- Terrain paint (action::TerrainPaint, schema 27).
@@ -73,8 +95,6 @@ function acceptance.check(action)
     if action.PlaceSignals then feature = "signals" end
     -- A track cut where a signal stands, the signal kept on the piece it
     -- stood on (action::KeptSignal).
-    local polyline = (action.BuildTrack or action.BuildRoad or {}).polyline
-        or (action.BuildConstruction or {}).connection
     for _, link in ipairs(polyline and polyline.links or {}) do
         if link.kept and #link.kept > 0 then feature = "splitSignals" end
     end

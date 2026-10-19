@@ -3012,7 +3012,8 @@ construction's window its edits:
   every existing non-waypoint signal is declared and kept on its continuing
   piece (`Link::kept`, BUILDING.md; `splitSignals`), and a signal the tool
   puts back where it stood on a track it redraws around a node it moves,
-  kept as the old signal on that piece (`refitSignals`).
+  kept as the old signal on that piece (`refitSignals`); a street's stops
+  the same way, on their sides (`keptStops`, off until a two-player game).
 - **The bulldozer** (`bulldozer`): its proposal removes one construction
   (with the construction's own entrance edge and node) or edges of one
   network (with the nodes they leave on their own). It becomes a
@@ -3102,8 +3103,11 @@ construction's window its edits:
   `edgeObjectsToRemove` are exactly the signals on its removed tracks
   (each type `SIGNAL`, listed once, no construction removed with them);
   the replay removes the tracks with those signals and refuses a stop or
-  another company's signal on them. An edge with a stop on it is
-  refused.
+  another company's signal on them. A street removed with stops on it
+  goes the same way, its `edgeObjectsToRemove` exactly the stops on it
+  (town buildings along it allowed, no other construction), behind
+  `bulldozeStops` (off until a two-player game; the replay asks it too).
+  Any other edge with a stop on it is refused.
 - **The stop tool** (`streetTerminalBuilder`): a stop on a street. The
   tool queues a `WorldBuildProposal` (command 52 from
   `UI::StreetTerminalBuilder`, found statically), which the hook's gate
@@ -3466,7 +3470,7 @@ lets the road and track tools build through an edge with a stop on it. A
 track signal (not a waypoint) may also move onto the piece of a track
 the build cuts that goes on from one of its old track's ends, or that
 runs where it stood, the same way, where the tool put it (`Link::kept`,
-BUILDING.md).
+BUILDING.md), and so may a street's stop, on its side (`keptStops`).
 
 A track's catenary and type travel the same way, as far as the game's
 scripts say (build 40408's `construction_react_util.tl`: the

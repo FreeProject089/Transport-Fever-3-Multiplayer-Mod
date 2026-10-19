@@ -9283,6 +9283,124 @@ fn the_bulldozer_removes_tracks_with_their_signals_in_every_game() {
     }
 }
 
+/// A street with a two-sided stop on it, as the bulldozer removes it
+/// (build 40420, 2026-10-19: "2 Stops Will Be Removed", refused in a room
+/// before): the street goes to the room, and every game removes it with
+/// exactly the stops on it, once acceptance.lua's bulldozeStops is on.
+#[test]
+fn the_bulldozer_removes_a_street_with_its_stops_in_every_game() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_STOPS).exec().unwrap();
+    lua.load(FAKE_STOP_GROUPS).exec().unwrap();
+    lua.load(
+        "EDGES[100].objects = { { 555, 0 }, { 556, 1 } } \
+         ACCEPTANCE = ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua') \
+         ACCEPTANCE.bulldozeStops = true \
+         GAME_LISTS = {} \
+         api.engine.util.proposal = { makeSegmentsRemoveProposal = function(ids) \
+             return { removesEdges = table.concat(ids, ','), toAdd = {}, toRemove = {}, \
+                 proposal = { edgeObjectsToRemove = GAME_LISTS } } end } \
+         function STOPPED(removed, objects) \
+             return { toAdd = {}, toRemove = {}, proposal = { addedNodes = {}, addedSegments = {}, \
+                 removedNodes = {}, removedSegments = { { entity = 100, type = 0, \
+                     comp = { node0 = 8, node1 = 9, objects = objects or { { 555, 0 }, { 556, 1 } } } } }, \
+                 edgeObjectsToAdd = {}, edgeObjectsToRemove = removed } } \
+         end",
+    )
+    .exec()
+    .unwrap();
+    let captured: String = lua
+        .load(
+            "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+             local action, why = capture.bulldoze(STOPPED({ 555, 556 })) \
+             if not action then error(why) end \
+             STREET_GONE = action \
+             local e = action.Bulldoze.Edges \
+             return table.concat({ e.network, #e.edges, e.edges[1].a.y, e.edges[1].b.y, \
+                 tostring(schema_check(action)) }, '|')",
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(captured, "Street|1|-40|40|true");
+
+    // A stop missing from the removal, a signal on the street, a
+    // construction removed with it, or the gate off: refused.
+    for (setup, expected) in [
+        ("p = STOPPED({ 555 })", "removing a stop or signal"),
+        (
+            "p = STOPPED({ 555, 556 }, { { 555, 0 }, { 556, 2 } })",
+            "removing a stop or signal",
+        ),
+        ("p.toRemove = { 5000 }", "removing a stop or signal"),
+        (
+            "ACCEPTANCE.bulldozeStops = false",
+            "removing a street with its stops awaits two-player game acceptance",
+        ),
+    ] {
+        let why: String = lua
+            .load(format!(
+                "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+                 local p = STOPPED({{ 555, 556 }}) {setup} \
+                 local _, why = capture.bulldoze(p) ACCEPTANCE.bulldozeStops = true return tostring(why)"
+            ))
+            .eval()
+            .unwrap();
+        assert_eq!(why, expected, "{setup}");
+    }
+
+    // Every game removes the street and both stops: given where its own
+    // proposal leaves any out.
+    for (listed, sent) in [("{}", "555,556"), ("{ 556, 555 }", "556,555")] {
+        lua.load(format!(
+            "GAME_LISTS = {listed} SENT = {{}} HOOK.applied = {{}} \
+             HOOK.batch = {{ STREET_GONE }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap();
+        let removed: String = lua
+            .load(
+                "local p = SENT[1] and SENT[1].proposal \
+                 return table.concat({ tostring(HOOK.applied[1].ok), tostring(p and p.removesEdges), \
+                     p and table.concat(p.proposal.edgeObjectsToRemove, ',') or 'none' }, '|')",
+            )
+            .eval()
+            .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+        assert_eq!(removed, format!("true|100|{sent}"), "game lists {listed}");
+    }
+
+    // A game with its gate off, another company's stop, or a signal where
+    // the room's street has a stop: refused there, nothing sent.
+    for (setup, why) in [
+        (
+            "ACCEPTANCE.bulldozeStops = false",
+            "edge 1 has a stop on it",
+        ),
+        ("STOP_OWNERS[556] = 30", "belongs to another company"),
+        (
+            "EDGES[100].objects = { { 555, 0 }, { 556, 2 } }",
+            "edge 1 has a stop on it",
+        ),
+    ] {
+        lua.load(format!(
+            "GAME_LISTS = {{}} STOP_OWNERS = {{}} ACCEPTANCE.bulldozeStops = true \
+             EDGES[100].objects = {{ {{ 555, 0 }}, {{ 556, 1 }} }} \
+             {setup} SENT = {{}} HOOK.applied = {{}} \
+             HOOK.batch = {{ STREET_GONE }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap();
+        let refused: String = lua
+            .load("return #SENT .. '|' .. tostring(HOOK.applied[1].ok) .. '|' .. tostring(HOOK.applied[1].why)")
+            .eval()
+            .unwrap();
+        assert!(
+            refused.starts_with("0|false|") && refused.contains(why),
+            "{setup}: {refused}"
+        );
+    }
+}
+
 #[test]
 fn the_bulldozer_removes_only_a_stock_airports_frozen_runway_signals() {
     let (lua, _script) = engine();
@@ -18211,6 +18329,178 @@ fn a_cut_tracks_signal_a_game_cannot_keep_refuses_the_build() {
     // The same signal kept twice.
     let (a, b) = both(KEPT_300, &format!("{KEPT_301}, {KEPT_301}"));
     refused(&a, &b, "", "where it is kept");
+}
+
+/// [`CUT_TRACK`] as a street the room ordered: 200 a street (FAKE_TRACKS'
+/// places, in the street network) with stops instead of signals.
+fn cut_street(a: &str, b: &str) -> String {
+    cut_track(a, b)
+        .replace(
+            "BuildTrack = { track = '::/track/standard.street_template', catenary = false,",
+            "BuildRoad = { street = '::/street/country.street_template', bus_lane = false, tram = 'None',",
+        )
+        .replace("'Track'", "'Street'")
+}
+
+const SMALL_STOP: &str = "::/stations/street/small_stops/small_new.con";
+
+/// A game with [`cut_track_game`]'s places as streets: 200 carries stop 300
+/// left a quarter of the way and stop 301 right three quarters of the way,
+/// both the small stop; its gate for stops kept on a street's new piece `on`.
+fn cut_street_game(on: bool) -> Lua {
+    let lua = cut_track_game(true);
+    lua.load(format!(
+        "STREETS[20], STREETS[21], STREETS[22] = {{ 200 }}, {{ 200, 201 }}, {{ 201 }} TRACKS = {{}} \
+         EDGES[200].objects = {{ {{ 300, 0 }}, {{ 301, 1 }} }} \
+         OBJECTS[300] = {{ param = 0.25, edgeObjectConstruction = '{SMALL_STOP}' }} \
+         OBJECTS[301] = {{ param = 0.75, edgeObjectConstruction = '{SMALL_STOP}' }} \
+         ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').keptStops = {on}"
+    ))
+    .exec()
+    .unwrap();
+    lua
+}
+
+fn kept_stop(at: f64) -> String {
+    format!("{{ removal = 0, at = {at}, model = '{SMALL_STOP}' }}")
+}
+
+/// A street cut beside its stops keeps each, under its own entity and on
+/// its side, on the piece the originator's tool put it on, in every game
+/// alike: in one whose street runs the other way too, each found from the
+/// removal's own end and put on the same side of the piece (2026-10-19).
+#[test]
+fn every_game_keeps_a_cut_streets_stops_on_their_pieces() {
+    let build = cut_street(
+        &format!("{{ {} }}", kept_stop(0.25)),
+        &format!("{{ {} }}", kept_stop(0.75)),
+    );
+    let lua = cut_street_game(true);
+    lua.load(format!(
+        "HOOK.batch = {{ {build} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+    assert_eq!(
+        cut_track_sent(&lua),
+        "-1[300:0] -2[301:1] -3[] | -200",
+        "{}",
+        hook_log(&lua)
+    );
+    assert!(
+        hook_log(&lua).contains("kept stop 300 in station group"),
+        "{}",
+        hook_log(&lua)
+    );
+
+    // Another game, whose street 200 runs from node 21 to node 20: its
+    // stops stand on the other sides of it there.
+    let other = cut_street_game(true);
+    other
+        .load(format!(
+            "EDGES[200].node0, EDGES[200].node1 = 21, 20 \
+             EDGES[200].tangent0, EDGES[200].tangent1 = {{ x = -100, y = 0, z = 0 }}, {{ x = -100, y = 0, z = 0 }} \
+             EDGES[200].objects = {{ {{ 300, 1 }}, {{ 301, 0 }} }} \
+             OBJECTS[300].param, OBJECTS[301].param = 0.75, 0.25 \
+             HOOK.batch = {{ {build} }} UPDATE({{}}, STATE, 0.2)"
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&other)));
+    assert_eq!(
+        cut_track_sent(&other),
+        "-1[300:0] -2[301:1] -3[] | -200",
+        "{}",
+        hook_log(&other)
+    );
+
+    // Both stops of a two-sided stop, found together.
+    let pair = cut_street_game(true);
+    let two = "::/stations/street/small_stops/small_new_twosided.con";
+    let kept_two = format!("{{ removal = 0, at = 0.25, model = '{two}' }}");
+    pair.load(format!(
+        "EDGES[200].objects = {{ {{ 300, 0 }}, {{ 302, 1 }} }} \
+         OBJECTS[300] = {{ param = 0.25, edgeObjectConstruction = '{two}' }} \
+         OBJECTS[302] = {{ param = 0.25, edgeObjectConstruction = '{two}' }} \
+         HOOK.batch = {{ {} }} UPDATE({{}}, STATE, 0.2)",
+        cut_street(&format!("{{ {kept_two}, {kept_two} }}"), "{}")
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&pair)));
+    assert_eq!(
+        cut_track_sent(&pair),
+        "-1[300:0,302:1] -2[] -3[] | -200",
+        "{}",
+        hook_log(&pair)
+    );
+
+    // With its gate off, no game builds it.
+    let off = cut_street_game(false);
+    off.load(format!(
+        "HOOK.batch = {{ {build} }} UPDATE({{}}, STATE, 0.2)"
+    ))
+    .exec()
+    .unwrap();
+    assert_eq!(cut_track_sent(&off), "nothing sent");
+    assert!(
+        hook_log(&off).contains("keptStops awaits two-player game acceptance"),
+        "{}",
+        hook_log(&off)
+    );
+}
+
+/// What a game refuses of a cut street's kept stops, the same in every
+/// game: two stops onto one side of a piece (a fatal assert in the game's
+/// lane creation), one of a two-sided stop alone, a stop where none is, a
+/// signal's entry on a street, another company's stop.
+#[test]
+fn a_cut_streets_stop_a_game_cannot_keep_refuses_the_build() {
+    let refused = |a: &str, b: &str, setup: &str, why: &str| {
+        let lua = cut_street_game(true);
+        lua.load(format!(
+            "{setup} HOOK.batch = {{ {} }} UPDATE({{}}, STATE, 0.2)",
+            cut_street(a, b)
+        ))
+        .exec()
+        .unwrap_or_else(|error| panic!("{error}\n{}", hook_log(&lua)));
+        assert_eq!(cut_track_sent(&lua), "nothing sent", "{why}");
+        assert!(hook_log(&lua).contains(why), "{why}: {}", hook_log(&lua));
+    };
+    let one = |at: f64| format!("{{ {} }}", kept_stop(at));
+    // Both onto the western piece, both left there.
+    refused(
+        &format!("{{ {}, {} }}", kept_stop(0.25), kept_stop(0.75)),
+        "{}",
+        "EDGES[200].objects = { { 300, 0 }, { 301, 0 } }",
+        "would take two stops on one side",
+    );
+    // One of a two-sided stop kept, the other left behind.
+    let two = "::/stations/street/small_stops/small_new_twosided.con";
+    refused(
+        &format!("{{ {{ removal = 0, at = 0.25, model = '{two}' }} }}"),
+        "{}",
+        &format!(
+            "EDGES[200].objects = {{ {{ 300, 0 }}, {{ 302, 1 }} }} \
+             OBJECTS[300] = {{ param = 0.25, edgeObjectConstruction = '{two}' }} \
+             OBJECTS[302] = {{ param = 0.25, edgeObjectConstruction = '{two}' }}"
+        ),
+        "more stops there than are kept",
+    );
+    // Where none stands, or a signal where the room keeps a stop.
+    refused(&one(0.25), &one(0.5), "", "where it is kept");
+    refused(
+        &one(0.25),
+        &one(0.75),
+        "EDGES[200].objects = { { 300, 0 }, { 301, 2 } }",
+        "where it is kept",
+    );
+    // Another company's stop (these fixtures read PLAYER_OWNED and
+    // EDGE_OBJECT both as component 14).
+    refused(
+        &one(0.25),
+        &one(0.75),
+        "OBJECTS[301].player = 30",
+        "belongs to another company",
+    );
 }
 
 /// Two level crossings, each on two nodes, and a street node above one of
