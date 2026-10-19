@@ -3344,9 +3344,10 @@ in the 2026-10-19 room test (40420) its reset returned past `UI::StreetBuilder`
 vf16's call (0x57b883), while a click closing a loop onto an existing node
 got the swap's reset and was kept; the drop line in `hook.log` names the
 reset's return address relative to the image.
-Closing the tool also drops it after missed frames. Whether
-the parent handler can leave the tool open without resetting remains to be
-checked in game, so default continuation stays off. "Closed" is three GUI frames without the
+Closing the tool also drops it after missed frames. The right-click abort
+that leaves the tool open resets it (room test above); no other input is
+known that leaves the tool open without a reset. Default continuation
+stays off until the owner turns it on. "Closed" is three GUI frames without the
 tool's frame, counted from the click's own; a tool closed and opened
 again faster than that is not seen.
 Profile targets, all optional: `StreetBuilder::UpdateEngine/Add call`,
