@@ -249,10 +249,19 @@ end
 -- the one side effect seen with it, the preference from Auto to No, and that
 -- only at a node no street joins, where a light has nothing to stop. The
 -- lane connections, crosswalks, light, phases and the custom-phase mark
--- stay exactly as they are. `enums` is TrafficLightPreference.
+-- stay exactly as they are. A node with no settings yet, as a crossing of
+-- two tracks just built has, compares as the settings it then has: no
+-- lanes, crosswalks, light or phases, the preference Auto, the switch off.
+-- Only at a node no street joins; at a street node the game makes the
+-- default lanes itself, and an empty list need not mean them. `enums` is
+-- TrafficLightPreference.
 local function narrowWhyNot(old, new, streetless, enums)
 	if new == nil then return "a reset of a junction's settings" end
-	if old == nil then return "a junction with no settings yet" end
+	if old == nil then
+		if not streetless then return "a junction with no settings yet where a street joins" end
+		old = { lanes = {}, walks = {}, phases = {}, preference = enums.AUTO, light = -1,
+			double_slip = false, custom_phases = false }
+	end
 	if old.double_slip == new.double_slip then return "no double slip switch change" end
 	local preference = old.preference == new.preference
 		or (streetless and old.preference == enums.AUTO and new.preference == enums.NO)
@@ -283,7 +292,14 @@ function junctions.requireNarrow(node, config, source)
 	local why = narrowWhyNot(before, after, streetless, api.type.enum.TrafficLightPreference)
 	if why then
 		local lanes = function(c) return c and tostring(#c.lanes) or "-" end
-		error(AWAITING .. ": " .. why .. " (lanes " .. lanes(before) .. ">" .. lanes(after) .. ")", 0)
+		local detail = ""
+		if before == nil and after ~= nil then
+			-- What the window put at a node with no settings, for the log.
+			detail = string.format(", new preference %s, light %s, crosswalks %d, phases %d, custom phases %s, switch %s",
+				tostring(after.preference), tostring(after.light), #after.walks, #after.phases,
+				tostring(after.custom_phases), tostring(after.double_slip))
+		end
+		error(AWAITING .. ": " .. why .. " (lanes " .. lanes(before) .. ">" .. lanes(after) .. detail .. ")", 0)
 	end
 end
 

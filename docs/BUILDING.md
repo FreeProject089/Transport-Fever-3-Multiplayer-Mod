@@ -999,12 +999,20 @@ lane connections, crosswalks, light, phases (compared in whole
 milliseconds, as the wire carries them) and the custom-phase mark stay
 exactly as they are. The one side effect seen with the switch, the
 preference from Auto to No, may come with it, and only at a node no
-street joins, where a light has nothing to stop. A reset, a node with no
-configuration yet and an edit that leaves the switch as it is are
-refused. The crossing tool's tram lanes stay refused until the tool is
-seen in the game. The refusal names what it saw, after the
-`strict_junctions` reason, with the old and new light settings and the
-lanes' count. Road and track builds carry their junction settings as
+street joins, where a light has nothing to stop. A node with no
+configuration yet, as a crossing of two tracks the room has just built
+has, compares as the settings it then has: no lane connections,
+crosswalks, light or phases, the preference Auto, the switch off. So the
+switch turned on goes there too, with nothing else (2026-10-19, build
+40420: the window put a configuration with no lane connections at such a
+crossing, and the room refused it before this). This holds only at a node
+no street joins: at a street node the game makes the default lanes
+itself, and an empty list need not mean them. A reset and an edit that
+leaves the switch as it is are refused. The crossing tool's tram lanes
+stay refused until the tool is seen in the game. The refusal names what
+it saw, after the `strict_junctions` reason, with the old and new light
+settings and the lanes' count, and at a node with no configuration yet
+the new preference, light, crosswalks, phases and switch. Road and track builds carry their junction settings as
 before, unchecked by this; the log's `handed the player's build` and
 `building` lines name each node's settings they carry (`+j<node>{lanes
 N tram M}`) and take out (`-j<node>`).
