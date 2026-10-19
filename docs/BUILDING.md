@@ -672,7 +672,11 @@ then places along the track (Auto Signals) go as one `PlaceSignals`
   and one subconstruction of the models, as the bulldozer's replay does),
   so the hook only reads the stroke and every game builds its groups in
   Lua (`PlantAssets`, schema 27); removed groups travel by their first
-  asset and count. The cost of not replicating it was
+  asset and count. Lua cannot give a group the tool's one empty terrain
+  alignment list, and without one the game levels the ground in a
+  rectangle around every tree (seen in a room, 2026-10-19), so the hook
+  adds it to each group at the build's apply (docs/HOOKS.md, "Asset
+  groups built in Lua"); the tree bulldozer's rebuilt group the same. The cost of not replicating it was
   measured: 104 trees on one game, every replicated command on-step, and six
   hundred steps later the town-building and road lanes diverged in three
   towns 9 km apart, because town growth reads the assets. A desync minutes

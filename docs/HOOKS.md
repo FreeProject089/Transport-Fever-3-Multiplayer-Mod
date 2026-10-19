@@ -1034,7 +1034,11 @@ for the table (`bridge.find`). Its contract is in
   hook fills in at that build's apply; `true`, or `nil` and why.
   `terrain()` disarms and answers whether a build was filled (`nil` when
   none was armed). Optional, as `built`: without it no terraform applies
-  ("Terraforming" below).
+  ("Terraforming" below). Since Lua contract version 16, `t` may be
+  `{ groups = n }`: the next build adds the `n` asset groups the game
+  script built, and the hook gives each the asset tools' empty terrain
+  alignment list at its apply ("Asset groups built in Lua" below);
+  without it no asset group is built in a room.
 - `tpf3mp_native.applied(index, ok, entity, why)`: in the game script's
   `postUpdate`, after the batch's action `index` (from 1): whether it went,
   the entity it made, if any, and why not.
@@ -3084,7 +3088,8 @@ construction's window its edits:
   `colliders`; a `Proposal.TransformedModel` `id`, `tag`, `transf` and
   `thin` (the binding's registration, `RegisterUsertypesTransport`). The
   tool also gives its subconstruction one empty terrain alignment list,
-  which no binding reaches; it aligns no terrain. Every game finds the
+  which no binding reaches; it aligns no terrain. The hook gives the
+  rebuilt group that list ("Asset groups built in Lua" below). Every game finds the
   one group holding every asset removed, whatever it holds by then: two
   quick clicks on trees of one group are both captured against the group
   before the first comes back from the room, and the first's replay
@@ -3991,6 +3996,47 @@ and builds the stroke's groups through the game's own Lua, as the
 bulldozer's replay rebuilds one (`api.type.Proposal.ConstructionEntity`,
 an autoRemovable desc, one subconstruction of the trees), for the acting
 company. A group missing or ambiguous in a game refuses the stroke there.
+
+#### Asset groups built in Lua
+
+The asset tools (`construction_builder_util::CreateProposalAddAsset`,
+0xa31030 on build 40420, 0xa2fb00 on 40408) give a group's one
+subconstruction one terrain alignment list, all zero but its slopes:
+`EQUAL`, no faces, `slopeLow` 0.75 and `slopeHigh` 2.5, the 0x48 bytes
+of the vector at subconstruction + 0x210 (subconstructions of 0x318
+bytes in the vector at + 0xa30 of the `toAdd` entity, whose
+`desc.autoRemovable` is the byte at + 0x4b1). `ProcessTerrainAlignment`
+(0xa28f90; 0xa27a60) derives, for a subconstruction with no list at
+all, an `EQUAL` alignment from each model's bounding box, which levels
+the ground in a rectangle around every tree; nothing a script controls
+gates it (not the `Context`, not `thin`). A group built in Lua has no
+list: `Proposal.Subconstruction` binds `models`, `station`, `depot`,
+`industry`, `metadata`, `laneLists` and `colliders`, not
+`terrainAlignmentLists`. In the room run of 2026-10-19 every brush
+stroke and tree bulldoze left a square of changed ground around its
+trees in both games, which single player does not.
+
+So the game script arms the hook with how many groups the build adds
+(`tpf3mp_native.terrain({ groups = n })`) and sends it; the hook's apply
+detour, before the game builds the proposal's data (`sub_a212d0` at
+0x9e29b5 on 40420, `sub_a1fd10` at 0x9e1215 on 40408, both inside the
+apply it calls), gives each group that list, in a vector of the game's
+own allocator (`terrain::align_groups`). The build must add exactly
+those `n` entities, each an auto-removable construction of no file with
+one subconstruction whose list vector is empty; anything else refuses
+the build, and nothing is written. `terrain()` then answers whether it
+did, and the action fails in every game unless it did. The log says, in
+every game:
+
+```
+asset groups: gave the room's 2 group(s) the tool's empty terrain alignment list
+```
+
+INFERRED from the disassembly of both builds, not yet seen in the game:
+that the list is what keeps the native tool's groups from levelling the
+ground. A room shows it with `api.engine.terrain.getHeightAt` (which
+includes terrain alignments) against `getBaseHeightAt` (which does not)
+at the trees of a group the room built: equal where the list took.
 
 ### The world's lanes
 

@@ -2026,6 +2026,30 @@ local function assetGroupsAt(model, x, y, z)
 	return out
 end
 
+-- Sends `proposal`, which adds `groups` asset groups this script built (none:
+-- it is sent as it is). The asset tools give each group's subconstruction
+-- one empty terrain alignment list (construction_builder_util::
+-- CreateProposalAddAsset); Lua cannot (Proposal.Subconstruction binds no
+-- terrainAlignmentLists), and the game derives one from the models' boxes
+-- for a subconstruction with none, levelling the ground in a rectangle
+-- around every tree. So the hook is armed with the count (apply.terrain,
+-- the link's tpf3mp_native.terrain) and gives each group that list at the
+-- build's apply (crates/tpf3mp-hook/src/terrain.rs, align_groups); the
+-- action fails unless it did, in every game alike.
+local function buildAssetGroups(proposal, context, groups)
+	if groups == 0 then return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true)) end
+	if type(apply.terrain) ~= "function" then error("this hook cannot build asset groups", 0) end
+	local armed, why = apply.terrain({ groups = groups })
+	if armed ~= true then error("the hook would not take the asset groups: " .. tostring(why), 0) end
+	local sent, err = pcall(function()
+		return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	end)
+	local filled = apply.terrain(nil)
+	if not sent then error(err, 0) end
+	if filled ~= true then error("the hook gave the asset groups no terrain alignment list", 0) end
+	return true
+end
+
 -- Trees and other assets the asset bulldozer took out of their group
 -- (action::Bulldoze::Assets): the one group here that holds every one
 -- removed, removed and, unless every asset of it went, built again from
@@ -2140,7 +2164,7 @@ local function removeAssets(a, context)
 	log(string.format("trees: asset group %d of %d assets, %d removed (%s at %.2f,%.2f), rebuilt with %d",
 		group.entity, #group.assets, #a.removed, tostring(a.removed[1].model), a.removed[1].at.x,
 		a.removed[1].at.y, #models))
-	run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	buildAssetGroups(proposal, context, #models > 0 and 1 or 0)
 	-- What stands now: the group that holds the first asset kept, and how
 	-- many it holds; with none kept, whether a group still holds the first
 	-- one removed (the same in every game, or the replay differed).
@@ -2223,7 +2247,7 @@ function HANDLERS.PlantAssets(t)
 	proposal.toAdd = added
 	local context = api.type.Context.new()
 	context.player = company()
-	run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	buildAssetGroups(proposal, context, #added)
 	log(string.format("asset brush applied: %d group(s) of %d asset(s), replacing %d group(s)", #added, count,
 		#removed))
 	return true

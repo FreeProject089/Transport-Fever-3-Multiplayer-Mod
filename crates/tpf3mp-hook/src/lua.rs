@@ -168,7 +168,7 @@ const TSTRING: c_int = 4;
 const TTABLE: c_int = 5;
 
 /// The contract's version: `bridge.lua`'s `VERSION`.
-pub const VERSION: f64 = 15.0;
+pub const VERSION: f64 = 16.0;
 /// The table's name in each state's globals.
 pub const GLOBAL: &CStr = c"tpf3mp_native";
 
@@ -2921,8 +2921,25 @@ unsafe extern "C-unwind" fn native_terrain(l: State) -> c_int {
         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let mut nodes = 0;
             let value = read(api, l, 1, 0, &mut nodes)?;
-            // A Paint action's body names its materials; a terraform's grid
-            // names its cells.
+            // `{ groups = n }`: the asset groups the game script built, to
+            // be given the tool's empty terrain alignment list. A Paint
+            // action's body names its materials; a terraform's grid names
+            // its cells.
+            if let Some(groups) = value.get("groups") {
+                let count = match groups {
+                    LuaValue::Number(n) if n.fract() == 0.0 => *n,
+                    #[allow(clippy::cast_precision_loss)]
+                    LuaValue::Integer(n) => *n as f64,
+                    _ => -1.0,
+                };
+                #[allow(clippy::cast_precision_loss)]
+                if !(1.0..=crate::terrain::MAX_ASSET_GROUPS as f64).contains(&count) {
+                    return Err(format!("asset groups to align: not a count ({groups:?})"));
+                }
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                crate::terrain::arm_groups(count as usize);
+                return Ok(());
+            }
             let stroke = if value.get("materials").is_some() {
                 crate::terrain::Stroke::Paint(crate::terrain::Paint::from_lua(&value)?)
             } else {
@@ -4287,7 +4304,7 @@ my_timetables";
                  type(tpf3mp_native.applied), type(tpf3mp_native.results),                  type(tpf3mp_native.status), type(tpf3mp_native.chat), type(tpf3mp_native.say), \
                  type(tpf3mp_native.dump), type(tpf3mp_native.dumped), type(tpf3mp_native.note)"
             ),
-            Ok("15|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
+            Ok("16|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function|function".into())
         );
         // A second print keeps the first table.
         lua.run("rawset(tpf3mp_native, 'mark', true)").unwrap();
@@ -4653,6 +4670,27 @@ my_timetables";
             refused.starts_with("nil|") && refused.contains("3 values"),
             "{refused}"
         );
+        assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
+        // The asset groups a build adds: a count, armed the same way.
+        assert_eq!(
+            lua.run("return tpf3mp_native.terrain({ groups = 2 })"),
+            Ok("true".into())
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.terrain()"),
+            Ok("false".into())
+        );
+        for bad in ["0", "1.5", "'two'", "5000"] {
+            let refused = lua
+                .run(&format!(
+                    "return tpf3mp_native.terrain({{ groups = {bad} }})"
+                ))
+                .unwrap();
+            assert!(
+                refused.starts_with("nil|") && refused.contains("not a count"),
+                "{bad}: {refused}"
+            );
+        }
         assert_eq!(lua.run("return tpf3mp_native.terrain()"), Ok("nil".into()));
     }
 
