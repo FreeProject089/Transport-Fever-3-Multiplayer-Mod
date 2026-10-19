@@ -1971,13 +1971,41 @@ fn the_double_slip_switch_goes_at_a_track_crossing_with_no_settings_yet() {
     let slip = "c.doubleSlipSwitch=true";
     for (street_node, edit, expected) in [
         (true, slip.to_string(), "where a street joins"),
-        (false, "c.trafficLightPreference=2".to_string(), "no double slip switch change"),
-        (false, format!("{slip} c.trafficLightPreference=1"), "traffic lights"),
-        (false, format!("{slip} c.trafficLightConfig.trafficLightType=40"), "traffic lights"),
-        (false, format!("{slip} c.userModifiedTrafficLightStates=true"), "traffic lights"),
+        (
+            false,
+            "c.trafficLightPreference=2".to_string(),
+            "no double slip switch change",
+        ),
+        (
+            false,
+            format!("{slip} c.trafficLightPreference=1"),
+            "traffic lights",
+        ),
+        (
+            false,
+            format!("{slip} c.trafficLightConfig.trafficLightType=40"),
+            "traffic lights",
+        ),
+        (
+            false,
+            format!("{slip} c.userModifiedTrafficLightStates=true"),
+            "traffic lights",
+        ),
         (false, format!("{slip} c.crosswalks={{101}}"), "crosswalks"),
-        (false, format!("{slip} c.trafficLightConfig.states={{{{lockedLanes={{}},duration=10,minDuration=5,canSkip=false}}}}"), "phases"),
-        (false, format!("{slip} c.laneConnections={{{{segment0=101,lane0=1,segment1=103,lane1=0,withRoad=false,withTram=true}}}}"), "lane connections"),
+        (
+            false,
+            format!(
+                "{slip} c.trafficLightConfig.states={{{{lockedLanes={{}},duration=10,minDuration=5,canSkip=false}}}}"
+            ),
+            "phases",
+        ),
+        (
+            false,
+            format!(
+                "{slip} c.laneConnections={{{{segment0=101,lane0=1,segment1=103,lane1=0,withRoad=false,withTram=true}}}}"
+            ),
+            "lane connections",
+        ),
     ] {
         let lua = narrow_game(0, false, street_node);
         lua.load(FRESH_NODE).exec().unwrap();
@@ -2002,8 +2030,7 @@ fn the_double_slip_switch_goes_at_a_track_crossing_with_no_settings_yet() {
         .load("return EDIT(function(c) c.doubleSlipSwitch=true end)")
         .eval()
         .unwrap();
-    let action =
-        tpf3mp_proto::lua::action_from_lua(&common::tree(&captured)).unwrap();
+    let action = tpf3mp_proto::lua::action_from_lua(&common::tree(&captured)).unwrap();
     let replica = narrow_game(5000, false, false);
     replica
         .load("CONFIGS[1+OFFSET].doubleSlipSwitch=true")
