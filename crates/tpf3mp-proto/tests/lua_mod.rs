@@ -9781,7 +9781,7 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
         eval(
             "local a = HOOK.applied[1] return tostring(a.ok) .. ':' .. tostring(a.why) .. ':' .. #SENT"
         ),
-        "false:no asset group with those trees here:0"
+        "false:no asset group with those trees here (the first, ::/assets/trees/fir.mdl at 14.00, 21.00):0"
     );
 }
 
@@ -9901,7 +9901,7 @@ fn two_quick_tree_bulldozes_in_one_group_both_go() {
         .unwrap();
     assert_eq!(
         eval("return APPLY(SECOND)"),
-        "false:no asset group with those trees here|0"
+        "false:no asset group with those trees here (the first, ::/assets/trees/fir.mdl at 18.00, 19.00)|0"
     );
     // Two groups holding the fir taken, neither of the captured size with
     // its first fir: refused.

@@ -2068,7 +2068,8 @@ local function removeAssets(a, context)
 	end
 	local found = #holding == 1 and holding or exact
 	if #found ~= 1 then
-		error(#holding == 0 and "no asset group with those trees here"
+		error(#holding == 0 and string.format("no asset group with those trees here (the first, %s at %.2f, %.2f)",
+				tostring(r1.model), r1.at.x, r1.at.y)
 			or ("more than one asset group with those trees here, and not one alone of " .. a.count
 				.. " assets with the first of them"), 0)
 	end
