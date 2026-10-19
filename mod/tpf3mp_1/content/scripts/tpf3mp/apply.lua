@@ -2027,37 +2027,50 @@ local function assetGroupsAt(model, x, y, z)
 end
 
 -- Trees and other assets the asset bulldozer took out of their group
--- (action::Bulldoze::Assets): the one group here that holds exactly
--- `count` assets, the first and every one removed among them, removed and,
--- unless every asset of it went, built again from this game's own copy
--- without them, as the tool builds it (tpf3mp/engine.lua, captureAssets;
+-- (action::Bulldoze::Assets): the one group here that holds every one
+-- removed, removed and, unless every asset of it went, built again from
+-- this game's own copy without them, as the tool builds it
+-- (tpf3mp/engine.lua, captureAssets;
 -- construction_builder_util::CreateProposalAddAsset, build 40408): one
 -- construction entity at the world's origin whose desc is autoRemovable and
 -- whose one subconstruction lists the assets kept, the thin ones then the
 -- full ones, each its model's file and its world matrix. TF3's
 -- Proposal.ConstructionEntity has no writable fileName (it reads the
 -- desc's, empty as new() makes it), and its construction is a
--- Proposal.ConstructionResult, whose subconstructions are set. Any other
--- group here, or a removed asset this game cannot tell from another,
--- refuses it, so no game removes other trees than the player's. Paid by the
--- player's company, as the player's own build. The log says the group and
--- its assets before and after, in every game.
+-- Proposal.ConstructionResult, whose subconstructions are set. The group
+-- is found by the trees it loses, not by its size or first tree when
+-- captured: a room's earlier removal from the same group (two quick clicks
+-- on its trees, captured before the first came back) rebuilt it smaller,
+-- and maybe without its first tree, in every game alike. Where more than
+-- one group holds every tree removed, only the one of `count` assets with
+-- the first among them is taken; none, or no single such one, refuses it,
+-- as does a removed asset this game cannot tell from another, so no game
+-- removes other trees than the player's. Paid by the player's company, as
+-- the player's own build. The log says the group and its assets before and
+-- after, in every game.
 local function removeAssets(a, context)
 	local engine = module("engine")
-	local f = a.first
-	local found = {}
-	for _, g in ipairs(assetGroupsAt(f.model, f.at.x, f.at.y, f.at.z)) do
-		if #g.assets == a.count then
-			local used, all = {}, true
-			for _, r in ipairs(a.removed) do
-				if not engine.takeAsset(g.assets, used, r.model, r.at.x, r.at.y, r.at.z) then all = false break end
+	local f, r1 = a.first, a.removed[1]
+	if r1 == nil then error("an asset removal that names no asset", 0) end
+	local holding, exact = {}, {}
+	for _, g in ipairs(assetGroupsAt(r1.model, r1.at.x, r1.at.y, r1.at.z)) do
+		local used, all = {}, true
+		for _, r in ipairs(a.removed) do
+			if not engine.takeAsset(g.assets, used, r.model, r.at.x, r.at.y, r.at.z) then all = false break end
+		end
+		if all then
+			local match = { entity = g.entity, assets = g.assets, used = used }
+			holding[#holding + 1] = match
+			if #g.assets == a.count and engine.assetsAt(g.assets, f.model, f.at.x, f.at.y, f.at.z) > 0 then
+				exact[#exact + 1] = match
 			end
-			if all then found[#found + 1] = { entity = g.entity, assets = g.assets, used = used } end
 		end
 	end
+	local found = #holding == 1 and holding or exact
 	if #found ~= 1 then
-		error(#found == 0 and ("no asset group of " .. a.count .. " assets with those trees here")
-			or ("more than one asset group of " .. a.count .. " assets with those trees here"), 0)
+		error(#holding == 0 and "no asset group with those trees here"
+			or ("more than one asset group with those trees here, and not one alone of " .. a.count
+				.. " assets with the first of them"), 0)
 	end
 	local group = found[1]
 	for _, r in ipairs(a.removed) do
