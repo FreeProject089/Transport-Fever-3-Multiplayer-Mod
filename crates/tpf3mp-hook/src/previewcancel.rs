@@ -131,7 +131,9 @@ pub unsafe fn install(
                 Ok(at) => format!(
                     "the state swap's reset (returning to {at:#x}) keeps the tools' continuation"
                 ),
-                Err(why) => format!("every reset ends the tools' continuation: {why}"),
+                Err(why) => format!(
+                    "every reset other than the click's own ends the tools' continuation: {why}"
+                ),
             };
             format!(
                 "build previews: street and track proposal resets withdraw the player's preview; \
