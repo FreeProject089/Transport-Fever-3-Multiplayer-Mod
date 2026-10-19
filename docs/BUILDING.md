@@ -352,9 +352,9 @@ would otherwise exceed the action's 64-setting limit even though the station
 itself creates most of those switches. This only removes settings for the
 construction's own network; settings for external junctions still travel.
 Where the game's one construction proposal refuses a snap onto existing
-track, see the rejoin path below: it changes that track only after the
-game accepted the construction with it taken away, and lays it again in
-a second command, which is not atomic with the first.
+track, the staged rejoin path below is disabled in ordinary rooms. It
+removes track before laying it again in a second command, which is not
+atomic with the first.
 
 `lua_mod.rs` reproduces the recorded depot topology: before the fix its
 first build contains four duplicate nodes and edges; afterwards it contains
@@ -381,10 +381,9 @@ four of the eight track ends standing where its own tracks end, the
 construction alone cannot be built; without them it can. Only the tool
 welds a construction's track ends onto existing nodes.
 
-So when the game refuses the construction alone, and the action's
-connection is only the construction's own track, joined to the world at
-existing track nodes (no split, no removal, no street node), every game
-joins it as the tool did (`rejoinConstruction` in `apply.lua`):
+The staged `rejoinConstruction` implementation in `apply.lua` can join
+this shape when the action's connection is only the construction's own
+track at existing track nodes (no split, no removal, no street node):
 
 1. it takes away the track pieces at those nodes (found at their own
    level: a node of a track right above or below is another place), the
@@ -408,15 +407,27 @@ company's piece (D21), or a junction at a far end set by hand (its turns,
 its lights, their phases or a double slip), and the build stays refused
 with the game's own reason; the far ends' settings are otherwise the
 game's own, and go with the pieces. Where the construction has no track
-end at such a place, the piece comes back unjoined and hook.log says so.
-Once step 1 is built, the construction stands in every game alike; if
-step 2 still cannot be laid, hook.log names the places, and the pieces
-are gone in every game alike. The values of the pieces are read before
+end at such a place, the staged path lays the piece back unjoined and
+hook.log says so.
+
+`acceptance.lua` keeps `rejoinConstruction = false` in the release mod.
+If the construction alone is refused, replay stops before sending the
+proposal that removes track. The flag is mod code covered by the room's
+fingerprint, not a player option; tests alone turn it on to exercise the
+staged path. That path still has a destructive failure mode: after step 1
+builds, step 2 may be refused, leaving the original pieces gone while the
+handler logs the failure and returns success. Before enabling it, establish
+one atomic native proposal or a guaranteed recovery path for a failed
+re-lay, prove the failure case without losing track, then perform an
+ordinary-start two-game placement and train-route check. No such guarantee
+is established by the staged runs below.
+
+The values of the pieces are read before
 step 1: the first real-game try read them from the removed edges'
 components afterwards and step 2 failed in both games ("no Track node at
 vertex 1"), which the stand-in engine, whose components are copies, did
-not show. The eight-track placement then built, joined and refreshed alike
-in both games.
+not show. A later staged eight-track placement built, joined and refreshed
+alike in both games, but does not prove every re-lay can succeed.
 
 ### Module edits and upgrades
 

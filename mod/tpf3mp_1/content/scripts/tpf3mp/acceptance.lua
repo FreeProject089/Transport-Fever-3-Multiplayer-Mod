@@ -37,7 +37,10 @@
 -- crossing_type, schema 28) passed staged two-game runs on build 40420,
 -- 2026-10-17, on Japan_2 (crossing-tool-1017b, crossing-tool-1017c); off
 -- until the owner takes them, or an ordinary-start run, as its acceptance.
--- While off, the GUI sends such a build without the type, as before.
+-- While off, a road/track build uses the established, checked build channel
+-- without a toolbar preference; the engine picks the crossing type.
+-- Construction rejoin's two native commands have no proven atomic failure
+-- path; while off, a refused first proposal cannot remove any existing track.
 local acceptance = {
     subsidies = true,
     rename = true,
@@ -53,6 +56,7 @@ local acceptance = {
     assets = true,
     crossings = false,
     crossingTypes = false,
+    rejoinConstruction = false,
 }
 
 function acceptance.check(action)

@@ -5865,6 +5865,11 @@ const TRACK_END_GAME: &str = "\
         return send(cmd, ...) \
     end";
 
+// Only staged fixtures opt into the non-atomic rejoin path. In ordinary
+// rooms the mod fingerprint holds this gate off for every participant.
+const ENABLE_TRACK_END_REJOIN: &str =
+    "ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').rejoinConstruction = true";
+
 /// The rail station of RAIL_STATION_OPEN with its own track joined onto
 /// node 20 of STATION_ON_TRACK_END, as the tool proposes it.
 fn station_on_track_end() -> String {
@@ -5874,6 +5879,40 @@ fn station_on_track_end() -> String {
            tangent0 = { x = 50, y = 0, z = 0 }, tangent1 = { x = 50, y = 0, z = 0 }, \
            roadTemplate = '::/track/standard.track_template', roadStyle = '' } }",
     )
+}
+
+/// The ordinary room keeps the non-atomic fallback off. Even if the game
+/// says the construction would fit after removing the old track, no command
+/// may remove that track before its replacement is guaranteed.
+#[test]
+fn a_construction_refused_on_a_track_end_keeps_the_original_track_by_default() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(STATION_ON_TRACK_END).exec().unwrap();
+    lua.load(format!(
+        "local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         ACTION = assert(capture.construction({}))",
+        station_on_track_end()
+    ))
+    .exec()
+    .unwrap_or_else(|error| panic!("{error}"));
+    lua.load(STATION_REFRESH).exec().unwrap();
+    lua.load(TRACK_END_GAME).exec().unwrap();
+    lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
+        .exec()
+        .unwrap();
+    let (gate, ok, sent, edge, node): (bool, bool, usize, bool, bool) = lua
+        .load(
+            "return ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua').rejoinConstruction, \
+             HOOK.applied[1].ok == true, #SENT, EDGES[200] ~= nil, NODES[20] ~= nil",
+        )
+        .eval()
+        .unwrap();
+    assert!(!gate, "the release mod must leave the fallback disabled");
+    assert!(!ok, "{}", hook_log(&lua));
+    assert_eq!(sent, 0, "no command may remove the original track");
+    assert!(edge && node, "the original track remains in the world");
+    assert!(hook_log(&lua).contains("snapped track-end rejoin awaits a safe build"));
 }
 
 #[test]
@@ -5891,6 +5930,7 @@ fn a_construction_refused_on_a_track_end_is_joined_to_it_as_the_tool_joined_it()
     .unwrap_or_else(|error| panic!("{error}"));
     lua.load(STATION_REFRESH).exec().unwrap();
     lua.load(TRACK_END_GAME).exec().unwrap();
+    lua.load(ENABLE_TRACK_END_REJOIN).exec().unwrap();
     lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
         .exec()
         .unwrap();
@@ -5965,6 +6005,7 @@ fn a_construction_refused_on_a_track_end_lays_the_piece_again_from_its_far_end()
     .unwrap_or_else(|error| panic!("{error}"));
     lua.load(STATION_REFRESH).exec().unwrap();
     lua.load(TRACK_END_GAME).exec().unwrap();
+    lua.load(ENABLE_TRACK_END_REJOIN).exec().unwrap();
     lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
         .exec()
         .unwrap();
@@ -6001,6 +6042,7 @@ fn a_construction_refused_on_a_track_end_lays_the_piece_again_for_free() {
     .unwrap_or_else(|error| panic!("{error}"));
     lua.load(STATION_REFRESH).exec().unwrap();
     lua.load(TRACK_END_GAME).exec().unwrap();
+    lua.load(ENABLE_TRACK_END_REJOIN).exec().unwrap();
     lua.load("POOR = true HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
         .exec()
         .unwrap();
@@ -6040,6 +6082,7 @@ fn a_construction_refused_on_a_track_end_joins_the_piece_at_its_own_level() {
     .unwrap_or_else(|error| panic!("{error}"));
     lua.load(STATION_REFRESH).exec().unwrap();
     lua.load(TRACK_END_GAME).exec().unwrap();
+    lua.load(ENABLE_TRACK_END_REJOIN).exec().unwrap();
     lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
         .exec()
         .unwrap();
@@ -6092,6 +6135,7 @@ fn a_construction_refused_on_a_track_end_keeps_a_junction_set_by_hand() {
     .unwrap_or_else(|error| panic!("{error}"));
     lua.load(STATION_REFRESH).exec().unwrap();
     lua.load(TRACK_END_GAME).exec().unwrap();
+    lua.load(ENABLE_TRACK_END_REJOIN).exec().unwrap();
     lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
         .exec()
         .unwrap();
@@ -6127,6 +6171,7 @@ fn a_construction_refused_on_a_track_end_with_a_signal_stays_refused() {
     .unwrap_or_else(|error| panic!("{error}"));
     lua.load(STATION_REFRESH).exec().unwrap();
     lua.load(TRACK_END_GAME).exec().unwrap();
+    lua.load(ENABLE_TRACK_END_REJOIN).exec().unwrap();
     lua.load("HOOK.batch = { ACTION } UPDATE({}, STATE, 0.2)")
         .exec()
         .unwrap();

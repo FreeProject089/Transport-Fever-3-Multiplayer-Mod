@@ -827,6 +827,13 @@ function HANDLERS.BuildConstruction(build)
 	else
 		local refused = refusal(proposal, context)
 		if refused then
+			-- The fallback removes existing track before a separate re-lay
+			-- command. Until an atomic or guaranteed recovery path is shown,
+			-- refuse before sending either command. This mod-local gate is part
+			-- of the room's fingerprint, never a per-player setting.
+			if acceptance.rejoinConstruction ~= true then
+				error(refused .. " (snapped track-end rejoin awaits a safe build)", 0)
+			end
 			built = rejoinConstruction(build, entity, context, refused)
 		else
 			built = run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
