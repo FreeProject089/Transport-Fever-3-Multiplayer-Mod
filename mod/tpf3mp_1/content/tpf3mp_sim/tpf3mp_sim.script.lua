@@ -289,7 +289,7 @@ function data()
 	-- node2rcType: crates/tpf3mp-hook/src/crossings.rs, decode_tool; docs/
 	-- HOOKS.md, "Level crossing types"), so every game lays them as the
 	-- player's tool would. While acceptance.lua's `crossingTypes` is off,
-	-- the build goes without it, as before the channel. Once on, only a
+	-- the established build channel uses the engine's crossing type. Once on, only a
 	-- click the hook read as picking no type goes as it is: a type that
 	-- does not read and a hook that cannot tell stop the build, and the
 	-- player is told, since every game would lay another type than theirs.
@@ -302,8 +302,8 @@ function data()
 			local ok, m = pcall(ug_require, MOD .. "::/scripts/tpf3mp/acceptance.lua")
 			acceptanceModule = ok and type(m) == "table" and m or false
 		end
-		-- While the channel awaits its acceptance, the build goes as before
-		-- it: without the type, each game laying the engine's own.
+		-- The existing checked build channel stays usable before its optional
+		-- crossing preference is accepted. The preference is omitted here.
 		if not (acceptanceModule and acceptanceModule.crossingTypes == true) then
 			if type(kind) == "number" then
 				l:log("the build's level crossing type is left out: crossingTypes awaits two-player game acceptance")
