@@ -4035,7 +4035,7 @@ asset groups: gave the room's 2 group(s) the tool's empty terrain alignment list
 ```
 
 Seen in a two-game room on build 40420 (2026-10-20, run align-1020d,
-MP_Test_2): a brush stroke of 14 groups and five tree bulldoze rebuilds
+MP_Test_2): a brush stroke of 14 groups and six tree bulldoze rebuilds
 were each given the list in both games, a group's last tree bulldozed
 armed nothing, and no square of levelled ground showed around the trees
 in either game. `api.engine.terrain.getHeightAt` (with terrain
