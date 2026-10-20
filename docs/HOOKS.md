@@ -4034,11 +4034,17 @@ every game:
 asset groups: gave the room's 2 group(s) the tool's empty terrain alignment list
 ```
 
-INFERRED from the disassembly of both builds, not yet seen in the game:
-that the list is what keeps the native tool's groups from levelling the
-ground. A room shows it with `api.engine.terrain.getHeightAt` (which
-includes terrain alignments) against `getBaseHeightAt` (which does not)
-at the trees of a group the room built: equal where the list took.
+Seen in a two-game room on build 40420 (2026-10-20, run align-1020d,
+MP_Test_2): a brush stroke of 14 groups and five tree bulldoze rebuilds
+were each given the list in both games, a group's last tree bulldozed
+armed nothing, and no square of levelled ground showed around the trees
+in either game. `api.engine.terrain.getHeightAt` (with terrain
+alignments) and `getBaseHeightAt` (without) differ at those groups' trees
+by at most 0.05 m, within what an untouched map group shows (0.065 m,
+the sampling's own), and the same in both games. Lua cannot read the
+alignment component itself (no `ComponentType` names it), and its
+`makeProposalData` takes only a `SimpleProposal`, so no preview of an
+asset group's alignment either.
 
 ### The world's lanes
 

@@ -676,7 +676,9 @@ then places along the track (Auto Signals) go as one `PlaceSignals`
   alignment list, and without one the game levels the ground in a
   rectangle around every tree (seen in a room, 2026-10-19), so the hook
   adds it to each group at the build's apply (docs/HOOKS.md, "Asset
-  groups built in Lua"); the tree bulldozer's rebuilt group the same. The cost of not replicating it was
+  groups built in Lua"); the tree bulldozer's rebuilt group the same.
+  With it, a room's strokes and rebuilds leave the ground as single
+  player does (two-game room, 2026-10-20). The cost of not replicating it was
   measured: 104 trees on one game, every replicated command on-step, and six
   hundred steps later the town-building and road lanes diverged in three
   towns 9 km apart, because town growth reads the assets. A desync minutes
