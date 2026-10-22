@@ -1,5 +1,5 @@
--- TPF3-MP: Transport Fever 3's gui/line_vehicle_mgmt/manager_window.tl (build
--- 40420), served in its place by the hook's menu patch
+-- TPF3-MP: Transport Fever 3's gui/line_vehicle_mgmt/manager_window.tl (builds
+-- 40420 and 40423: the same file), served in its place by the hook's menu patch
 -- (crates/tpf3mp-hook/src/menu_entry.rs), with one change, marked TPF3-MP:
 -- stations clicked while a new line is being created are added to it once it
 -- exists, instead of being dropped. Refresh this copy from the game's when a

@@ -345,7 +345,7 @@ game with the hook in it as the launcher does.
 ### Reviewing the native data for a game update
 
 The compiled Windows native data is grouped with its signature profile in
-`profiles/tf3_build40420_steam_windows/` (the original 40408 bundle remains
+`profiles/tf3_build40423_steam_windows/` (the 40408 and 40420 bundles remain
 for historical verification): `hooks.toml` records the executable
 SHA-256, size and PE timestamp; `native.rs` records the game/Steam build and
 exports each subsystem's data file. Those files hold splice bytes, frame and
@@ -361,9 +361,11 @@ Bootstrap checks its complete executable identity before
 installing the menu or step gate. A TOML profile for another executable is
 insufficient: it cannot enable that build with the previous build's native
 layouts. Custom profiles for the supported executable keep their priority.
-This feature selects Windows Steam build 40420. The released main branch still
-selects 40408 until the normal acceptance and promotion gates are passed;
-this change does not approve Preview or another platform.
+This selects Windows Steam build 40423 (Steam build ID 25962684, the update
+of 2026-10-22; [the update's note](../investigation/UPDATE_40423_2026-10-22.md)).
+The released main branch keeps 40420 until the normal acceptance and
+promotion gates are passed; this does not approve Preview or another
+platform.
 
 A static signature candidate for Steam Preview 40418 is in
 `profiles/tf3_build40418_steam_windows/hooks.toml`. Its original 145 targets matched
