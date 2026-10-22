@@ -631,9 +631,10 @@ streets with the stops it finds on them, each one the acting company may
 touch, and refuses a signal there. A two-sided stop's two stand on one
 edge, so they go together. Behind `acceptance.lua`'s `bulldozeStops`,
 which the capture and every game's replay ask; with it off, the replay
-refuses a stop on a street as before. Off until the owner takes it or an
-ordinary-start run, after the same staged room (a street with a stop and
-one with a two-sided stop, removed in both games). Every
+refuses a stop on a street as before. On since an ordinary-start
+two-game run on build 40423 (gates-40423-a1, 2026-10-22: three streets
+with their stops, two of them two-sided, removed in both games), after the
+same staged room on 40420. Every
 game removes the stops it finds, not ones the originator named: a stop
 placed on that street by the same company in the moment between the
 click and the room's order would go too, as a track's signal does. Signals and waypoints go the same way, with
@@ -786,8 +787,8 @@ appended.
 | `NotificationSeen` | a notification's popup played its first sound: every game's Notifications script marks it (its `initialSound` event), so no game plays it again |
 | `Prospect` | prospecting near a town: the town, the cargo, the industry types that may be found in the originator's menu's order, and the company permit it uses. The outcome is not in it: every game's company script draws it from the game time, months later, alike ([investigation](../investigation/TPF3_PROSPECTING_2026-09-30.md)) |
 | `ApplyRank` | a company rank to take, as the company window sends the game's growth script (`applyLevel`); the acting player's company takes it ([HOOKS.md](HOOKS.md), "Company ranks") |
-| `Perk` | a company perk from the construction menu: Industry Greenification (the industry by its canonical id, `IndustryId`, which every game binds by its construction, and the permit), or a marketing campaign (the town, the campaign's duration and line cost factor, the permit, and the price the tool charged). Gated off (`acceptance.lua`, `perks`) ([HOOKS.md](HOOKS.md), "Company perks") |
-| `Preserve` | a town building's Historic Preservation checkbox: the construction it stands in, by file and position, its index in that construction's town buildings, and whether it is preserved. Gated off (`acceptance.lua`, `preservation`) |
+| `Perk` | a company perk from the construction menu: Industry Greenification (the industry by its canonical id, `IndustryId`, which every game binds by its construction, and the permit), or a marketing campaign (the town, the campaign's duration and line cost factor, the permit, and the price the tool charged). Behind `acceptance.lua`'s `perks`, on since 2026-10-22 ([HOOKS.md](HOOKS.md), "Company perks") |
+| `Preserve` | a town building's Historic Preservation checkbox: the construction it stands in, by file and position, its index in that construction's town buildings, and whether it is preserved. Behind `acceptance.lua`'s `preservation`, on since 2026-10-22 |
 | `Paint` | a terrain paint stroke: the materials grid (first texel, columns, rows, run-length values, 255 unchanged) and its mask grid, the same way; a large stroke goes as several, a band of whole rows each. Behind `acceptance.lua`'s `paint` (schema 27) |
 | `PlantAssets` | an asset brush stroke: the model files it uses, the groups it replaces (first asset and count) and the groups it builds, each asset its model's index and its matrix (`Transform`). Behind `acceptance.lua`'s `assets` (schema 27) |
 | `SetCrossingType` | preparatory type-only replay for a level crossing picked in its window: the crossing by the places of all its nodes (sorted, each once), the type by its resource file. The mechanics path finds the one crossing on exactly those nodes, checks ownership, fills the crossing map through an empty build and reads the type back. `acceptance.lua` keeps `crossings` off pending ordinary-start two-player acceptance. Window rebuilds that map nodes while changing segments or junction settings are refused; this action cannot prove or reproduce those changes. |
@@ -886,8 +887,10 @@ positions, the originator's decisions included:
   them there. The log says each kept stop's station group before and
   after the build. Behind `acceptance.lua`'s `keptStops`, which
   `acceptance.check` asks of any `kept` entry whose removal is a street's,
-  on sending and on applying; off until the owner takes it or an
-  ordinary-start run, after a staged two-game room on build 40420
+  on sending and on applying; on since an ordinary-start two-game run on
+  build 40423 (gates-40423-a1, 2026-10-22: two street builds beside a
+  junction keeping a two-sided stop, both stops in their station group in
+  both games, moved 0.01 m), after a staged two-game room on build 40420
   (run-1019-221901, Japan_2: four street builds beside junctions, one the
   tool's put-back of a two-sided stop, every kept stop in its station
   group in both games and moved 0.00 m, every rolling world check equal);

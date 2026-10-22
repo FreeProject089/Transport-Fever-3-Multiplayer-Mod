@@ -84,12 +84,13 @@ pub const MAX_EDGES: usize = 4096;
 pub const SNAP_SIZE: usize = 0x34;
 /// The direction's size, as `StartAt` reads it.
 pub const DIRECTION_SIZE: usize = 0x14;
-/// Explicit opt-in until ordinary-start input cancellation and track
-/// direction match the native callback in a real-game check.
+/// On unless set to an explicit no: street and track chains, a junction
+/// and a right-click mid-chain matched the native tools in an ordinary-start
+/// two-game run on build 40423 (2026-10-22, gates-40423-a1).
 pub const ENV: &str = "TPF3MP_TOOL_CONTINUE";
 
 fn wanted(value: Option<&str>) -> bool {
-    value == Some("1")
+    crate::cadence::wanted(value)
 }
 
 /// A click of the street or track tool, as its callback holds it.
@@ -1044,9 +1045,7 @@ pub fn check(
 /// returns the hook log's line.
 pub fn install(at: &dyn Fn(&str) -> Result<usize, String>, add: usize) -> String {
     if !wanted(std::env::var(ENV).ok().as_deref()) {
-        return format!(
-            "the street and track tools' continuation is off ({ENV}=1 opts in for testing)"
-        );
+        return format!("the street and track tools' continuation is off ({ENV} says no)");
     }
     let code = |address: usize| -> Option<[u8; 5]> {
         if !crate::image::readable(address, 5) {
@@ -1079,11 +1078,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn continuation_requires_explicit_test_opt_in() {
-        assert!(!wanted(None));
-        assert!(!wanted(Some("0")));
-        assert!(!wanted(Some("true")));
+    fn continuation_is_on_unless_turned_off() {
+        assert!(wanted(None));
         assert!(wanted(Some("1")));
+        assert!(wanted(Some("true")));
+        for no in ["0", "off", "false", "no", " OFF "] {
+            assert!(!wanted(Some(no)), "{no}");
+        }
     }
 
     #[test]

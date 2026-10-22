@@ -44,8 +44,11 @@ subsidies, with their settlement between companies
 passed two-player acceptance on 2026-10-07 and are enabled. Bridge/tunnel window rebuilds, gated at
 capture behind `bridges`, passed it on 2026-10-11 and are enabled
 ([the validation record](../investigation/TPF3_BRIDGE_TUNNEL_WINDOW_2026-10-11.md)). Industry Greenification and marketing campaigns
-remain gated at both submission and replay behind `perks`. Historic Preservation
-is likewise gated behind `preservation`. A level crossing's type from its
+(`perks`), Historic Preservation (`preservation`), a street bulldozed with
+its stops (`bulldozeStops`) and a stop the street tool keeps on a new piece
+(`keptStops`) passed ordinary-start two-player acceptance on build 40423 on
+2026-10-22 and are enabled
+([the validation record](../investigation/TPF3_GATES_2026-10-22.md)). A level crossing's type from its
 window remains gated behind `crossings`; the PR author reported staged Japan_2
 two-player runs on 2026-10-17, but ordinary-start acceptance is not established
 here. The type-only mechanics fixtures explicitly enable the channel in their

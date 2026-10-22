@@ -17191,7 +17191,8 @@ fn every_game_uses_a_perk_through_the_company_scripts_own_event() {
     "#).exec().unwrap();
 }
 
-/// Both the sender and replay refuse new channels with production defaults.
+/// Both the sender and replay refuse new channels with production defaults,
+/// and let the accepted ones through.
 #[test]
 fn unaccepted_ports_cannot_be_sent_or_replayed() {
     let (lua, _) = engine();
@@ -17201,9 +17202,6 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
         local apply = ug_require('tpf3mp_1::/scripts/tpf3mp/apply.lua')
         local link = assert(bridge.attach(bridge.find()))
         local actions = {
-            { Preserve = { building = { file = 'b.con', at = { x = 0, y = 0, z = 0 } }, index = 0, preserved = true } },
-            { Perk = { Greenify = { industry = 0 } } },
-            { Perk = { Marketing = { town = 0, duration_ms = 1, line_cost_factor = 0.5, cost = 1 } } },
             { SetCrossingType = { nodes = { { x = 0, y = 0, z = 0 } }, crossing_type = 'c.rcr' } },
         }
         for _, action in ipairs(actions) do
@@ -17213,11 +17211,22 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             assert(not applied and why:find('awaits two%-player game acceptance'), tostring(why))
         end
         assert(#HOOK.commands == 0)
-        -- Rename/recolour, subsidies, line waypoints and the road and track
-        -- tools' toolbar crossing type (2026-10-19) passed two-player
+        -- Rename/recolour, subsidies, line waypoints, the road and track
+        -- tools' toolbar crossing type (2026-10-19), and Historic
+        -- Preservation and the company perks (2026-10-22) passed two-player
         -- acceptance; the crossing window's channel remains gated pending
         -- ordinary-start two-player acceptance.
+        local acceptance = ug_require('tpf3mp_1::/scripts/tpf3mp/acceptance.lua')
+        for _, gate in ipairs({ 'perks', 'preservation', 'bulldozeStops', 'keptStops' }) do
+            assert(acceptance[gate] == true, gate .. ' is on')
+        end
+        for _, gate in ipairs({ 'crossings', 'rejoinConstruction' }) do
+            assert(acceptance[gate] == false, gate .. ' stays off')
+        end
         local accepted = {
+            { Preserve = { building = { file = 'b.con', at = { x = 0, y = 0, z = 0 } }, index = 0, preserved = true } },
+            { Perk = { Greenify = { industry = 0 } } },
+            { Perk = { Marketing = { town = 0, duration_ms = 1, line_cost_factor = 0.5, cost = 1 } } },
             { BuildRoad = { crossing_type = 'c.rcr' } },
             { BuildTrack = { crossing_type = 'c.rcr' } },
             { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
