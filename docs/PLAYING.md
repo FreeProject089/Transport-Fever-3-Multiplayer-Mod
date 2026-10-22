@@ -515,8 +515,9 @@ protected folder such as Program Files.
   together, a moment after your click, and your company pays as usual.
   After the room builds a segment, choose the next start point. Continuing
   automatically from that segment is available for controlled testing with
-  `TPF3MP_TOOL_CONTINUE=1`; it is off by default pending an input-cancellation
-  check in the real game. A
+  `TPF3MP_TOOL_CONTINUE=1`; it is off by default until the owner turns it
+  on (the input-cancellation check passed in the real game on 2026-10-19:
+  a right-click while the room builds ends it). A
   station or depot placed by a road is joined to it, as in single player.
   Street stops, on one side or both, go on with the stop tool; the stop
   goes where your cursor is on the road. The road tools tab works too:

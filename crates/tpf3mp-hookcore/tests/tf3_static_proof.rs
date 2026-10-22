@@ -208,6 +208,7 @@ const TARGETS: &[(&str, u64)] = &[
     ("UI::BuilderRenderer::EndHeightMod", 0x7bbae0),
     ("terrain::ViewTerrain::ApplyBlocks", 0x396a00),
     ("UI::StreetBuilder::ResetProposal", 0x576330),
+    ("StreetBuilder state swap/ResetProposal call", 0x56dadf),
     // Simulation timers and the faster component lookup
     // (crates/tpf3mp-hook/src/simperf.rs, fastindex.rs).
     ("simperf: EmissionGridSystem::Update", 0xaa9230),
