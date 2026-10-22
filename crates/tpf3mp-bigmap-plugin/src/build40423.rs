@@ -1,4 +1,6 @@
-//! Steam Windows build 40420's data for Big Maps' patches, from Big Maps'
+//! Steam Windows build 40423's data for Big Maps' patches (ported from
+//! 40420's on 2026-10-22: every site re-read in the 40423 executable,
+//! investigation/UPDATE_40423_2026-10-22.md), first made on Big Maps'
 //! own branch (`profiles/tf3_build40420_steam_windows/bigmap.rs` and
 //! `simswitch.rs` on `feat/bigmaps-40420`;
 //! investigation/TF3_BIGMAPS_256KM_2026-10-05.md and
@@ -9,7 +11,7 @@
 //! call, [`ROOT_NEXT_OFFSET`] bytes past the site.
 
 /// The game build these are read on: its executable's SHA-256.
-pub const BUILD: &str = "74861ac43b041aebc5179154345b3cf1ec83154c8e6cc58e0d9e02ff5fa602e4";
+pub const BUILD: &str = "e6c67da04bcdaaa61cef88db8e521e8763278811b788a329d2ee9758a658177e";
 
 /// `OctreeSystem::Resize(octree, depth, half)`: stores the root box and
 /// the depth, nothing else.
@@ -56,7 +58,7 @@ pub struct RootSite {
     pub next: [u8; 5],
 }
 
-/// init (0x244c0b): tiles in rbp, owner in rsi; next `vmovss xmm2,[rbp+0x20]`.
+/// init (0x244c1b): tiles in rbp, owner in rsi; next `vmovss xmm2,[rbp+0x20]`.
 pub const INIT_SITE: RootSite = RootSite {
     target: ROOT_INIT,
     tiles: Reg::Rbp,
@@ -65,7 +67,7 @@ pub const INIT_SITE: RootSite = RootSite {
     next: [0xC5, 0xFA, 0x10, 0x55, 0x20],
 };
 
-/// load (0x2026fd): tiles in rsi, owner in rbp; next `vmovss xmm2,[rsi+0x20]`.
+/// load (0x20270d): tiles in rsi, owner in rbp; next `vmovss xmm2,[rsi+0x20]`.
 pub const LOAD_SITE: RootSite = RootSite {
     target: ROOT_LOAD,
     tiles: Reg::Rsi,
@@ -84,7 +86,7 @@ pub const OCTREE_HALF_FIELD: usize = 0x1c;
 pub const OBSTACLE: &str = "bigmap::obstacle";
 
 /// The constructor's body from the box copy to its resize call
-/// (0x8d0a77..0x8d0afe): the counts `floor(extent / cell) + 1`, stored at
+/// (0x8d5b87..0x8d5c0e): the counts `floor(extent / cell) + 1`, stored at
 /// `+0x40`/`+0x44`, and the 32-bit `imul` the resize is sized with. The
 /// hook's cell rule models exactly this; a build that changed it is left
 /// alone.
@@ -130,15 +132,15 @@ pub const OBSTACLE_BODY: [u8; 135] = [
 pub const SPACING: &str = "bigmap::spacing";
 
 /// The score's two int32 squarings, by their offset in it: candidate
-/// pairs (`imul edx,edx; imul eax,eax` at 0x8d52ab) and exclusions
-/// (`imul ecx,ecx; imul eax,eax` at 0x8d530b). The hook replaces the score
+/// pairs (`imul edx,edx; imul eax,eax` at 0x8da3bb) and exclusions
+/// (`imul ecx,ecx; imul eax,eax` at 0x8da41b). The hook replaces the score
 /// only where both are as read.
 pub const SPACING_SQUARES: [(usize, [u8; 6]); 2] = [
     (0x15b, [0x0F, 0xAF, 0xD2, 0x0F, 0xAF, 0xC0]),
     (0x1bb, [0x0F, 0xAF, 0xC9, 0x0F, 0xAF, 0xC0]),
 ];
 
-/// The score a candidate closer than the minimum gets (`[0x36c4ea8]`).
+/// The score a candidate closer than the minimum gets (`[0x36dc068]`).
 pub const SPACING_TOO_CLOSE: f32 = 99_999.0;
 
 /// The octree's descent (`detail::EcsOctreeIterator`), recursive.
@@ -189,52 +191,52 @@ pub const DECODER_STOLEN: [u8; 6] = [0x45, 0x8B, 0xE1, 0x41, 0x3B, 0xD0];
 // The simulation switches (a proposal on Big Maps' branch).
 
 /// `ecs::EmissionGridSystem::Update(Engine*, INodeList*, float dt) const`
-/// (0xaaa700): the noise and pollution grids' diffusion, wind and average.
+/// (0xaaf890): the noise and pollution grids' diffusion, wind and average.
 pub const GRID_UPDATE: &str = "bigmap::grid_update";
 
 /// `lea rax,[EmissionGridSystem::vftable]` in the system's constructor
-/// (0xaa9379).
+/// (0xaae509).
 pub const GRID_VTABLE: &str = "bigmap::grid_slot";
 
-/// `Update`'s slot in that vtable: `ecs::Engine::Update` (0x2bbdb20) calls
+/// `Update`'s slot in that vtable: `ecs::Engine::Update` (0x2bc5440) calls
 /// every system's slot 11 (`call [r9+0x58]`) in turn, on the step's thread.
 pub const GRID_SLOT: usize = 11;
 
 /// `ecs::EmissionEmitterSystem::Update2(Engine*, int, float dt) const`
-/// (0xaa6570): every emitter splatted into both grids.
+/// (0xaab700): every emitter splatted into both grids.
 pub const EMITTER_UPDATE2: &str = "bigmap::emitter_update";
 
 /// `lea rax,[EmissionEmitterSystem::vftable]` in the system's constructor
-/// (0xaa52be).
+/// (0xaaa44e).
 pub const EMITTER_VTABLE: &str = "bigmap::emitter_slot";
 
-/// `Update2`'s slot: the system's own slot 11 (0xaa6cd0) calls it through
+/// `Update2`'s slot: the system's own slot 11 (0xaabe60) calls it through
 /// the vtable (`call [r9+0x60]`).
 pub const EMITTER_SLOT: usize = 12;
 
 /// `lea rax,[rip+disp32]`: the vtable loads' first three bytes.
 pub const LEA_RAX_RIP: [u8; 3] = [0x48, 0x8D, 0x05];
 
-/// `ecs::component::CreateEmissionGrid` (0xba0a20, EmissionGrid.cpp): the
+/// `ecs::component::CreateEmissionGrid` (0xba5c00, EmissionGrid.cpp): the
 /// noise and pollution grids of a new world, 16 cells per tile. Called only
-/// from the new-game path (0x155670); a load takes the grid from the save.
+/// from the new-game path (0x155680); a load takes the grid from the save.
 pub const CREATE_GRID: &str = "bigmap::create_grid";
 
 /// Where the checked body starts, from the function: the first `shl`.
 pub const CREATE_GRID_BODY_OFFSET: usize = 0x91;
 
 /// The body from the first `shl` to the gridPointSize multiplies
-/// (0xba0ab1..0xba0b1b): `X0`, `Y0`, `width`, `height` as `tiles << 4`,
+/// (0xba5c91..0xba5cfb): `X0`, `Y0`, `width`, `height` as `tiles << 4`,
 /// the `> 2` checks, the two tile-size calls, then `vmovss xmm2,[0.0625]`
 /// and the two multiplies. The load's displacement (`+0x5d..+0x61` here)
 /// is checked through the constant it reads instead.
 pub const CREATE_GRID_BODY: [u8; 106] = [
-    0xC1, 0xE0, 0x04, 0x89, 0x03, 0x49, 0x8B, 0xCF, 0xE8, 0x02, 0xBD, 0x00, 0x00, 0x48, 0xC1, 0xE8,
+    0xC1, 0xE0, 0x04, 0x89, 0x03, 0x49, 0x8B, 0xCF, 0xE8, 0x12, 0xBD, 0x00, 0x00, 0x48, 0xC1, 0xE8,
     0x20, 0xC1, 0xE0, 0x04, 0x89, 0x43, 0x04, 0x41, 0x8B, 0x07, 0xC1, 0xE0, 0x04, 0x89, 0x43, 0x08,
     0x41, 0x8B, 0x4F, 0x04, 0xC1, 0xE1, 0x04, 0x89, 0x4B, 0x0C, 0x83, 0xF8, 0x02, 0x0F, 0x8E, 0xB1,
     0x01, 0x00, 0x00, 0x83, 0xF9, 0x02, 0x0F, 0x8E, 0x87, 0x01, 0x00, 0x00, 0x49, 0x8B, 0xCF, 0xE8,
-    0x9B, 0xBC, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x34, 0x49, 0x8B, 0xCF, 0xE8, 0x8E, 0xBC, 0x00,
-    0x00, 0x48, 0x89, 0x84, 0x24, 0xB8, 0x00, 0x00, 0x00, 0xC5, 0xFA, 0x10, 0x15, 0xD2, 0xBF, 0xB0,
+    0xAB, 0xBC, 0x00, 0x00, 0x48, 0x89, 0x44, 0x24, 0x34, 0x49, 0x8B, 0xCF, 0xE8, 0x9E, 0xBC, 0x00,
+    0x00, 0x48, 0x89, 0x84, 0x24, 0xB8, 0x00, 0x00, 0x00, 0xC5, 0xFA, 0x10, 0x15, 0xB2, 0xDF, 0xB1,
     0x02, 0xC5, 0xEA, 0x59, 0x9C, 0x24, 0xB8, 0x00, 0x00, 0x00,
 ];
 
@@ -243,16 +245,16 @@ pub const CREATE_GRID_BODY: [u8; 106] = [
 pub const CREATE_GRID_SHIFTS: [usize; 4] = [0x91, 0xa2, 0xab, 0xb5];
 
 /// `vmovss xmm2,[rip+disp32]` loading the cell factor, from the function
-/// (0xba0b0a); 8 bytes, the displacement in the last four.
+/// (0xba5cea); 8 bytes, the displacement in the last four.
 pub const CREATE_GRID_FACTOR_LOAD: usize = 0xea;
 
 /// The load's opcode bytes before its displacement.
 pub const VMOVSS_XMM2_RIP: [u8; 4] = [0xC5, 0xFA, 0x10, 0x15];
 
-/// From the 0.0625f the load reads (0x36acae4, shared by ten other
+/// From the 0.0625f the load reads (0x36c3ca4, shared by ten other
 /// instructions, never written) to a 0.125f in the same section
-/// (0x36bc024, read by 22 instructions), which the load is pointed at.
-pub const CREATE_GRID_COARSE_FACTOR_DELTA: usize = 0x36bc024 - 0x36acae4;
+/// (0x36d31e4, read by 22 instructions), which the load is pointed at.
+pub const CREATE_GRID_COARSE_FACTOR_DELTA: usize = 0x36d31e4 - 0x36c3ca4;
 
 /// The four shifts' rewrite hooks, in [`CREATE_GRID_SHIFTS`]' order.
 pub const CREATE_GRID_SHIFT_HOOKS: [&str; 4] = [

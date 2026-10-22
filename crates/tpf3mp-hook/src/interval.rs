@@ -88,10 +88,15 @@ pub const LAYOUT_40408: Layout = Layout {
 };
 
 /// The layout of the build a profile names, where it was verified: 40408
-/// (2026-10-08) and 40420 (2026-10-09, the same offsets in `CGame::Step`
-/// and `RunGameSimLoop`).
+/// (2026-10-08), 40420 (2026-10-09, the same offsets in `CGame::Step`
+/// and `RunGameSimLoop`) and 40423 (2026-10-22: `CGame::Step` 0x11f400,
+/// `CGame::Sync` 0x11f6a0 and `RunGameSimLoop` 0x11e260 are 40420's
+/// instructions with only their addresses moved).
 pub fn layout_for(profile: &str) -> Option<Layout> {
-    (profile.contains("Build 40408") || profile.contains("Build 40420")).then_some(LAYOUT_40408)
+    ["Build 40408", "Build 40420", "Build 40423"]
+        .iter()
+        .any(|build| profile.contains(build))
+        .then_some(LAYOUT_40408)
 }
 
 /// The updates a call runs at the room's pace with the game's own 200 ms
@@ -754,7 +759,15 @@ mod tests {
             Some(LAYOUT_40408)
         );
         assert_eq!(
+            layout_for("Transport Fever 3 Build 40423 (Steam, Windows x64)"),
+            Some(LAYOUT_40408)
+        );
+        assert_eq!(
             layout_for("Transport Fever 3 Build 40418 Preview (Steam, Windows x64)"),
+            None
+        );
+        assert_eq!(
+            layout_for("Transport Fever 3 Build 40424 (Steam, Windows x64)"),
             None
         );
     }

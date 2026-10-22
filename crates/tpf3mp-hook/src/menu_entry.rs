@@ -61,11 +61,17 @@ use crate::lobby;
 /// path stays the module's cache key, so the rest of the menu sees the same
 /// `MainPage` value it always did. Requests to the hook pass straight
 /// through to the original, where the detour answers them.
-const MANAGER_WINDOW_BUILD_SHA256: &str =
-    "74861ac43b041aebc5179154345b3cf1ec83154c8e6cc58e0d9e02ff5fa602e4";
+///
+/// The executables whose game `manager_window.tl` the copy was made from:
+/// 40420, and 40423, whose file is byte-for-byte 40420's (SHA-256
+/// `9608c068…` in both, 2026-10-22).
+const MANAGER_WINDOW_BUILD_SHA256: [&str; 2] = [
+    "74861ac43b041aebc5179154345b3cf1ec83154c8e6cc58e0d9e02ff5fa602e4",
+    "e6c67da04bcdaaa61cef88db8e521e8763278811b788a329d2ee9758a658177e",
+];
 
 pub fn manager_window_supported(profile: &Profile) -> bool {
-    profile.build.sha256 == MANAGER_WINDOW_BUILD_SHA256
+    MANAGER_WINDOW_BUILD_SHA256.contains(&profile.build.sha256.as_str())
 }
 
 fn menu_patch(manager_window_supported: bool) -> String {
@@ -945,8 +951,12 @@ mod tests {
     }
 
     #[test]
-    fn the_line_manager_copy_is_pinned_to_the_verified_40420_executable() {
+    fn the_line_manager_copy_is_pinned_to_the_verified_executables() {
         let current = Profile::from_toml(include_str!(
+            "../../../profiles/tf3_build40423_steam_windows/hooks.toml"
+        ))
+        .unwrap();
+        let verified = Profile::from_toml(include_str!(
             "../../../profiles/tf3_build40420_steam_windows/hooks.toml"
         ))
         .unwrap();
@@ -955,6 +965,7 @@ mod tests {
         ))
         .unwrap();
         assert!(manager_window_supported(&current));
+        assert!(manager_window_supported(&verified));
         assert!(!manager_window_supported(&previous));
     }
 
