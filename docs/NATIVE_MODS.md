@@ -94,6 +94,26 @@ the index in a GitHub environment whose required reviewer approves each
 signing, as `sign.yml` does for releases. No key is in the repository; the
 tests make a fresh test key each time.
 
+## The registry shipped with the launcher
+
+*Proposed, not decided: goes against D29's "never an arbitrary index URL".*
+The launcher carries a registry of its own, `native-registry.json`: the
+repositories of the native mods it offers without a server.
+
+```json
+{ "format": 1, "mods": ["https://github.com/silver2127/tpf3mp-bigmap"] }
+```
+
+A file of that name beside the launcher's executable takes the place of
+the one built in (`crates/tpf3mp-launcher/native-registry.json`). At start,
+and when the player checks the index, the launcher reads each mod's
+`tpf3mp-native.json` as a server reads its registry (below) and keeps the
+index as a server's, under `native-mods/servers/<bundled>/`. When no mod
+can be read, as offline, the last index stays. Its mods show in the mod
+browser with or without a server, install from it, and their plugins'
+approval is recorded against the source `bundled`. A connected server's
+index comes first.
+
 ## A server's own index
 
 *Owner-approved amendment to D29 ([DECISIONS.md](DECISIONS.md), 2026-10-15).*
