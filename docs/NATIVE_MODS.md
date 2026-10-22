@@ -667,9 +667,8 @@ rollback and enablement; and Windows x86-64 plugin loading. The Big Maps
 plugin and its package builder are included. Enabled packages' game-mod
 folders are installed without overwriting a player's own same-named folder.
 
-Still open before a player release:
+Still open for broader native-mod support:
 
-- configure a server registry and publish the first reviewed package;
 - if the optional project source is wanted, configure its native-mods key,
   signing workflow and first index;
 - validate ordinary game startup, room matching and Big Maps gameplay in
