@@ -16,9 +16,9 @@ game's own files or dumps of build 40408), **REPORTED** (a working mod relies
 on it), **INFERRED** (not yet checked in the game; each is listed under
 "To measure in the game").
 
-Mods that are more than Lua, such as Big Maps, are not Mod Hub mods: they
-would come from the project's signed index of native mods
-([NATIVE_MODS.md](NATIVE_MODS.md), proposed D29).
+Mods that are more than Lua, such as Big Maps, are not Mod Hub mods. The
+launcher installs them only from an authenticated room server's index or
+the project's optional signed index ([NATIVE_MODS.md](NATIVE_MODS.md), D29).
 
 ## Three kinds of mod
 

@@ -4,9 +4,9 @@
 server-index and plugin-consent amendments, approved 2026-10-15). The
 server registry, Mods browser, full package identities in room terms
 (protocol 22), Windows x86-64 plugin loading and per-content executable
-consent are implemented. The Big Maps plugin is supplied as source and
-packaging tooling; publishing a package and real-game acceptance remain
-separate work. No production registry is configured by this change.
+consent are implemented. The Big Maps plugin has source, packaging tooling,
+and Silver's published build-40423 package. The project relay's reviewed
+registry is configured for v1.3.3; Big Maps gameplay acceptance remains open.
 
 A **native mod** is a mod that is more than Lua: it needs code in the game.
 Big Maps ([BIGMAPS.md](BIGMAPS.md)) is the first: hook patches behind
@@ -93,6 +93,25 @@ To be built with the decision: a `sign-native-mods.yml` workflow that signs
 the index in a GitHub environment whose required reviewer approves each
 signing, as `sign.yml` does for releases. No key is in the repository; the
 tests make a fresh test key each time.
+
+## The registry shipped with the launcher
+
+The launcher embeds a pinned discovery list, `native-registry.json`. It can
+show the available package and its metadata before connecting to a server,
+but this list is not an installation authority under D29.
+
+```json
+{ "format": 1, "mods": ["https://raw.githubusercontent.com/silver2127/tpf3mp-bigmap/98911e403050c3ca7f7f0e66e658d629154488bc/tpf3mp-native.json"] }
+```
+
+There is no executable-side override. The launcher reads each listed
+manifest and caches the discovery preview. If offline, the last preview
+remains visible. An install is available only when an authenticated room
+server offers the package through its index, or when the project's signed
+index does. Consent then binds the package to that trusted source and its
+exact content digest. The project relay uses the reviewed, release-pinned
+`deploy/native-mods.txt` list below. A connected server's offer takes
+precedence over discovery metadata.
 
 ## A server's own index
 
@@ -648,9 +667,8 @@ rollback and enablement; and Windows x86-64 plugin loading. The Big Maps
 plugin and its package builder are included. Enabled packages' game-mod
 folders are installed without overwriting a player's own same-named folder.
 
-Still open before a player release:
+Still open for broader native-mod support:
 
-- configure a server registry and publish the first reviewed package;
 - if the optional project source is wanted, configure its native-mods key,
   signing workflow and first index;
 - validate ordinary game startup, room matching and Big Maps gameplay in

@@ -115,6 +115,43 @@ struct AutoRoom {
     game_data_dir: Option<std::path::PathBuf>,
 }
 
+const USER_AGENT: &str = concat!("TPF3-MP/", env!("CARGO_PKG_VERSION"));
+
+/// Discovery list built into the launcher. It can show native mods before a
+/// server connects, but does not authorize installing them.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativeRegistry {
+    format: u32,
+    mods: Vec<String>,
+}
+
+fn bundled_registry() -> Option<tpf3mp_agent::native_mods::Bundled> {
+    let registry =
+        match serde_json::from_str::<NativeRegistry>(include_str!("../native-registry.json")) {
+            Ok(registry) if registry.format == 1 => registry,
+            Ok(registry) => {
+                warn!(
+                    format = registry.format,
+                    "the built-in native-mod discovery list has an unknown format"
+                );
+                return None;
+            }
+            Err(error) => {
+                warn!(%error, "the built-in native-mod discovery list cannot be read");
+                return None;
+            }
+        };
+    let agent = tpf3mp_nativemods::fetch::agent(true, std::time::Duration::from_secs(60));
+    Some(tpf3mp_agent::native_mods::Bundled {
+        repositories: registry.mods,
+        fetch: Arc::new(move |url: &str, limit: u64| {
+            tpf3mp_nativemods::fetch::get(&agent, url, limit, USER_AGENT)
+                .map_err(|error| error.to_string())
+        }),
+    })
+}
+
 /// The server a package plays on by default, set when it is built. Without
 /// it, the project's relay ([`setup::RELAY`]), in every build.
 const DEFAULT_SERVER: Option<&str> = option_env!("TPF3MP_DEFAULT_SERVER");
@@ -264,13 +301,15 @@ fn run(args: Args, diagnostics: Recorder) -> Result<()> {
     }
     config.diagnostics = Some(diagnostics);
     // Native mods (docs/NATIVE_MODS.md): from the index of the server played
-    // on, and from the project's signed index when this build has its key.
+    // on, from the registry shipped with the launcher, and from the
+    // project's signed index when this build has its key.
     config.native = Some(tpf3mp_agent::native_mods::NativeSetup {
         source: Arc::new(tpf3mp_nativemods::store::Http::github(
             update::REPOSITORY,
-            concat!("TPF3-MP/", env!("CARGO_PKG_VERSION")),
+            USER_AGENT,
         )),
         keys: tpf3mp_nativemods::signed::trusted_keys(),
+        bundled: bundled_registry(),
     });
     if args.browser {
         return in_browser(&runtime, config, serving);

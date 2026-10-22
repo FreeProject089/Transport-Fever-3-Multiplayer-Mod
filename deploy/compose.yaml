@@ -31,6 +31,10 @@ services:
       RUST_LOG: info
       # "json" for a log collector; "text" reads best in `docker compose logs`.
       TPF3MP_LOG_FORMAT: text
+      # The server authenticates this reviewed registry to its clients. A
+      # release tag pins the list; each package still has its own hashes and
+      # requires exact-identity consent before native code is fetched.
+      TPF3MP_NATIVE_MODS_REGISTRY: https://raw.githubusercontent.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/v1.3.3/deploy/native-mods.txt
     # Keep at most 10 files of 50 MB each, so the log never fills the disk.
     # `deploy/collect-logs.sh` gathers them, with the server's state, for a
     # bug report (see docs/OPERATIONS.md, "Logs").

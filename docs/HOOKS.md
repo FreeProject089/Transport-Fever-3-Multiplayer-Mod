@@ -1628,9 +1628,9 @@ reference of its own to either. Once linked, the GUI wraps every
     ("Company ranks" below);
   - the construction menu's perk tools, `makeScriptingSendEventCmd("",
     "Companies", "MakeGreen" | "startMarketingCampaign", …)`, as a `Perk`
-    action ("Company perks" below), refused in the sender and in every
-    game's replay until `acceptance.lua`'s `perks` is turned on after a
-    two-player game (COVERAGE.md);
+    action ("Company perks" below), behind `acceptance.lua`'s `perks` in
+    the sender and in every game's replay, on since a two-player game on
+    2026-10-22 (COVERAGE.md);
   - a town building's Historic Preservation checkbox
     (`makeTownBuildingSetBlockedDevelopmentCmd`, the town building window's
     `HistoricBuildingCard`), as a `Preserve` action: the construction the
@@ -1638,9 +1638,9 @@ reference of its own to either. Once linked, the GUI wraps every
     in that construction's town buildings (`capture.townBuildingOf`: the
     construction the game names for it, else the one whose list has it;
     INFERRED that the window's entity is the listed one). Every game sets
-    the building at that index through the same command. Refused in the
-    sender and in every game's replay until `acceptance.lua`'s
-    `preservation` is turned on after a two-player game (COVERAGE.md);
+    the building at that index through the same command. Behind
+    `acceptance.lua`'s `preservation` in the sender and in every game's
+    replay, on since a two-player game on 2026-10-22 (COVERAGE.md);
   - answering a subsidy offer, the subsidy window's
     `makeScriptingSendEventCmd("", "Subvention", "onAccept" | "onDecline",
     { uid })`, as a `Subsidy` action naming the offer by its number and
@@ -2247,14 +2247,18 @@ permit for the company and hands the perk on:
   (`capture.marketing`) as `Perk::Marketing`, with the price the tool
   charges in that year (`capture.marketingCost`, the tool's own formula);
   every game checks the company can pay it, starts the campaign through
-  the company script and books the price itself. The tool's own booking,
+  the company script and books the price itself. With the game's infinite
+  money the company has no balance (`getPlayersBalance` answers nil): the
+  tool checks nothing then and still books, and so does every game; a
+  balance it cannot read is refused. The tool's own booking,
   sent from its callback, is neither sent nor refused (`guard.FOLLOWS`),
   so the price is paid once, in every game.
 
-Both are refused for another company, an industry or town the registry
-cannot name, and, until a two-player game shows matching permits, town
-reputations, emissions and money, by `acceptance.lua`'s `perks` gate in
-the sender and in every game's replay.
+Both are refused for another company and for an industry or town the
+registry cannot name. `acceptance.lua`'s `perks` gate in the sender and in
+every game's replay is on since an ordinary-start two-game run on build
+40423 (2026-10-22): a greenified industry and a campaign, with the game's
+infinite money, alike in both games, every rolling world check equal.
 
 ### Company ranks
 
@@ -3045,7 +3049,8 @@ construction's window its edits:
   piece (`Link::kept`, BUILDING.md; `splitSignals`), and a signal the tool
   puts back where it stood on a track it redraws around a node it moves,
   kept as the old signal on that piece (`refitSignals`); a street's stops
-  the same way, on their sides (`keptStops`, off until a two-player game).
+  the same way, on their sides (`keptStops`, on since a two-player game on
+  build 40423, 2026-10-22).
 - **The bulldozer** (`bulldozer`): its proposal removes one construction
   (with the construction's own entrance edge and node) or edges of one
   network (with the nodes they leave on their own). It becomes a
@@ -3150,7 +3155,8 @@ construction's window its edits:
   another company's signal on them. A street removed with stops on it
   goes the same way, its `edgeObjectsToRemove` exactly the stops on it
   (town buildings along it allowed, no other construction), behind
-  `bulldozeStops` (off until a two-player game; the replay asks it too).
+  `bulldozeStops` (on since a two-player game on build 40423, 2026-10-22;
+  the replay asks it too).
   Any other edge with a stop on it is refused.
 - **The stop tool** (`streetTerminalBuilder`): a stop on a street. The
   tool queues a `WorldBuildProposal` (command 52 from
@@ -3301,11 +3307,13 @@ construction's window its edits:
   the model name `modelRep` gives is the one `EdgeObject.model` takes, and
   that the tool's click is `playerInitiated`.
 
-**The street and track tools' continuation is test-only**
-(`TPF3MP_TOOL_CONTINUE=1`) until an ordinary-start real-game check covers
-input cancellation and native track direction. With the default setting,
-the game leaves the tool at its normal start-point picker after the room
-builds a segment. With the opt-in, the tools continue from that segment,
+**The street and track tools continue** from the segment the room built,
+on by default since an ordinary-start two-game run on build 40423
+(2026-10-22, gates-40423-a1: street and track chains, one into a junction,
+and a right-click mid-chain, alike in both games, every rolling world
+check equal). `TPF3MP_TOOL_CONTINUE=0` (or `off`, `false`, `no`) turns it
+off: the game then leaves the tool at its normal start-point picker after
+the room builds a segment. Otherwise the tools continue from that segment,
 as they do from the one just built in single player
 (`crates/tpf3mp-hook/src/toolchain.rs`, `scripts/tpf3mp/toolchain.lua`).
 Read on 40420 with tpfre (the same code, at the same places, on 40408 and
@@ -3365,8 +3373,7 @@ street beside it, as a guide, still goes on in its direction.)
 A right-click while the click waits passes through the tool's own input
 handler with no start point (`UI::StreetBuilder` vf2, 0x581479..0x5814d7).
 The native proposal-reset detour drops a kept click if that path resets
-the builder; continuation remains off even with test opt-in if this detour
-fails to install. `UpdateEngine` itself resets the proposal right after
+the builder; continuation stays off if this detour fails to install. `UpdateEngine` itself resets the proposal right after
 `Add` returns (40420 0x58935a, 40418 0x58a06a, 40408 0x58a07a: the path
 from `Add` there is unconditional), with `all` 0; every other caller of
 `ResetProposal` (the abort in vf2, the frame's lambda, vf5, vf16 and the

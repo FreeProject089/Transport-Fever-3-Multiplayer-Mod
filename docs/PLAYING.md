@@ -493,11 +493,12 @@ protected folder such as Program Files.
 - **Line waypoints.** Add waypoints to a line's route in the line
   manager as usual: the line is changed in every player's game, each
   waypoint on the same lane or, for an aircraft, at the same place.
-- **Industry Greenification marketing campaigns and Historic
-  Preservation.**
-  These channels remain refused pending a two-player game acceptance run.
-  Their mechanics are implemented but are not enabled for play yet; see
-  [COVERAGE.md](COVERAGE.md).
+- **Industry Greenification, marketing campaigns and Historic
+  Preservation.** Use the construction menu's company tools and a town
+  building's window as usual: every player's game greenifies the industry,
+  starts the campaign (and books its price, also with the game's infinite
+  money) or sets the preservation together, a moment after your click,
+  with your company's permit. Accepted in a two-game room on build 40423.
 - **Prospecting.** Prospect for resources near a town from the
   construction menu as usual: every player's game starts the prospection
   together, a moment after your click, and uses your company's permit.
@@ -513,11 +514,13 @@ protected folder such as Program Files.
 - **Roads, tracks, stations and depots.** Build them with the game's own
   street, track and construction tools: every player's game builds them
   together, a moment after your click, and your company pays as usual.
-  After the room builds a segment, choose the next start point. Continuing
-  automatically from that segment is available for controlled testing with
-  `TPF3MP_TOOL_CONTINUE=1`; it is off by default until the owner turns it
-  on (the input-cancellation check passed in the real game on 2026-10-19:
-  a right-click while the room builds ends it). A
+  The street and track tools go on from the segment the room built; a
+  right-click ends the chain, also while the room builds. After a street
+  segment joins a junction, an immediate next click can make no segment;
+  choose a new start point if that happens. This was observed in a two-game
+  room on build 40423;
+  `TPF3MP_TOOL_CONTINUE=0` turns continuation off, so you choose each
+  start point yourself. A
   station or depot placed by a road is joined to it, as in single player.
   Street stops, on one side or both, go on with the stop tool; the stop
   goes where your cursor is on the road. The road tools tab works too:
@@ -527,9 +530,8 @@ protected folder such as Program Files.
   a track's type and its decorations (seen with the road tools; the track
   tools are not yet tried in a real game). Remove them, and roads and
   tracks, with the bulldozer: a two-sided stop goes with one click, and
-  a track takes its signals with it. A street with stops on it still says
-  "Not in multiplayer yet": remove its stops first (`bulldozeStops`, off
-  until a two-game room accepts it).
+  a track takes its signals with it, and a street its stops
+  (`bulldozeStops`; accepted in a two-game room on build 40423).
 - **Airfields and airports.** Build the game's stock airfield or airport
   from **Air** with a hangar if you want to buy aircraft there. Place roads
   near the passenger building as in the base game. Use **Configure** on
@@ -644,8 +646,8 @@ protected folder such as Program Files.
   signals, where the tool moves that node and puts the signal back on the
   redrawn track, keeps the old signal there too (`refitSignals`; accepted
   in a two-game room on build 40420). A street started beside a junction
-  near a stop does the same with the stop (`keptStops`), off until a
-  two-game room accepts it: until then it says "Not in multiplayer yet".
+  near a stop does the same with the stop (`keptStops`; accepted in a
+  two-game room on build 40423).
 
 ## Playtesting before the game is out
 

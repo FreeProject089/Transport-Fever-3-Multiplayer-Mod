@@ -3714,12 +3714,15 @@ function HANDLERS.Perk(op, ctx)
 		local cost = tonumber(m.cost)
 		if cost == nil or cost < 0 then error("a campaign of no price", 0) end
 		-- The tool will not start one the company cannot pay for; neither
-		-- does any game.
+		-- does any game. No balance (nil) is the game's infinite money
+		-- (game_mechanics/finance/account.tl): the tool then checks nothing
+		-- and still books the price, and so does every game.
 		local read, balance = pcall(function() return api.engine.util.finance.getPlayersBalance(company()) end)
-		if not read or type(balance) ~= "number" or balance ~= balance or math.abs(balance) == math.huge then
+		if not read or (balance ~= nil and (type(balance) ~= "number" or balance ~= balance
+			or math.abs(balance) == math.huge)) then
 			error("cannot read the company balance for the campaign", 0)
 		end
-		if balance < cost then
+		if balance ~= nil and balance < cost then
 			error("not enough money for the campaign", 0)
 		end
 		log("marketing in town-" .. tostring(m.town) .. " (" .. tostring(town) .. ") for " .. tostring(cost))

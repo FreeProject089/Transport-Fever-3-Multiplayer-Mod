@@ -56,15 +56,25 @@
 -- two-sided stop, each kept stop in its station group in both games and
 -- moved 0.00 m; a street bulldozed with a stop and one with a two-sided
 -- stop, removed in both; every rolling world check equal through step
--- 400. Off until the owner takes them, or an ordinary-start run.
+-- 400. Both passed ordinary-start two-game acceptance on build 40423,
+-- 2026-10-22 (gates-40423-a1: two launchers against a local server, the
+-- room created, joined by invite and started from the launcher): three
+-- streets bulldozed with their stops, two of them two-sided, removed in
+-- both games; two street builds beside a junction keeping a two-sided
+-- stop, both stops in their station group in both games, moved 0.01 m.
+-- Historic Preservation (preservation) and the company perks (perks:
+-- Industry Greenification, a marketing campaign) passed in the same run
+-- and in gates-40423-a2 (the campaign with the game's infinite money):
+-- set and cleared from either game, the campaign started and booked in
+-- both, every rolling world check equal.
 local acceptance = {
     subsidies = true,
     rename = true,
     waypoints = true,
     terraform = true,
     bridges = true,
-    perks = false,
-    preservation = false,
+    perks = true,
+    preservation = true,
     signals = true,
     splitSignals = true,
     refitSignals = true,
@@ -73,8 +83,8 @@ local acceptance = {
     crossings = false,
     crossingTypes = true,
     rejoinConstruction = false,
-    bulldozeStops = false,
-    keptStops = false,
+    bulldozeStops = true,
+    keptStops = true,
 }
 
 function acceptance.check(action)
