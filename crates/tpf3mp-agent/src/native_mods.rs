@@ -465,19 +465,17 @@ pub fn server_proposals(data_dir: &Path, server: &str) -> Option<Proposals> {
     Proposals::parse(&bytes).ok()
 }
 
-/// The indexes to install from, the server's first.
+/// The indexes shown in the browser, trusted sources first. The bundled
+/// registry is discovery only; it cannot authorize an installation.
 fn indexes(
     store: &mut Store,
     data_dir: &Path,
     setup: Option<&NativeSetup>,
     server: Option<&str>,
-) -> (Vec<Index>, Option<String>) {
+) -> (Vec<Index>, usize, Option<String>) {
     let mut found = Vec::new();
     let mut problem = None;
     if let Some(index) = server.and_then(|server| server_index(data_dir, server)) {
-        found.push(index);
-    }
-    if let Some(index) = server_index(data_dir, BUNDLED) {
         found.push(index);
     }
     if let Some(setup) = setup.filter(|setup| !setup.keys.is_empty()) {
@@ -487,7 +485,11 @@ fn indexes(
             Err(error) => problem = Some(format!("native mods: {error}")),
         }
     }
-    (found, problem)
+    let trusted = found.len();
+    if let Some(index) = server_index(data_dir, BUNDLED) {
+        found.push(index);
+    }
+    (found, trusted, problem)
 }
 
 /// The panel for a game whose executable hashes to `build`, if known,
@@ -518,7 +520,7 @@ pub fn view(
             return view;
         }
     };
-    let (indexes, problem) = indexes(&mut store, data_dir, setup, server);
+    let (indexes, trusted, problem) = indexes(&mut store, data_dir, setup, server);
     view.problem = problem;
     view.serial = indexes.first().map(|index| index.serial);
     let proposals = proposed
@@ -540,7 +542,7 @@ pub fn view(
     ids.dedup();
     view.packages = ids
         .into_iter()
-        .filter_map(|id| row(&store, &indexes, proposals.as_ref(), id, build))
+        .filter_map(|id| row(&store, &indexes, trusted, proposals.as_ref(), id, build))
         .collect();
     view
 }
@@ -548,6 +550,7 @@ pub fn view(
 fn row(
     store: &Store,
     indexes: &[Index],
+    trusted: usize,
     proposals: Option<&Proposals>,
     id: &str,
     build: Option<&str>,
@@ -583,6 +586,11 @@ fn row(
     let clash = installed
         .filter(|i| !i.enabled)
         .and_then(|_| store.clash(BUILT_IN, id));
+    let discovery_only = proposal.is_none()
+        && available.is_some()
+        && !indexes[..trusted]
+            .iter()
+            .any(|index| !index.versions(id).is_empty());
     Some(NativeRow {
         id: id.to_owned(),
         name: shown.name.clone(),
@@ -598,7 +606,9 @@ fn row(
         load_order,
         clash,
         code: !newest.plugins.is_empty() || !newest.hooks.is_empty(),
-        unsupported: available.and_then(unsupported),
+        unsupported: available.and_then(unsupported).or_else(|| {
+            discovery_only.then(|| "connect to a trusted server offering this mod".to_owned())
+        }),
         downloads: listing.and_then(|l| l.downloads),
         updated: listing.and_then(|l| l.updated.clone()),
         previous: installed.and_then(|i| i.previous.clone()),
@@ -631,6 +641,7 @@ pub struct PluginConsentPackage {
     pub version: String,
     pub authors: Vec<String>,
     /// `project` or the canonical authenticated `host:port` that offered it.
+    /// The built-in discovery list is never an installation source.
     pub source: String,
     /// Full SHA-256 package identity, including effective settings.
     pub digest: String,
@@ -734,8 +745,7 @@ pub fn apply(
 }
 
 /// The index with every one of `wanted` in it and the source identity that
-/// authorized it: the authenticated server's, else the shipped registry's, else
-/// the signed project index.
+/// authorized it: the authenticated server's or the signed project index.
 fn index_listing_with_source(
     store: &mut Store,
     data_dir: &Path,
@@ -755,9 +765,6 @@ fn index_listing_with_source(
         .filter(|(_, index)| lists(index))
     {
         return Ok((index, server_source_id(origin)?));
-    }
-    if let Some(index) = server_index(data_dir, BUNDLED).filter(|index| lists(index)) {
-        return Ok((index, BUNDLED.to_owned()));
     }
     if setup.keys.is_empty() {
         return Err("no index of native mods lists the room's".into());
@@ -1738,11 +1745,11 @@ pub(crate) mod tests {
         );
     }
 
-    /// The registry shipped with the launcher offers its mods without a
-    /// server or the project's key: they show in the panel, install from
-    /// it, and stay when it cannot be read again.
+    /// The shipped registry can show a mod without a server, but only an
+    /// authenticated server or signed project index may authorize installing
+    /// it. Losing access to discovery keeps the last preview.
     #[test]
-    fn the_shipped_registry_offers_mods_without_a_server() {
+    fn the_shipped_registry_discovers_but_cannot_authorize_installation() {
         let dir = tempfile::tempdir().unwrap();
         let exe = dir.path().join("game.exe");
         fs::write(&exe, b"the game").unwrap();
@@ -1753,6 +1760,12 @@ pub(crate) mod tests {
             packages: vec![package.clone()],
         })
         .unwrap();
+        let trusted_index = Index {
+            format: 1,
+            serial: 1,
+            packages: vec![package.clone()],
+            listings: Default::default(),
+        };
         let online = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let fetch_online = Arc::clone(&online);
         let mut setup = setup(vec![(package, file)]);
@@ -1775,18 +1788,64 @@ pub(crate) mod tests {
         apply(dir.path(), &setup, Some(&build), None, Change::Refresh).unwrap();
         let shown = view(dir.path(), Some(&setup), Some(&build), None, false);
         assert!(shown.available);
-        assert!(shown.packages.iter().any(|row| row.id == "shipped"));
+        let row = shown
+            .packages
+            .iter()
+            .find(|row| row.id == "shipped")
+            .unwrap();
+        assert!(
+            row.unsupported
+                .as_deref()
+                .unwrap()
+                .contains("trusted server")
+        );
+        assert!(
+            apply(
+                dir.path(),
+                &setup,
+                Some(&build),
+                None,
+                Change::Install("shipped".into()),
+            )
+            .is_err()
+        );
+        assert!(
+            Store::open(dir.path().join(FOLDER))
+                .unwrap()
+                .source_for("shipped", "1.0.0")
+                .is_none()
+        );
+
+        let server = "eu.example.org:29470";
+        accept_server_index(
+            dir.path(),
+            server,
+            1,
+            &serde_json::to_vec(&trusted_index).unwrap(),
+            false,
+        )
+        .unwrap();
+        let offered = view(dir.path(), Some(&setup), Some(&build), Some(server), false);
+        assert!(
+            offered
+                .packages
+                .iter()
+                .find(|row| row.id == "shipped")
+                .unwrap()
+                .unsupported
+                .is_none()
+        );
 
         apply(
             dir.path(),
             &setup,
             Some(&build),
-            None,
+            Some(server),
             Change::Install("shipped".into()),
         )
         .unwrap();
         let store = Store::open(dir.path().join(FOLDER)).unwrap();
-        assert_eq!(store.source_for("shipped", "1.0.0"), Some(BUNDLED));
+        assert_eq!(store.source_for("shipped", "1.0.0"), Some(server));
 
         online.store(false, std::sync::atomic::Ordering::SeqCst);
         assert!(refresh_bundled(dir.path(), &setup).is_err());

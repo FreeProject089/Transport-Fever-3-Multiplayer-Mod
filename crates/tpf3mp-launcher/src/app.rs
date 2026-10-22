@@ -1708,6 +1708,8 @@ impl<B: Backend> LauncherApp<B> {
                             ));
                             let source = if package.source == "project" {
                                 "TPF3-MP project index".to_owned()
+                            } else if package.source == "bundled" {
+                                "Built-in discovery list (not an installation authority)".to_owned()
                             } else {
                                 format!("Authenticated server {}", package.source)
                             };

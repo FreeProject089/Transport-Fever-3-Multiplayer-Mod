@@ -117,9 +117,8 @@ struct AutoRoom {
 
 const USER_AGENT: &str = concat!("TPF3-MP/", env!("CARGO_PKG_VERSION"));
 
-/// The registry shipped with the launcher: `native-registry.json` beside
-/// the executable, or the one built in. Lists the repositories of the
-/// native mods offered without a server.
+/// Discovery list built into the launcher. It can show native mods before a
+/// server connects, but does not authorize installing them.
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativeRegistry {
@@ -127,29 +126,22 @@ struct NativeRegistry {
     mods: Vec<String>,
 }
 
-const NATIVE_REGISTRY: &str = "native-registry.json";
-
 fn bundled_registry() -> Option<tpf3mp_agent::native_mods::Bundled> {
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|exe| std::fs::read_to_string(exe.with_file_name(NATIVE_REGISTRY)).ok());
-    let text = beside
-        .as_deref()
-        .unwrap_or(include_str!("../native-registry.json"));
-    let registry = match serde_json::from_str::<NativeRegistry>(text) {
-        Ok(registry) if registry.format == 1 => registry,
-        Ok(registry) => {
-            warn!(
-                format = registry.format,
-                "{NATIVE_REGISTRY} has an unknown format"
-            );
-            return None;
-        }
-        Err(error) => {
-            warn!(%error, "{NATIVE_REGISTRY} cannot be read");
-            return None;
-        }
-    };
+    let registry =
+        match serde_json::from_str::<NativeRegistry>(include_str!("../native-registry.json")) {
+            Ok(registry) if registry.format == 1 => registry,
+            Ok(registry) => {
+                warn!(
+                    format = registry.format,
+                    "the built-in native-mod discovery list has an unknown format"
+                );
+                return None;
+            }
+            Err(error) => {
+                warn!(%error, "the built-in native-mod discovery list cannot be read");
+                return None;
+            }
+        };
     let agent = tpf3mp_nativemods::fetch::agent(true, std::time::Duration::from_secs(60));
     Some(tpf3mp_agent::native_mods::Bundled {
         repositories: registry.mods,

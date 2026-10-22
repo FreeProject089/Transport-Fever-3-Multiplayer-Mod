@@ -487,12 +487,11 @@ uploads it.
 ## Native mods
 
 A server can offer its players native mods such as Big Maps
-([NATIVE_MODS.md](NATIVE_MODS.md), "A server's own index"; a proposed
-amendment to D29). Name a registry, a git repository whose `mods.txt` lists
-the mods' own repositories:
+([NATIVE_MODS.md](NATIVE_MODS.md), "A server's own index"; approved D29
+amendment). Name a registry whose text list names reviewed mod manifests:
 
 ```sh
-tpf3mp-server ... --native-mods-registry https://github.com/<owner>/<registry>   --native-mods-every-minutes 60
+tpf3mp-server ... --native-mods-registry https://example.org/native-mods.txt --native-mods-every-minutes 60
 ```
 
 The server reads the list and each mod's `tpf3mp-native.json` when it
@@ -509,7 +508,13 @@ calls per mod and one for the pull requests; GitHub lets an unnamed caller
 make 60 an hour, so with more than a couple of dozen mods give a token
 (`TPF3MP_GITHUB_TOKEN`, read-only, public repositories). Without it the
 mods are still served, and those GitHub refused show no downloads. Without
-`--native-mods-registry` the server offers none.
+`--native-mods-registry` the server offers none. The project relay's Compose
+configuration uses `TPF3MP_NATIVE_MODS_REGISTRY` to point to the
+`v1.3.3`-tagged `deploy/native-mods.txt`; this pins the reviewed Big Maps
+manifest at a specific commit. Deploy that exact server release to make the
+authenticated offer available. The launcher's built-in list is discovery
+only, so it cannot install a native mod while offline or before a trusted
+server/project-signed index offers it.
 
 Players trust a server's index as they trust its rooms: the launcher gets
 a room's native mods by itself only from a server the release lists; from a

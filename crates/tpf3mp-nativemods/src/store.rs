@@ -1703,7 +1703,7 @@ fn read_consents(root: &Path) -> Result<ConsentRecords, StoreError> {
 
 fn validate_source_id(source: &str) -> Result<(), StoreError> {
     let invalid = || StoreError::InvalidSource(source.to_owned());
-    if source == "project" || source == "bundled" {
+    if source == "project" {
         return Ok(());
     }
     if source.is_empty() || source.len() > 255 || source != source.to_ascii_lowercase() {

@@ -409,10 +409,11 @@ Dev B:
   loading with source/settings/content-bound consent; dependency-aware
   room matching; and installation of enabled packages' game-mod folders.
   The identity binds every plugin descriptor and declared hook. The Big
-  Maps plugin and package builder are included. Still open: configure the
-  first production registry and publish its package, validate ordinary
-  game startup and Big Maps gameplay before release, and support plugin
-  loading on other platforms. A project-signed index remains optional.
+  Maps plugin and package builder are included. The project relay now has a
+  release-pinned registry configuration, and Silver's build-40423 Big Maps
+  package is published. Still open: validate ordinary game startup and Big
+  Maps gameplay, and support plugin loading on other platforms. A
+  project-signed index remains optional.
   The overall item stays unchecked until player-facing acceptance passes.
 
 Dev C:

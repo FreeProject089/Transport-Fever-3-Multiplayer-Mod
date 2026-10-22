@@ -1,0 +1,3 @@
+# Reviewed Big Maps 0.1.0 metadata for TF3 build 40423. Keep this URL pinned
+# to the contributor repository commit whose package was reviewed for release.
+https://raw.githubusercontent.com/silver2127/tpf3mp-bigmap/98911e403050c3ca7f7f0e66e658d629154488bc/tpf3mp-native.json

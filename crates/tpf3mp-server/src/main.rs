@@ -184,9 +184,10 @@ struct Args {
 
     /// The native mods' registry this server offers its players: a git
     /// repository (https://github.com/<owner>/<name>) whose mods.txt lists
-    /// the mods' repositories, each with its tpf3mp-native.json
-    /// (docs/NATIVE_MODS.md). Without it the server offers none.
-    #[arg(long)]
+    /// the mods' repositories or pinned manifest URLs, or a direct HTTPS
+    /// address of a .txt list (docs/NATIVE_MODS.md).
+    /// Without it the server offers none.
+    #[arg(long, env = "TPF3MP_NATIVE_MODS_REGISTRY")]
     native_mods_registry: Option<String>,
 
     /// Minutes between readings of the registry.

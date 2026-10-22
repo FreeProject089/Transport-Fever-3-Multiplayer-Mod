@@ -4,9 +4,9 @@
 server-index and plugin-consent amendments, approved 2026-10-15). The
 server registry, Mods browser, full package identities in room terms
 (protocol 22), Windows x86-64 plugin loading and per-content executable
-consent are implemented. The Big Maps plugin is supplied as source and
-packaging tooling; publishing a package and real-game acceptance remain
-separate work. No production registry is configured by this change.
+consent are implemented. The Big Maps plugin has source, packaging tooling,
+and Silver's published build-40423 package. The project relay's reviewed
+registry is configured for v1.3.3; Big Maps gameplay acceptance remains open.
 
 A **native mod** is a mod that is more than Lua: it needs code in the game.
 Big Maps ([BIGMAPS.md](BIGMAPS.md)) is the first: hook patches behind
@@ -96,23 +96,22 @@ tests make a fresh test key each time.
 
 ## The registry shipped with the launcher
 
-*Proposed, not decided: goes against D29's "never an arbitrary index URL".*
-The launcher carries a registry of its own, `native-registry.json`: the
-repositories of the native mods it offers without a server.
+The launcher embeds a pinned discovery list, `native-registry.json`. It can
+show the available package and its metadata before connecting to a server,
+but this list is not an installation authority under D29.
 
 ```json
-{ "format": 1, "mods": ["https://github.com/silver2127/tpf3mp-bigmap"] }
+{ "format": 1, "mods": ["https://raw.githubusercontent.com/silver2127/tpf3mp-bigmap/98911e403050c3ca7f7f0e66e658d629154488bc/tpf3mp-native.json"] }
 ```
 
-A file of that name beside the launcher's executable takes the place of
-the one built in (`crates/tpf3mp-launcher/native-registry.json`). At start,
-and when the player checks the index, the launcher reads each mod's
-`tpf3mp-native.json` as a server reads its registry (below) and keeps the
-index as a server's, under `native-mods/servers/<bundled>/`. When no mod
-can be read, as offline, the last index stays. Its mods show in the mod
-browser with or without a server, install from it, and their plugins'
-approval is recorded against the source `bundled`. A connected server's
-index comes first.
+There is no executable-side override. The launcher reads each listed
+manifest and caches the discovery preview. If offline, the last preview
+remains visible. An install is available only when an authenticated room
+server offers the package through its index, or when the project's signed
+index does. Consent then binds the package to that trusted source and its
+exact content digest. The project relay uses the reviewed, release-pinned
+`deploy/native-mods.txt` list below. A connected server's offer takes
+precedence over discovery metadata.
 
 ## A server's own index
 
