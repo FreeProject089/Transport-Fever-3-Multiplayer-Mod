@@ -24,7 +24,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
-    time::SystemTime,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
@@ -34,7 +34,7 @@ use tpf3mp_nativemods::{
     features::{self, BUILT_IN, Effect},
     fetch::sha256_of_file,
     index::{Index, Package, Setting},
-    registry::{Proposal, Proposals},
+    registry::{self, Proposal, Proposals},
     resolve,
     store::{EffectiveSettingsByPackage, Source, Store, StoreError},
     terms,
@@ -43,19 +43,74 @@ use tpf3mp_proto::{NativeMod, NativeSetting, NativeValue, Text};
 use tracing::{info, warn};
 
 /// Where the launcher gets native mods: the project's signed index, as the
-/// launcher binary fetches it, and the keys it is signed with.
+/// launcher binary fetches it, and the keys it is signed with; and the mods
+/// listed in the registry shipped with the launcher.
 #[derive(Clone)]
 pub struct NativeSetup {
     pub source: Arc<dyn Source + Send + Sync>,
     pub keys: Vec<Vec<u8>>,
+    pub bundled: Option<Bundled>,
 }
 
 impl std::fmt::Debug for NativeSetup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("NativeSetup")
             .field("keys", &self.keys.len())
+            .field(
+                "bundled",
+                &self.bundled.as_ref().map(|b| b.repositories.len()),
+            )
             .finish_non_exhaustive()
     }
+}
+
+/// Fetches an address, at most a limit of bytes.
+pub type Fetch = Arc<dyn Fn(&str, u64) -> Result<Vec<u8>, String> + Send + Sync>;
+
+/// The registry shipped with the launcher (`native-registry.json`): the
+/// mods' repositories, read as a server reads its registry
+/// ([`registry::build`]), so their mods can be found and installed without
+/// a server. Their index is kept as a server's is, under [`BUNDLED`].
+#[derive(Clone)]
+pub struct Bundled {
+    pub repositories: Vec<String>,
+    pub fetch: Fetch,
+}
+
+/// The source of the shipped registry's mods: where their index is kept,
+/// and what a player's approval of their plugins is recorded against.
+pub const BUNDLED: &str = "bundled";
+
+/// Reads the shipped registry's mods again and keeps their index. When no
+/// mod could be read, as offline, the last index stays.
+pub fn refresh_bundled(data_dir: &Path, setup: &NativeSetup) -> Result<(), String> {
+    let Some(bundled) = setup
+        .bundled
+        .as_ref()
+        .filter(|bundled| !bundled.repositories.is_empty())
+    else {
+        return Ok(());
+    };
+    let previous = server_index(data_dir, BUNDLED).map_or(0, |index| index.serial);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let serial = registry::next_serial(previous, now);
+    let built = registry::build(&bundled.repositories.join("\n"), serial, |url, limit| {
+        (bundled.fetch)(url, limit)
+    });
+    for problem in &built.problems {
+        warn!(%problem, "a bundled native mod is left out");
+    }
+    if built.index.packages.is_empty() && !built.problems.is_empty() {
+        return Err("cannot read the bundled native mods; the last index stays".into());
+    }
+    info!(
+        serial,
+        mods = built.index.packages.len(),
+        "read the bundled native mods"
+    );
+    accept_server_index(data_dir, BUNDLED, serial, &built.json, false)
 }
 
 /// What the game the launcher starts gets of the native mods.
@@ -422,6 +477,9 @@ fn indexes(
     if let Some(index) = server.and_then(|server| server_index(data_dir, server)) {
         found.push(index);
     }
+    if let Some(index) = server_index(data_dir, BUNDLED) {
+        found.push(index);
+    }
     if let Some(setup) = setup.filter(|setup| !setup.keys.is_empty()) {
         match store.cached_index(&setup.keys) {
             Ok(index) => found.push(index),
@@ -443,7 +501,8 @@ pub fn view(
 ) -> NativeView {
     let server_has = server.and_then(|server| server_index(data_dir, server));
     let keyed = setup.is_some_and(|setup| !setup.keys.is_empty());
-    if server_has.is_none() && !keyed {
+    let bundled = server_index(data_dir, BUNDLED).is_some();
+    if server_has.is_none() && !keyed && !bundled {
         return NativeView::default();
     }
     let mut view = NativeView {
@@ -622,11 +681,15 @@ pub fn apply(
     let proposed = matches!(&change, Change::InstallProposed(_));
     match change {
         // The server's index is fetched over its connection, by the caller.
-        Change::Refresh if setup.keys.is_empty() => Ok(()),
-        Change::Refresh => store
-            .refresh(setup.source.as_ref(), &setup.keys)
-            .map(drop)
-            .map_err(error),
+        Change::Refresh => {
+            let bundled = refresh_bundled(data_dir, setup);
+            if !setup.keys.is_empty() {
+                store
+                    .refresh(setup.source.as_ref(), &setup.keys)
+                    .map_err(error)?;
+            }
+            bundled
+        }
         Change::Install(id) | Change::InstallProposed(id) => {
             let build =
                 build.ok_or("start the game once, or name it, so the launcher knows its build")?;
@@ -671,7 +734,8 @@ pub fn apply(
 }
 
 /// The index with every one of `wanted` in it and the source identity that
-/// authorized it: the authenticated server's, else the signed project index.
+/// authorized it: the authenticated server's, else the shipped registry's, else
+/// the signed project index.
 fn index_listing_with_source(
     store: &mut Store,
     data_dir: &Path,
@@ -691,6 +755,9 @@ fn index_listing_with_source(
         .filter(|(_, index)| lists(index))
     {
         return Ok((index, server_source_id(origin)?));
+    }
+    if let Some(index) = server_index(data_dir, BUNDLED).filter(|index| lists(index)) {
+        return Ok((index, BUNDLED.to_owned()));
     }
     if setup.keys.is_empty() {
         return Err("no index of native mods lists the room's".into());
@@ -1592,6 +1659,7 @@ mod tests {
                 files,
             }),
             keys: vec![pair.public_key().as_ref().to_vec()],
+            bundled: None,
         }
     }
 
@@ -1664,6 +1732,61 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// The registry shipped with the launcher offers its mods without a
+    /// server or the project's key: they show in the panel, install from
+    /// it, and stay when it cannot be read again.
+    #[test]
+    fn the_shipped_registry_offers_mods_without_a_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("game.exe");
+        fs::write(&exe, b"the game").unwrap();
+        let build = build_of(&exe).unwrap();
+        let (package, file) = native_package("shipped", "1.0.0", &build);
+        let mod_file = serde_json::to_vec(&registry::ModFile {
+            format: 1,
+            packages: vec![package.clone()],
+        })
+        .unwrap();
+        let online = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let fetch_online = Arc::clone(&online);
+        let mut setup = setup(vec![(package, file)]);
+        setup.keys.clear();
+        setup.bundled = Some(Bundled {
+            repositories: vec!["https://github.com/example/shipped".into()],
+            fetch: Arc::new(move |url, _| {
+                if !fetch_online.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err("offline".into());
+                }
+                assert_eq!(
+                    url,
+                    "https://raw.githubusercontent.com/example/shipped/HEAD/tpf3mp-native.json"
+                );
+                Ok(mod_file.clone())
+            }),
+        });
+
+        assert!(!view(dir.path(), Some(&setup), Some(&build), None, false).available);
+        apply(dir.path(), &setup, Some(&build), None, Change::Refresh).unwrap();
+        let shown = view(dir.path(), Some(&setup), Some(&build), None, false);
+        assert!(shown.available);
+        assert!(shown.packages.iter().any(|row| row.id == "shipped"));
+
+        apply(
+            dir.path(),
+            &setup,
+            Some(&build),
+            None,
+            Change::Install("shipped".into()),
+        )
+        .unwrap();
+        let store = Store::open(dir.path().join(FOLDER)).unwrap();
+        assert_eq!(store.source_for("shipped", "1.0.0"), Some(BUNDLED));
+
+        online.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(refresh_bundled(dir.path(), &setup).is_err());
+        assert!(server_index(dir.path(), BUNDLED).is_some());
     }
 
     /// A member joining a room gets the room's version from the signed

@@ -705,6 +705,21 @@ async fn control(
         .ok();
     // The native mods panel, and what the first game would run.
     refresh_native(&shared, &config, false).await;
+    // The shipped registry's mods, read in the background: the panel shows
+    // them once read, and the last index read meanwhile.
+    if let (Some(setup), Ok(data)) = (config.native.clone(), setup::data_dir()) {
+        let (shared, config) = (Arc::clone(&shared), config.clone());
+        tokio::spawn(async move {
+            let read = tokio::task::spawn_blocking(move || {
+                crate::native_mods::refresh_bundled(&data, &setup)
+            })
+            .await;
+            if let Ok(Err(error)) = read {
+                warn!(%error, "cannot read the bundled native mods");
+            }
+            refresh_native(&shared, &config, true).await;
+        });
+    }
     // The room's native mods last matched in its lobby, so a list that
     // cannot be matched is tried once; and the room to join again once the
     // game has started anew with them.
