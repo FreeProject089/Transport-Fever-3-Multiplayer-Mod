@@ -18,9 +18,9 @@ use mlua::{Lua, Table, Value};
 use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
-        Action, AssetRef, AssetRemoval, Bulldoze, EdgeEnds, EdgeKind, EdgeRef, Fraction, Link,
-        Network, NodeRef, Polyline, Pos, Resolve, RoadBuild, Structure, Tangent, TrackBuild, Tram,
-        Vertex,
+        Action, AssetRef, AssetRemoval, Bulldoze, EdgeEnds, EdgeKind, EdgeRef, Fraction,
+        KeptSignal, Link, Network, NodeRef, Polyline, Pos, Resolve, RoadBuild, Structure, Tangent,
+        TrackBuild, Tram, Vertex,
     },
     lua::{LuaValue, action_from_lua},
 };
@@ -462,6 +462,15 @@ fn capture_with(street: &str, call: &str) -> Result<LuaValue, String> {
                          if kind == 3 and id == 557 then
                              return {{ param = 0.25, edgeObjectConstruction = '::/infrastructure/signal/waypoint.con' }}
                          end
+                         -- Stops, where 30-31 is a street: 560 three quarters of
+                         -- the way north, 561 and 562 a two-sided stop there.
+                         if kind == 3 and id == 560 then
+                             return {{ param = 0.75, edgeObjectConstruction = '::/stations/street/small_stops/small_new.con' }}
+                         end
+                         if kind == 3 and (id == 561 or id == 562) then
+                             return {{ param = 0.75,
+                                 edgeObjectConstruction = '::/stations/street/small_stops/small_new_twosided.con' }}
+                         end
                      end,
                      system = {{ streetSystem = {{
                          getNodeStreetSegments = function(n) return STREETS[n] or {{}} end,
@@ -627,7 +636,8 @@ const MODIFY_PROPOSAL: &str = "{
           type = 0, typeIndex = -1, roadTemplate = 'street/country_tram.street_template', roadStyle = '',
           objects = OBJECTS_B, edgeDecorations = { { 3, false } }, roadDevelopmentLocked = true } },
     },
-    removedSegments = { { entity = 100, type = 0, comp = { node0 = 8, node1 = 9, objects = { { 555, 0 } } } },
+    removedSegments = { { entity = 100, type = 0, comp = { node0 = 8, node1 = 9, tangent0 = v(0, 41, 0),
+                          tangent1 = v(0, 41, 0), objects = { { 555, 0 } } } },
                         { entity = 101, type = 0, comp = { node0 = 9, node1 = 10, objects = {} } } },
     removedNodes = { { entity = 9, comp = { position = v(50, 1, 0) } } },
 }";
@@ -664,9 +674,9 @@ fn a_road_modifier_travels_as_the_road_it_rebuilds() {
 
 #[test]
 fn a_stop_moves_with_a_road_only_on_the_edge_rebuilt_in_place() {
-    // Onto the other edge: refused.
+    // Onto the other edge, which does not go on from its own: refused.
     let why = capture_modify(&modify_proposal("{}", "{ { 555, 0 } }")).unwrap_err();
-    assert!(why.contains("a build that moves a stop or signal"), "{why}");
+    assert!(why.contains("does not go on from its track"), "{why}");
     // Dropped from the rebuilt edge: refused.
     let why = capture_modify(&modify_proposal("{}", "{}")).unwrap_err();
     assert!(
@@ -887,14 +897,14 @@ fn an_upgrade_is_said_in_one_line_and_another_build_is_not_an_upgrade() {
             TRACK_MODIFY_PROPOSAL,
             "roads.upgradeSummary(engine.captureModify({ toAdd = {}, toRemove = {}, proposal = street }))"
         ),
-        "track upgrade of 1 edge(s) rebuilt in place; template track/high_speed.track_template; 1 lane(s) carrying TRAIN ELECTRIC_TRAIN; lane speeds 83.333 to 83.333; decorations none; locked 0, owned 0"
+        "track upgrade of 1 edge(s) rebuilt in place; template track/high_speed.track_template; 1 lane(s) carrying TRAIN ELECTRIC_TRAIN; lane speeds 83.333 to 83.333; decorations none; locked 0, owned 0; junction settings 0"
     );
     assert_eq!(
         summary(
             &modify_proposal("{ { 555, 0 } }", "{}"),
             "roads.upgradeSummary(engine.captureModify({ toAdd = {}, toRemove = {}, proposal = street }))"
         ),
-        "street upgrade of 2 edge(s) rebuilt in place; template street/country_tram.street_template; 2 edge(s) with their template's lanes; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 1, owned 1"
+        "street upgrade of 2 edge(s) rebuilt in place; template street/country_tram.street_template; 2 edge(s) with their template's lanes; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 1, owned 1; junction settings 0"
     );
     // A new street onto another's middle is no upgrade.
     let other = capture_with(
@@ -989,6 +999,276 @@ fn a_bridge_window_rebuild_travels_as_the_track_it_rebuilds() {
         why.contains("removes an edge with a stop or signal"),
         "{why}"
     );
+}
+
+/// A track bridge of 127 pieces, nodes 1000-1127 along x = 1000..2270 with
+/// the edges 2000-2126 between them, each inner node turning its one lane
+/// from the piece before onto the next; its type changed in its window. As
+/// the game makes the proposal (build 40420), every node at a rebuilt piece
+/// gets its settings again naming the new pieces, and every old one goes.
+/// `CHANGE` is a Lua statement run on the proposal's configurations, keyed
+/// by node.
+fn long_bridge(change: &str) -> String {
+    format!(
+        "(function()
+            local N = 127
+            local ct, enum = api.type.ComponentType, api.type.enum
+            ct.BASE_EDGE, ct.BASE_NODE_CONFIG = 5, 6
+            enum.TrafficLightPreference = {{ AUTO = 0, YES = 1, NO = 2 }}
+            local function at(i) return v(1000 + 10 * i, 0, 20) end
+            local function config(i, edge)
+                local turns = {{}}
+                if i > 0 and i < N then
+                    turns[1] = {{ segment0 = edge(i - 1), lane0 = 0, segment1 = edge(i), lane1 = 0,
+                                  withRoad = false, withTram = false }}
+                end
+                return {{ laneConnections = turns, crosswalks = {{}}, trafficLightPreference = 0,
+                          trafficLightConfig = {{ trafficLightType = -1, states = {{}} }},
+                          doubleSlipSwitch = false, userModifiedTrafficLightStates = false }}
+            end
+            local old = function(i) return 2000 + i end
+            local new = function(i) return -1 - i end
+            local getComponent = api.engine.getComponent
+            api.engine.getComponent = function(id, kind)
+                local i = id - 1000
+                if kind == 1 and i >= 0 and i <= N then return {{ position = at(i) }} end
+                if kind == 6 and i >= 0 and i <= N then return config(i, old) end
+                if kind == 5 and id >= 2000 and id < 2000 + N then
+                    return {{ node0 = id - 1000, node1 = id - 999 }}
+                end
+                return getComponent(id, kind)
+            end
+            local tracks = api.engine.system.streetSystem.getNodeTrackSegments
+            api.engine.system.streetSystem.getNodeTrackSegments = function(n)
+                local i = n - 1000
+                if i < 0 or i > N then return tracks(n) end
+                local out = {{}}
+                if i > 0 then out[#out + 1] = old(i - 1) end
+                if i < N then out[#out + 1] = old(i) end
+                return out
+            end
+            local added, removed, configs, removes = {{}}, {{}}, {{}}, {{}}
+            for i = 0, N - 1 do
+                added[#added + 1] = {{ entity = new(i), type = 1, comp = {{ node0 = 1000 + i, node1 = 1001 + i,
+                    tangent0 = v(10, 0, 0), tangent1 = v(10, 0, 0), type = 1, typeIndex = 3,
+                    roadTemplate = 'track/standard.track_template', roadStyle = '', objects = {{}} }} }}
+                removed[#removed + 1] = {{ entity = old(i), type = 1, comp = {{ node0 = 1000 + i, node1 = 1001 + i,
+                    objects = {{}} }} }}
+            end
+            local byNode = {{}}
+            for i = 0, N do
+                byNode[1000 + i] = config(i, new)
+                configs[#configs + 1] = {{ entity = 1000 + i, comp = byNode[1000 + i] }}
+                removes[#removes + 1] = 1000 + i
+            end
+            {change}
+            return {{ addedNodes = {{}}, addedSegments = added, removedSegments = removed, removedNodes = {{}},
+                      nodeConfigsToAdd = configs, nodeConfigsToRemove = removes }}
+        end)()"
+    )
+}
+
+/// A long track bridge's type changed in its window was refused before it
+/// was sent (2026-10-19, build 40420: "BuildTrack.polyline.junctions:
+/// invalid length 128, expected a list of at most 64 items"): the window's
+/// proposal names every node's settings again, with the rebuilt pieces in
+/// place of the old. Settings the rebuild does not change stay out of the
+/// action, since every game keeps those at the nodes of the edges it
+/// rebuilds; one that does change is carried.
+#[test]
+fn a_long_bridge_window_rebuild_carries_only_the_junction_settings_it_changes() {
+    let action = decode(window_build(&long_bridge(""), true).unwrap());
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    assert_eq!(track.polyline.links.len(), 127);
+    assert_eq!(track.polyline.removals.len(), 127);
+    assert!(
+        track.polyline.junctions.is_empty(),
+        "{:?}",
+        track.polyline.junctions
+    );
+    // And it fits one action's payload.
+    assert_eq!(
+        Action::from_payload(&action.to_payload().unwrap()).unwrap(),
+        action
+    );
+    let summary = capture_with(
+        &long_bridge(""),
+        "roads.upgradeSummary(require('tpf3mp.capture').windowBuild(nil, \
+         { toAdd = {}, toRemove = {}, proposal = street }))",
+    )
+    .unwrap();
+    assert!(
+        matches!(&summary, LuaValue::String(s) if s.ends_with(b"; junction settings 0")),
+        "{summary:?}"
+    );
+
+    // The double slip switch at node 1050 turned on with it, and the turn
+    // at 1070 onto another lane: those two go, at their nodes.
+    let action = decode(
+        window_build(
+            &long_bridge(
+                "byNode[1050].doubleSlipSwitch = true \
+                 byNode[1070].laneConnections[1].lane1 = 1",
+            ),
+            true,
+        )
+        .unwrap(),
+    );
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    let at: Vec<i32> = track
+        .polyline
+        .junctions
+        .iter()
+        .map(|change| change.node.at.x)
+        .collect();
+    assert_eq!(at, [1_500_000, 1_700_000]);
+    assert!(
+        track.polyline.junctions[0]
+            .config
+            .as_ref()
+            .unwrap()
+            .double_slip
+    );
+
+    // A node whose settings go, and one that had none and gets the game's:
+    // both changes, both carried.
+    let action = decode(
+        window_build(
+            &long_bridge(
+                "configs[11] = configs[#configs] configs[#configs] = nil \
+                 local getComponent = api.engine.getComponent \
+                 api.engine.getComponent = function(id, kind) \
+                     if kind == 6 and id == 1020 then return nil end \
+                     return getComponent(id, kind) end",
+            ),
+            true,
+        )
+        .unwrap(),
+    );
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    let changes: Vec<(i32, bool)> = track
+        .polyline
+        .junctions
+        .iter()
+        .map(|change| (change.node.at.x, change.config.is_some()))
+        .collect();
+    assert_eq!(changes, [(1_100_000, false), (1_200_000, true)]);
+
+    // A bridge the room built has no settings at its nodes (the room's
+    // track builds give none), and the window gives each the game's empty
+    // one (seen on build 40420, 2026-10-19: no turns, no light, preference
+    // Auto): nothing to carry. One node given a preference too goes.
+    let empty = "for _, c in pairs(byNode) do c.laneConnections = {} end \
+                 local getComponent = api.engine.getComponent \
+                 api.engine.getComponent = function(id, kind) \
+                     if kind == 6 and id >= 1000 and id <= 1127 then return nil end \
+                     return getComponent(id, kind) end";
+    let action = decode(window_build(&long_bridge(empty), true).unwrap());
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    assert!(
+        track.polyline.junctions.is_empty(),
+        "{:?}",
+        track.polyline.junctions
+    );
+    let action = decode(
+        window_build(
+            &long_bridge(&format!("{empty} byNode[1030].trafficLightPreference = 2")),
+            true,
+        )
+        .unwrap(),
+    );
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    let at: Vec<i32> = track
+        .polyline
+        .junctions
+        .iter()
+        .map(|change| change.node.at.x)
+        .collect();
+    assert_eq!(at, [1_300_000], "the node set to No");
+}
+
+/// A long road bridge's type changed in its window still carried the
+/// settings of 28 of its 94 nodes (2026-10-19, build 40420): each listed
+/// its two crosswalks the other way round, every other setting the same.
+/// The game keeps crosswalks in a hash set of edge ids, so the new edges
+/// list them in another order. They compare as a set, unless the node has
+/// light phases, which name a crosswalk by its place in that order.
+#[test]
+fn a_bridge_window_rebuild_compares_crosswalks_as_a_set() {
+    // Every inner node has a crosswalk over each of its two pieces, the
+    // proposal's listed the other way round.
+    let walks = |more: &str| {
+        long_bridge(&format!(
+            "local function walks(c, i, edge) \
+                 if i > 0 and i < N then c.crosswalks = {{ edge(i - 1), edge(i) }} end \
+                 return c end \
+             local function phase(c, at) \
+                 c.trafficLightConfig.states = {{ {{ lockedLanes = {{ at }}, duration = 20, \
+                     minDuration = 5, canSkip = false }} }} \
+                 return c end \
+             for i = 1, N - 1 do \
+                 local c = walks(byNode[1000 + i], i, new) \
+                 c.crosswalks = {{ c.crosswalks[2], c.crosswalks[1] }} \
+             end \
+             local getComponent = api.engine.getComponent \
+             local function oldConfig(i) return walks(config(i, old), i, old) end \
+             {more} \
+             api.engine.getComponent = function(id, kind) \
+                 local i = id - 1000 \
+                 if kind == 6 and i >= 0 and i <= N then return oldConfig(i) end \
+                 return getComponent(id, kind) end"
+        ))
+    };
+    let junctions_at = |street: &str| -> Vec<i32> {
+        let action = decode(window_build(street, true).unwrap());
+        let Action::BuildTrack(track) = &action else {
+            panic!("{action:?}")
+        };
+        track
+            .polyline
+            .junctions
+            .iter()
+            .map(|change| change.node.at.x)
+            .collect()
+    };
+    assert_eq!(junctions_at(&walks("")), [0; 0]);
+
+    // A node with a phase locking its first crosswalk (lane 1, after its
+    // one turn), before and after: the phase now locks the other one, so
+    // it goes. One whose crosswalk goes, goes too.
+    let at = junctions_at(&walks(
+        "phase(byNode[1040], 1) \
+         byNode[1060].crosswalks = { byNode[1060].crosswalks[1] } \
+         local plain = oldConfig \
+         oldConfig = function(i) \
+             local c = plain(i) \
+             if i == 40 then phase(c, 1) end \
+             return c end",
+    ));
+    assert_eq!(at, [1_400_000, 1_600_000]);
+
+    // The same phase locking the same crosswalk in both: nothing changes.
+    let at = junctions_at(&walks(
+        "local c = byNode[1040] \
+         c.crosswalks = { c.crosswalks[2], c.crosswalks[1] } \
+         phase(c, 1) \
+         local plain = oldConfig \
+         oldConfig = function(i) \
+             local c = plain(i) \
+             if i == 40 then phase(c, 1) end \
+             return c end",
+    ));
+    assert_eq!(at, [0; 0]);
 }
 
 /// The track tool's proposal for a track started from the middle of the
@@ -1484,6 +1764,261 @@ fn a_signal_the_tool_puts_back_across_a_removed_node_is_kept() {
             BEYOND_NORTH,
         ),
         "replaces a signal elsewhere",
+    );
+}
+
+/// As [`track_split_west`], with 30-31 a street and the pieces streets.
+fn street_split_west(old: &str, south: &str, north: &str, west: &str) -> String {
+    track_split_west(old, south, north, west)
+        .replace(", type = 1, comp", ", type = 0, comp")
+        .replace(
+            "track/standard.track_template",
+            "street/country.street_template",
+        )
+}
+
+/// As [`track_refit`], on the street.
+fn street_refit(old: &str, north: &str, adds: &str, removes: &str) -> String {
+    street_split_west(old, "{}", north, "{}").replace(
+        "removedNodes = {},",
+        &format!(
+            "removedNodes = {{}}, edgeObjectsToAdd = {adds}, edgeObjectsToRemove = {removes},"
+        ),
+    )
+}
+
+/// The street tool's capture, `gates` setting acceptance.lua first.
+fn capture_street_with(street: &str, gates: &str) -> Result<LuaValue, String> {
+    capture_with(
+        street,
+        &format!(
+            "(function() local a = require('tpf3mp.acceptance') {gates} \
+             return engine.captureBuild({{ toAdd = {{}}, toRemove = {{}}, proposal = street }}, 'Street') end)()"
+        ),
+    )
+}
+
+fn capture_stops(street: &str) -> Result<LuaValue, String> {
+    capture_street_with(street, "a.keptStops = true")
+}
+
+/// The street tool's record of a new stop, as build 40420 lists it
+/// (2026-10-19: the old stop's name, its side, no model).
+const NEW_STOP: &str = "{ resultEntity = -400000000, category = 0, left = true, oneWay = false, playerEntity = 3892, name = 'Minami-dori' }";
+
+const SMALL_STOP: &str = "::/stations/street/small_stops/small_new.con";
+const TWO_SIDED: &str = "::/stations/street/small_stops/small_new_twosided.con";
+
+fn kept_of(action: &Action) -> Vec<(usize, KeptSignal)> {
+    let Action::BuildRoad(road) = action else {
+        panic!("{action:?}")
+    };
+    road.polyline
+        .links
+        .iter()
+        .enumerate()
+        .flat_map(|(i, link)| link.kept.iter().map(move |k| (i, k.clone())))
+        .collect()
+}
+
+/// A street started beside a junction near a stop (build 40420,
+/// 2026-10-19, refused in a room before as "a build with a stop or
+/// signal"): the stop goes with the piece of its street the tool put it
+/// on, under its own entity, as a track's signal does; both stops of a
+/// two-sided stop together.
+#[test]
+fn a_street_cut_beside_its_stop_keeps_it_on_its_piece() {
+    let action = decode(
+        capture_stops(&street_split_west(
+            "{ { 560, 0 } }",
+            "{}",
+            "{ { 560, 0 } }",
+            "{}",
+        ))
+        .unwrap(),
+    );
+    let kept = kept_of(&action);
+    assert_eq!(kept.len(), 1, "{action:?}");
+    assert_eq!(kept[0].0, 1);
+    assert_eq!(kept[0].1.removal, 0);
+    assert_eq!(kept[0].1.at, Fraction(750_000));
+    assert_eq!(kept[0].1.model.as_str(), SMALL_STOP);
+
+    let pair = decode(
+        capture_stops(&street_split_west(
+            "{ { 561, 0 }, { 562, 1 } }",
+            "{}",
+            "{ { 561, 0 }, { 562, 1 } }",
+            "{}",
+        ))
+        .unwrap(),
+    );
+    let kept = kept_of(&pair);
+    assert_eq!(kept.len(), 2, "{pair:?}");
+    assert!(kept.iter().all(|(link, k)| *link == 1
+        && k.removal == 0
+        && k.at == Fraction(750_000)
+        && k.model.as_str() == TWO_SIDED));
+
+    // Off until its two-player game: refused when captured, and on sending
+    // and applying alike.
+    let gate = capture_street_with(
+        &street_split_west("{ { 560, 0 } }", "{}", "{ { 560, 0 } }", "{}"),
+        "a.keptStops = false",
+    )
+    .unwrap_err();
+    assert!(
+        gate.contains("keeps on a new piece awaits two-player game acceptance"),
+        "{gate}"
+    );
+    let check = capture_with(
+        &street_split_west("{ { 560, 0 } }", "{}", "{ { 560, 0 } }", "{}"),
+        "(function() local acceptance = require('tpf3mp.acceptance') acceptance.keptStops = true \
+         local a = engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Street') \
+         acceptance.keptStops = false local ok, why = acceptance.check(a) \
+         return ok == false and why or 'let through' end)()",
+    );
+    assert_eq!(
+        check,
+        Ok(LuaValue::String(
+            b"keptStops awaits two-player game acceptance".to_vec()
+        ))
+    );
+    // A track's kept signal does not ask it.
+    let signal = capture_with(
+        &track_split("{ { 556, 2 } }", "{}", "{ { 556, 2 } }"),
+        "(function() local acceptance = require('tpf3mp.acceptance') acceptance.keptStops = false \
+         local a = engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Track') \
+         local ok, why = acceptance.check(a) return ok == false and why or 'let through' end)()",
+    );
+    assert_eq!(signal, Ok(LuaValue::String(b"let through".to_vec())));
+}
+
+#[test]
+fn a_street_cut_that_moves_a_stop_elsewhere_is_refused() {
+    let refused = |street: String, why: &str| {
+        let got = capture_stops(&street).unwrap_err();
+        assert!(got.contains(why), "{why}: {got}");
+    };
+    // Onto the new street west of the cut, which does not go on from it.
+    refused(
+        street_split_west("{ { 560, 0 } }", "{}", "{}", "{ { 560, 0 } }"),
+        "does not go on from its track",
+    );
+    // Onto the other side of its street.
+    refused(
+        street_split_west("{ { 560, 0 } }", "{}", "{ { 560, 1 } }", "{}"),
+        "moves a stop or signal",
+    );
+    // A signal on a street, or a stop onto a track from a street.
+    refused(
+        street_split_west("{ { 556, 2 } }", "{}", "{ { 556, 2 } }", "{}"),
+        "moves a stop or signal",
+    );
+    // Dropped, or one of a two-sided stop's two.
+    refused(
+        street_split_west("{ { 560, 0 } }", "{}", "{}", "{}"),
+        "removes an edge with a stop or signal",
+    );
+    refused(
+        street_split_west("{ { 561, 0 }, { 562, 1 } }", "{}", "{ { 561, 0 } }", "{}"),
+        "removes an edge with a stop or signal",
+    );
+}
+
+/// A street started beside a junction near a stop, the tool replacing the
+/// stop on the edge whose node it removes with a new record on the piece
+/// that runs where it stood (build 40420, 2026-10-19): kept as the old
+/// stop under its own entity, its lines, group and name its own, as a
+/// track's signal the tool puts back.
+#[test]
+fn a_stop_the_street_tool_puts_back_is_kept_on_its_piece() {
+    let refit = street_refit(
+        "{ { 560, 0 } }",
+        "{ { -400000000, 0 } }",
+        &format!("{{ {NEW_STOP} }}"),
+        "{ 560 }",
+    );
+    let decoded = decode(capture_stops(&refit).unwrap());
+    let kept = decode(
+        capture_stops(&street_split_west(
+            "{ { 560, 0 } }",
+            "{}",
+            "{ { 560, 0 } }",
+            "{}",
+        ))
+        .unwrap(),
+    );
+    assert_eq!(decoded, kept, "the same as the stop kept by its entity");
+
+    // Both stops of a two-sided stop, each by its side.
+    let records = format!(
+        "{{ {NEW_STOP}, {} }}",
+        NEW_STOP
+            .replace("-400000000", "-400000001")
+            .replace("left = true", "left = false")
+    );
+    let pair = street_refit(
+        "{ { 561, 0 }, { 562, 1 } }",
+        "{ { -400000001, 1 }, { -400000000, 0 } }",
+        &records,
+        "{ 562, 561 }",
+    );
+    let decoded = decode(capture_stops(&pair).unwrap());
+    let kept = kept_of(&decoded);
+    assert_eq!(kept.len(), 2, "{decoded:?}");
+    assert!(
+        kept.iter()
+            .all(|(link, k)| *link == 1 && k.model.as_str() == TWO_SIDED)
+    );
+
+    let refused = |street: String, why: &str| {
+        let got = capture_stops(&street).unwrap_err();
+        assert!(got.contains(why), "{why}: {got}");
+    };
+    // The new stop on the other side, or its record saying another side.
+    refused(
+        street_refit(
+            "{ { 560, 0 } }",
+            "{ { -400000000, 1 } }",
+            &format!("{{ {NEW_STOP} }}"),
+            "{ 560 }",
+        ),
+        "a build with a stop or signal",
+    );
+    refused(
+        street_refit(
+            "{ { 560, 0 } }",
+            "{ { -400000000, 1 } }",
+            &format!("{{ {} }}", NEW_STOP.replace("left = true", "left = false")),
+            "{ 560 }",
+        ),
+        "replaces a signal elsewhere",
+    );
+    // A record with no side, or a signal's record for a stop.
+    refused(
+        street_refit(
+            "{ { 560, 0 } }",
+            "{ { -400000000, 0 } }",
+            &format!("{{ {} }}", NEW_STOP.replace("left = true, ", "")),
+            "{ 560 }",
+        ),
+        "a build with a stop or signal",
+    );
+    refused(
+        street_refit(
+            "{ { 560, 0 } }",
+            "{ { -400000000, 0 } }",
+            &format!("{{ {} }}", NEW_STOP.replace("category = 0", "category = 2")),
+            "{ 560 }",
+        ),
+        "a build with a stop or signal",
+    );
+    // Off: refused when captured.
+    let gate = capture_street_with(&refit, "a.keptStops = false").unwrap_err();
+    assert!(
+        gate.contains("keeps on a new piece awaits two-player game acceptance"),
+        "{gate}"
     );
 }
 

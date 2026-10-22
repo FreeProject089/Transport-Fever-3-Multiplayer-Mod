@@ -492,7 +492,12 @@ local function buildProposal(proposal, context)
 	-- What is not critical the tool builds through once the player clicks,
 	-- town buildings in the way included: ignoreErrors, as the player's own
 	-- build (with it false the game drops such a build unseen).
-	return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	-- Made apart from its sending: the game converts and prepares the
+	-- proposal again here (15-95 ms for a long track, 2026-10-19).
+	local t0 = costs and clock()
+	local command = api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true)
+	spend("command made", t0)
+	return run(command)
 end
 
 local HANDLERS = {}
@@ -929,18 +934,16 @@ local function find(rep, name)
 	return id
 end
 
--- The nodes of a network: each node with an edge of it, and its position.
--- Held while it is read (on TPF2 a pairs() straight off the call let the
--- GC free the map mid-loop).
-local function readNodes(network)
+-- The nodes of a network: each node its map lists (every node of the
+-- street system), and its position, through `index` (junctions.nodeIndex:
+-- one proposal's, which its junctions read again; a fresh one otherwise).
+local function readNodes(network, index)
 	local t0 = costs and clock()
-	local streets = api.engine.system.streetSystem
-	local map
-	if network == "Track" then map = streets.getNode2TrackEdgeMap() else map = streets.getNode2StreetEdgeMap() end
+	index = index or junctions.nodeIndex()
 	local nodes = {}
-	for node in pairs(map) do
-		local c = api.engine.getComponent(node, api.type.ComponentType.BASE_NODE)
-		if c and c.position then nodes[#nodes + 1] = { id = node, pos = arr(c.position) } end
+	for node in pairs(index.map(network == "Track" and "Track" or "Street")) do
+		local p = index.position(node)
+		if p then nodes[#nodes + 1] = { id = node, pos = { p.x, p.y, p.z } } end
 	end
 	spend("nodes " .. tostring(network), t0, #nodes)
 	return nodes
@@ -1029,14 +1032,14 @@ end
 -- takes the nodes the octree finds near `p` (nodesNear) and reads them all
 -- only where it finds none near enough (`whole`): a whole read cost
 -- 130-150 ms of each preview of another player's road in the GUI.
-local function nodesOfNetwork(network)
+local function nodesOfNetwork(network, index)
 	local all
 	return function(p, tol, whole)
 		if dry and not whole then
 			local near = nodesNear(network, p, tol)
 			if near ~= nil then return near end
 		end
-		if all == nil then all = readNodes(network) end
+		if all == nil then all = readNodes(network, index) end
 		return all
 	end
 end
@@ -1425,6 +1428,16 @@ end
 -- reads it), the acting company's or no company's, on a link of track that
 -- goes on from one of its old track's ends, the same way, or runs where it
 -- stood, the same way (geom.keepsSignal, as the capture asks).
+-- A stop on a street the same, on a link of street (acceptance.lua's
+-- keptStops): a stop of either side, found by its construction and place.
+-- Both stops of a two-sided stop share both, and two stops facing each
+-- other nearly do, so the entries of one link that name the same removal
+-- and construction within twice the tolerance are found together: as
+-- many stops near them as entries, each a different side, all onto that
+-- link, each on its side as the room's removal runs (from its `a` end),
+-- which the link runs too: where this game's edge runs the other way, a
+-- stop's side on it is the other one, so every game puts it on the same
+-- side of the link.
 -- Anything missing or ambiguous refuses the whole build, in every game
 -- alike. Returns { link, entity, kind, pos } for each.
 local function keptSignals(polyline, removalEdges, network, at, dangling)
@@ -1436,58 +1449,117 @@ local function keptSignals(polyline, removalEdges, network, at, dangling)
 	if not any then return out end
 	if dangling then error("a construction's streets keep no signals", 0) end
 	local C = api.type.ComponentType
-	local SIGNAL = enum("EdgeObjectType").SIGNAL
+	local types = enum("EdgeObjectType")
+	local SIGNAL = types.SIGNAL
 	local lengths = {}
 	for j, link in ipairs(polyline.links) do
+		local done = {}
 		for n, kept in ipairs(link.kept or {}) do
-			local what = "link " .. j .. "'s signal " .. n
-			local r = polyline.removals[kept.removal + 1]
-			local e = removalEdges[kept.removal + 1]
-			if r == nil or e == nil then error(what .. ": no such removal", 0) end
-			local own = link.kind and link.kind.network or network
-			if r.network ~= "Track" or own ~= "Track" then error(what .. ": not on track", 0) end
-			-- The place is from the removal's `a` end; this game's edge may
-			-- run from its `b`.
-			local ea = arr(r.ends.a)
-			local dx, dy = e.a[1] - ea[1], e.a[2] - ea[2]
-			local flipped = dx * dx + dy * dy > END_TOLERANCE * END_TOLERANCE
-			local want = kept.at
-			if flipped then want = 1 - want end
-			lengths[e.id] = lengths[e.id] or edgeLength(e)
-			local best, bestComp
-			for _, o in ipairs(e.comp.objects or {}) do
-				local c = o[2] == SIGNAL and not seen[o[1]] and api.engine.getComponent(o[1], C.EDGE_OBJECT)
-				if c and c.edgeObjectConstruction == kept.model
-					and math.abs(c.param - want) * lengths[e.id] <= KEPT_TOLERANCE then
-					if best ~= nil then error(what .. ": two signals where one is kept", 0) end
-					best, bestComp = o[1], c
+			if not done[n] then
+				local what = "link " .. j .. "'s signal " .. n
+				local r = polyline.removals[kept.removal + 1]
+				local e = removalEdges[kept.removal + 1]
+				if r == nil or e == nil then error(what .. ": no such removal", 0) end
+				local own = link.kind and link.kind.network or network
+				local stop = r.network == "Street"
+				if stop then
+					what = "link " .. j .. "'s stop " .. n
+					if own ~= "Street" then error(what .. ": not on a street", 0) end
+					if acceptance.keptStops ~= true then error(what .. ": keptStops awaits two-player game acceptance", 0) end
+				elseif r.network ~= "Track" or own ~= "Track" then
+					error(what .. ": not on track", 0)
 				end
-			end
-			if best == nil then error(what .. ": no " .. tostring(kept.model) .. " where it is kept", 0) end
-			local list = api.engine.getComponent(best, C.SIGNAL_LIST)
-			local signals = list and list.signals or {}
-			if #signals == 0 then error(what .. ": a signal with no signal list", 0) end
-			for i = 1, #signals do
-				local kind = signals[i].type
-				if type(kind) ~= "number" or kind == api.type.Signal.Type.WAYPOINT then
-					error(what .. ": a waypoint, which lines name, kept on another edge", 0)
+				-- The place is from the removal's `a` end; this game's edge may
+				-- run from its `b`.
+				local ea = arr(r.ends.a)
+				local dx, dy = e.a[1] - ea[1], e.a[2] - ea[2]
+				local flipped = dx * dx + dy * dy > END_TOLERANCE * END_TOLERANCE
+				lengths[e.id] = lengths[e.id] or edgeLength(e)
+				-- The entries found together: this one, and for a stop the
+				-- link's later ones of the same removal and construction whose
+				-- places one stop could match both of (a stop each way facing
+				-- each other, a two-sided stop's two).
+				local group = { n }
+				if stop then
+					for m = n + 1, #link.kept do
+						local other = link.kept[m]
+						if other.removal == kept.removal and other.model == kept.model
+							and math.abs(other.at - kept.at) * lengths[e.id] <= 2 * KEPT_TOLERANCE then
+							group[#group + 1] = m
+						end
+					end
+					if #group > 2 then error(what .. ": more than two stops at one place", 0) end
 				end
+				local function near(param)
+					for _, m in ipairs(group) do
+						local want = link.kept[m].at
+						if flipped then want = 1 - want end
+						if math.abs(param - want) * lengths[e.id] <= KEPT_TOLERANCE then return true end
+					end
+					return false
+				end
+				local found = {}
+				for _, o in ipairs(e.comp.objects or {}) do
+					local ofKind
+					if stop then ofKind = o[2] == types.STOP_LEFT or o[2] == types.STOP_RIGHT else ofKind = o[2] == SIGNAL end
+					local c = ofKind and not seen[o[1]] and api.engine.getComponent(o[1], C.EDGE_OBJECT)
+					if c and c.edgeObjectConstruction == kept.model and near(c.param) then
+						if #found >= #group then
+							error(what .. (stop and ": more stops there than are kept" or ": two signals where one is kept"), 0)
+						end
+						found[#found + 1] = { entity = o[1], kind = o[2], comp = c }
+					end
+				end
+				if #found < #group then
+					error(what .. ": no " .. tostring(kept.model) .. " where it is kept", 0)
+				end
+				if #found == 2 and found[1].kind == found[2].kind then
+					error(what .. ": two stops on one side where a two-sided stop is kept", 0)
+				end
+				for _, f in ipairs(found) do
+					if not stop then
+						local list = api.engine.getComponent(f.entity, C.SIGNAL_LIST)
+						local signals = list and list.signals or {}
+						if #signals == 0 then error(what .. ": a signal with no signal list", 0) end
+						for i = 1, #signals do
+							local kind = signals[i].type
+							if type(kind) ~= "number" or kind == api.type.Signal.Type.WAYPOINT then
+								error(what .. ": a waypoint, which lines name, kept on another edge", 0)
+							end
+						end
+					end
+				end
+				mine(e.id, stop and "street" or "track")
+				for _, f in ipairs(found) do mine(f.entity, stop and "stop" or "signal") end
+				-- Checked along the removal as the room names it, from its `a`
+				-- end, so every game decides alike whichever way its own edge
+				-- runs.
+				local from = e
+				if flipped then from = { a = e.b, b = e.a, ta = scaled(e.tb, -1), tb = scaled(e.ta, -1) } end
+				local to = { a = at[link.from + 1], b = at[link.to + 1], ta = arr(link.tangent0), tb = arr(link.tangent1) }
+				for _, m in ipairs(group) do
+					local ok, why = geom.keepsSignal(from, link.kept[m].at, to)
+					if not ok then error(what .. ": " .. why, 0) end
+				end
+				for _, f in ipairs(found) do
+					seen[f.entity] = true
+					local pos
+					local t = f.comp.transf
+					if t and type(t[13]) == "number" then pos = { t[13], t[14], t[15] } end
+					local kind = f.kind
+					if stop and flipped then
+						kind = kind == types.STOP_LEFT and types.STOP_RIGHT or types.STOP_LEFT
+					end
+					-- A stop's station group, which holds its lines' stop: said
+					-- again after the build (settleKept).
+					local group
+					if stop then
+						pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(f.entity) end)
+					end
+					out[#out + 1] = { link = j, entity = f.entity, kind = kind, pos = pos, stop = stop, group = group }
+				end
+				for _, m in ipairs(group) do done[m] = true end
 			end
-			mine(e.id, "track")
-			mine(best, "signal")
-			-- Checked along the removal as the room names it, from its `a`
-			-- end, so every game decides alike whichever way its own edge
-			-- runs.
-			local from = e
-			if flipped then from = { a = e.b, b = e.a, ta = scaled(e.tb, -1), tb = scaled(e.ta, -1) } end
-			local to = { a = at[link.from + 1], b = at[link.to + 1], ta = arr(link.tangent0), tb = arr(link.tangent1) }
-			local ok, why = geom.keepsSignal(from, kept.at, to)
-			if not ok then error(what .. ": " .. why, 0) end
-			seen[best] = true
-			local pos
-			local t = bestComp.transf
-			if t and type(t[13]) == "number" then pos = { t[13], t[14], t[15] } end
-			out[#out + 1] = { link = j, entity = best, kind = SIGNAL, pos = pos }
 		end
 	end
 	return out
@@ -1496,7 +1568,8 @@ end
 -- After the build, each kept signal is still there, where it stood: the
 -- game moves a signal onto the piece of track that takes it. One gone is a
 -- world this mod cannot account for, so the room's replay stops
--- (replayFatal); one moved is said in the log.
+-- (replayFatal); one moved is said in the log. A kept stop says its
+-- station group before and after, which its lines name.
 local function settleKept(carried)
 	local C = api.type.ComponentType
 	local farthest
@@ -1514,9 +1587,22 @@ local function settleKept(carried)
 			end
 			if farthest == nil or moved > farthest then farthest = moved end
 		end
+		if c.stop then
+			local group
+			pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(c.entity) end)
+			log("kept stop " .. tostring(c.entity) .. " in station group " .. tostring(group)
+				.. (group == c.group and "" or (", was " .. tostring(c.group))))
+		end
+	end
+	local stops = 0
+	for _, c in ipairs(carried) do
+		if c.stop then stops = stops + 1 end
 	end
 	if #carried > 0 then
-		log("kept " .. #carried .. " signal(s) on the track's new pieces"
+		local what = stops == 0 and (#carried .. " signal(s) on the track's new pieces")
+			or stops == #carried and (stops .. " stop(s) on the street's new pieces")
+			or (#carried .. " stop(s) and signal(s) on the new pieces")
+		log("kept " .. what
 			.. (farthest and string.format(", the farthest moved %.2f m", farthest) or ", where they stand unread"))
 	end
 end
@@ -1536,9 +1622,12 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 	-- The junctions' settings go with it (junctions.into, below).
 	polyline = { vertices = polyline.vertices, links = links, removals = polyline.removals,
 		removed_nodes = polyline.removed_nodes, junctions = settings }
+	-- The nodes, read once for the vertices, removals and junctions below:
+	-- nothing is sent before junctions.into, so the world stays as read.
+	local index = junctions.nodeIndex()
 	local nodesOf = {}
 	local function nodes(n)
-		if nodesOf[n] == nil then nodesOf[n] = nodesOfNetwork(n) end
+		if nodesOf[n] == nil then nodesOf[n] = nodesOfNetwork(n, index) end
 		return nodesOf[n]
 	end
 	local templates = {}
@@ -1780,6 +1869,18 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 		end
 		removeEdge(e)
 	end
+	-- One stop a side on each new edge: a second is a fatal assert in the
+	-- game's lane creation (docs/BUILDING.md), whatever brought it there.
+	local stopTypes = next(objectsFor) ~= nil and enum("EdgeObjectType")
+	for j, objects in pairs(objectsFor) do
+		local sides = {}
+		for _, o in ipairs(objects) do
+			if o[2] == stopTypes.STOP_LEFT or o[2] == stopTypes.STOP_RIGHT then
+				if sides[o[2]] then error("link " .. j .. " would take two stops on one side", 0) end
+				sides[o[2]] = true
+			end
+		end
+	end
 	for j, objects in pairs(objectsFor) do links[j].comp.objects = objects end
 
 	local nodesToRemove, removedNode = {}, {}
@@ -1815,7 +1916,7 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 	-- originator's tool has.
 	if not dry then
 		local t0 = costs and clock()
-		local left = junctions.into(proposal, polyline.junctions, ends, mine, gone)
+		local left = junctions.into(proposal, polyline.junctions, ends, mine, gone, nil, index)
 		spend("junctions", t0)
 		if left and #left > 0 then
 			log("left to the construction: the settings of " .. #left .. " junction(s) at its old edges")
@@ -2026,40 +2127,100 @@ local function assetGroupsAt(model, x, y, z)
 	return out
 end
 
+-- Sends `proposal`, which adds `groups` asset groups this script built (none:
+-- it is sent as it is). The asset tools give each group's subconstruction
+-- one empty terrain alignment list (construction_builder_util::
+-- CreateProposalAddAsset); Lua cannot (Proposal.Subconstruction binds no
+-- terrainAlignmentLists), and the game derives one from the models' boxes
+-- for a subconstruction with none, levelling the ground in a rectangle
+-- around every tree. So the hook is armed with the count (apply.terrain,
+-- the link's tpf3mp_native.terrain) and gives each group that list at the
+-- build's apply (crates/tpf3mp-hook/src/terrain.rs, align_groups); the
+-- action fails unless it did, in every game alike.
+local function buildAssetGroups(proposal, context, groups)
+	if groups == 0 then return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true)) end
+	if type(apply.terrain) ~= "function" then error("this hook cannot build asset groups", 0) end
+	local armed, why = apply.terrain({ groups = groups })
+	if armed ~= true then error("the hook would not take the asset groups: " .. tostring(why), 0) end
+	local sent, err = pcall(function()
+		return run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	end)
+	local filled = apply.terrain(nil)
+	if not sent then error(err, 0) end
+	if filled ~= true then error("the hook gave the asset groups no terrain alignment list", 0) end
+	return true
+end
+
 -- Trees and other assets the asset bulldozer took out of their group
--- (action::Bulldoze::Assets): the one group here that holds exactly
--- `count` assets, the first and every one removed among them, removed and,
--- unless every asset of it went, built again from this game's own copy
--- without them, as the tool builds it (tpf3mp/engine.lua, captureAssets;
+-- (action::Bulldoze::Assets): the one group here that holds every one
+-- removed, removed and, unless every asset of it went, built again from
+-- this game's own copy without them, as the tool builds it
+-- (tpf3mp/engine.lua, captureAssets;
 -- construction_builder_util::CreateProposalAddAsset, build 40408): one
 -- construction entity at the world's origin whose desc is autoRemovable and
 -- whose one subconstruction lists the assets kept, the thin ones then the
 -- full ones, each its model's file and its world matrix. TF3's
 -- Proposal.ConstructionEntity has no writable fileName (it reads the
 -- desc's, empty as new() makes it), and its construction is a
--- Proposal.ConstructionResult, whose subconstructions are set. Any other
--- group here, or a removed asset this game cannot tell from another,
--- refuses it, so no game removes other trees than the player's. Paid by the
--- player's company, as the player's own build. The log says the group and
--- its assets before and after, in every game.
+-- Proposal.ConstructionResult, whose subconstructions are set. The group
+-- is found by the trees it loses, not by its size or first tree when
+-- captured: a room's earlier removal from the same group (two quick clicks
+-- on its trees, captured before the first came back) rebuilt it smaller,
+-- and maybe without its first tree, in every game alike. Where more than
+-- one group holds every tree removed, only the one of `count` assets with
+-- the first among them is taken; none, or no single such one, refuses it,
+-- as does a removed asset this game cannot tell from another, so no game
+-- removes other trees than the player's. Paid by the player's company, as
+-- the player's own build. The log says the group and its assets before and
+-- after, in every game.
 local function removeAssets(a, context)
 	local engine = module("engine")
-	local f = a.first
-	local found = {}
-	for _, g in ipairs(assetGroupsAt(f.model, f.at.x, f.at.y, f.at.z)) do
-		if #g.assets == a.count then
-			local used, all = {}, true
-			for _, r in ipairs(a.removed) do
-				if not engine.takeAsset(g.assets, used, r.model, r.at.x, r.at.y, r.at.z) then all = false break end
+	local f, r1 = a.first, a.removed[1]
+	if r1 == nil then error("an asset removal that names no asset", 0) end
+	local holding, exact = {}, {}
+	for _, g in ipairs(assetGroupsAt(r1.model, r1.at.x, r1.at.y, r1.at.z)) do
+		local used, all = {}, true
+		for _, r in ipairs(a.removed) do
+			if not engine.takeAsset(g.assets, used, r.model, r.at.x, r.at.y, r.at.z) then all = false break end
+		end
+		if all then
+			local match = { entity = g.entity, assets = g.assets, used = used }
+			holding[#holding + 1] = match
+			if #g.assets == a.count and engine.assetsAt(g.assets, f.model, f.at.x, f.at.y, f.at.z) > 0 then
+				exact[#exact + 1] = match
 			end
-			if all then found[#found + 1] = { entity = g.entity, assets = g.assets, used = used } end
 		end
 	end
+	local found = #holding == 1 and holding or exact
 	if #found ~= 1 then
-		error(#found == 0 and ("no asset group of " .. a.count .. " assets with those trees here")
-			or ("more than one asset group of " .. a.count .. " assets with those trees here"), 0)
+		error(#holding == 0 and string.format("no asset group with those trees here (the first, %s at %.2f, %.2f)",
+				tostring(r1.model), r1.at.x, r1.at.y)
+			or ("more than one asset group with those trees here, and not one alone of " .. a.count
+				.. " assets with the first of them"), 0)
 	end
 	local group = found[1]
+	-- A group of another size than captured was rebuilt in between: by an
+	-- earlier removal's replay, owned as `owned` says, or by another's
+	-- brush stroke (PlantAssets), owned by its company. Its rebuild takes
+	-- the captured ownership, so it must be the group's now: the acting
+	-- company's where `owned`, no one's otherwise; else refused, so no
+	-- rebuild hands a group to another owner.
+	if #group.assets ~= a.count then
+		local C = api.type.ComponentType
+		local read, owner = pcall(function()
+			local c = api.engine.getComponent(group.entity, C.PLAYER_OWNED)
+			return c and c.player or -1
+		end)
+		if not read or C.PLAYER_OWNED == nil or type(owner) ~= "number" then
+			error("the owner of asset group " .. tostring(group.entity) .. " does not read", 0)
+		end
+		local want = a.owned and company() or -1
+		if (owner < 0 and -1 or owner) ~= want then
+			error(string.format("asset group %d, of %d assets since the click's %d, is %s, not %s as the click saw it",
+				group.entity, #group.assets, a.count, owner < 0 and "no one's" or ("company " .. owner .. "'s"),
+				want < 0 and "no one's" or ("company " .. want .. "'s")), 0)
+		end
+	end
 	for _, r in ipairs(a.removed) do
 		if engine.assetsAt(group.assets, r.model, r.at.x, r.at.y, r.at.z) > 1 then
 			error(string.format("two assets of %s at %.3f, %.3f, %.3f here: which one went is not clear",
@@ -2104,7 +2265,7 @@ local function removeAssets(a, context)
 	log(string.format("trees: asset group %d of %d assets, %d removed (%s at %.2f,%.2f), rebuilt with %d",
 		group.entity, #group.assets, #a.removed, tostring(a.removed[1].model), a.removed[1].at.x,
 		a.removed[1].at.y, #models))
-	run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	buildAssetGroups(proposal, context, #models > 0 and 1 or 0)
 	-- What stands now: the group that holds the first asset kept, and how
 	-- many it holds; with none kept, whether a group still holds the first
 	-- one removed (the same in every game, or the replay differed).
@@ -2131,8 +2292,8 @@ local function removeAssets(a, context)
 end
 
 -- An asset brush stroke (action::AssetStroke): every group it replaces found
--- here as the asset bulldozer finds one, the one group that holds exactly
--- that many assets with its first one where it stood; then one build that
+-- here by the one group that holds exactly that many assets with its first
+-- one where it stood; then one build that
 -- removes them and adds the stroke's groups, each as the tool builds one
 -- (construction_builder_util::CreateProposalAddAsset, as removeAssets
 -- rebuilds a group): a construction entity at the world's origin whose desc
@@ -2187,7 +2348,7 @@ function HANDLERS.PlantAssets(t)
 	proposal.toAdd = added
 	local context = api.type.Context.new()
 	context.player = company()
-	run(api.cmd.makeWorldBuildProposalCmd(proposal, context, true, true))
+	buildAssetGroups(proposal, context, #added)
 	log(string.format("asset brush applied: %d group(s) of %d asset(s), replacing %d group(s)", #added, count,
 		#removed))
 	return true
@@ -2237,7 +2398,8 @@ end
 -- that names anything else refuses the removal, and one that leaves any
 -- out is given them, and must then read back exactly those, else the
 -- removal is refused too.
-local function withSignalsRemoved(proposal, signals)
+-- A street's stops go with it the same way (`network` "Street").
+local function withSignalsRemoved(proposal, signals, network)
 	local want, unique = {}, {}
 	for _, id in ipairs(signals) do
 		if not want[id] then unique[#unique + 1] = id end
@@ -2272,7 +2434,8 @@ local function withSignalsRemoved(proposal, signals)
 		pcall(function() proposal.proposal.edgeObjectsToRemove = signals end)
 		if not exactly(listed()) then error("the game's removal will not take the signals on the tracks", 0) end
 	end
-	log("removing signals " .. table.concat(signals, ",") .. " with their tracks")
+	log("removing " .. (network == "Street" and "stops " or "signals ") .. table.concat(signals, ",")
+		.. (network == "Street" and " with their streets" or " with their tracks"))
 end
 
 -- The bulldozer's removals, as the game makes them itself: a construction
@@ -2303,20 +2466,26 @@ function HANDLERS.Bulldoze(b)
 		for k, ends in ipairs(b.Edges.edges) do
 			local e = edgeBetween(nodes, network, arr(ends.a), arr(ends.b))
 			if e == nil then error("no " .. network .. " edge to remove (" .. k .. ")", 0) end
-			-- A track's signals go with it, as the bulldozer removes them; a
-			-- stop, or any object on a street, refuses it.
+			-- A track's signals go with it, as the bulldozer removes them, and
+			-- a street's stops with it once acceptance.lua's bulldozeStops is
+			-- on; anything else refuses it.
 			for _, o in ipairs(e.comp.objects or {}) do
-				if network ~= "Track" or o[2] ~= enum("EdgeObjectType").SIGNAL then
+				local types = enum("EdgeObjectType")
+				if network == "Track" and o[2] == types.SIGNAL then
+					mine(o[1], "signal")
+				elseif network == "Street" and (o[2] == types.STOP_LEFT or o[2] == types.STOP_RIGHT)
+					and acceptance.bulldozeStops == true then
+					mine(o[1], "stop")
+				else
 					error("edge " .. k .. " has a stop on it", 0)
 				end
-				mine(o[1], "signal")
 				signals[#signals + 1] = o[1]
 			end
 			mine(e.id, "road or track")
 			ids[#ids + 1] = e.id
 		end
 		proposal = proposals.makeSegmentsRemoveProposal(ids)
-		if #signals > 0 then withSignalsRemoved(proposal, signals) end
+		if #signals > 0 then withSignalsRemoved(proposal, signals, network) end
 		local gone = townBuildingsRemoved(proposal, b.Edges.buildings or {})
 		log("removing " .. network .. " edges " .. table.concat(ids, ",")
 			.. (gone ~= "" and (" and town buildings " .. gone) or ""))

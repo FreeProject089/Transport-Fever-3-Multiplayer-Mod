@@ -43,6 +43,24 @@ pub mod layout {
     pub const MODEL_SIZE: usize = 0xa8;
     pub const MODEL_TRANSF: usize = 0x60;
 
+    /// An asset group as the tool builds one
+    /// (`construction_builder_util::CreateProposalAddAsset`, 0xa31030 on
+    /// build 40420): its `desc.autoRemovable` byte, and in its one
+    /// subconstruction (`SUB_SIZE` bytes) the vector of terrain alignment
+    /// lists at `SUB_ALIGNMENTS`, holding one default list of
+    /// `ALIGNMENT_SIZE` bytes: all zero (`EQUAL`, no faces), its slopes
+    /// `ALIGNMENT_SLOPE_LOW` and `ALIGNMENT_SLOPE_HIGH`. A subconstruction
+    /// with no list at all gets one derived from its models' boxes
+    /// (`ProcessTerrainAlignment`, 0xa28f90), which levels the ground.
+    pub const ENTITY_AUTO_REMOVABLE: usize = 0x4b1;
+    pub const SUB_SIZE: usize = 0x318;
+    pub const SUB_ALIGNMENTS: usize = 0x210;
+    pub const ALIGNMENT_SIZE: usize = 0x48;
+    pub const ALIGNMENT_SLOPE_LOW: usize = 0x38;
+    pub const ALIGNMENT_SLOPE_HIGH: usize = 0x3c;
+    pub const SLOPE_LOW: f32 = 0.75;
+    pub const SLOPE_HIGH: f32 = 2.5;
+
     /// One height cell: two `f32`.
     pub const CELL_SIZE: usize = 8;
     /// MSVC's allocation of 4 KiB or more: aligned to 32, the block's own

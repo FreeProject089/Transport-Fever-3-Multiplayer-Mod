@@ -983,10 +983,19 @@ pub fn record(memory: &dyn Memory, click: u64, payload: usize) {
     );
 }
 
-/// The stroke armed for the next build the room's actions send, and whether
+/// What the next build the room's actions send is armed with: a stroke to
+/// fill an empty carrier with, or the count of asset groups the game script
+/// built, each to be given the tool's empty terrain alignment list
+/// ([`align_groups`]).
+enum Arming {
+    Stroke(Stroke),
+    Groups(usize),
+}
+
+/// What is armed for the next build the room's actions send, and whether
 /// one was filled with it.
 struct Armed {
-    stroke: Option<Stroke>,
+    what: Option<Arming>,
     filled: bool,
 }
 
@@ -995,7 +1004,17 @@ static ARMED: Mutex<Option<Armed>> = Mutex::new(None);
 /// Arms the next build applied while the room's actions run with `stroke`.
 pub fn arm(stroke: Stroke) {
     *ARMED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Armed {
-        stroke: Some(stroke),
+        what: Some(Arming::Stroke(stroke)),
+        filled: false,
+    });
+}
+
+/// Arms the next build applied while the room's actions run, one of
+/// `groups` asset groups the game script built, to have each given the
+/// tool's empty terrain alignment list ([`align_groups`]).
+pub fn arm_groups(groups: usize) {
+    *ARMED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Armed {
+        what: Some(Arming::Groups(groups)),
         filled: false,
     });
 }
@@ -1132,14 +1151,29 @@ fn fill_heights(heap: &mut dyn Heap, payload: usize, grid: &Grid) -> Result<(), 
 /// armed, if one is. `Ok(true)` when it filled, `Ok(false)` when nothing was
 /// armed, `Err(why)` when the build is refused (the stroke is then spent).
 pub fn inject(heap: &mut dyn Heap, payload: usize) -> Result<bool, String> {
-    let stroke = {
+    let what = {
         let mut armed = ARMED.lock().unwrap_or_else(PoisonError::into_inner);
-        match armed.as_mut().and_then(|a| a.stroke.take()) {
-            Some(stroke) => stroke,
+        match armed.as_mut().and_then(|a| a.what.take()) {
+            Some(what) => what,
             None => return Ok(false),
         }
     };
-    fill(heap, payload, &stroke)?;
+    let line = match what {
+        Arming::Stroke(stroke) => {
+            fill(heap, payload, &stroke)?;
+            format!(
+                "{}: filled the room's carrier with {}",
+                stroke.noun(),
+                stroke.summary()
+            )
+        }
+        Arming::Groups(groups) => {
+            align_groups(heap, payload, groups)?;
+            format!(
+                "asset groups: gave the room's {groups} group(s) the tool's empty terrain alignment list"
+            )
+        }
+    };
     if let Some(armed) = ARMED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -1147,12 +1181,84 @@ pub fn inject(heap: &mut dyn Heap, payload: usize) -> Result<bool, String> {
     {
         armed.filled = true;
     }
-    crate::log::line(&format!(
-        "{}: filled the room's carrier with {}",
-        stroke.noun(),
-        stroke.summary()
-    ));
+    crate::log::line(&line);
     Ok(true)
+}
+
+/// Gives each of the `groups` asset groups the build at `payload` adds the
+/// one empty terrain alignment list the asset tools give theirs
+/// (`CreateProposalAddAsset`): all zero, `EQUAL` with no faces, and the
+/// default slopes. A group the game script built has none, since no binding
+/// reaches it (`Proposal.Subconstruction` binds no `terrainAlignmentLists`),
+/// and the game derives one from its models' boxes for a subconstruction
+/// with none, levelling the ground in a rectangle around every tree. The
+/// build must add exactly `groups` entities, each an `autoRemovable`
+/// construction of no file with one subconstruction whose list vector is
+/// all zero; anything else refuses it, and nothing is written then.
+pub fn align_groups(heap: &mut dyn Heap, payload: usize, groups: usize) -> Result<(), String> {
+    let head = read(heap, payload, layout::PROPOSAL_LEN, "the build")?;
+    let (begin, count) = vector(
+        &head,
+        layout::TO_ADD,
+        layout::ENTITY_SIZE,
+        MAX_ASSET_GROUPS,
+        "the groups added",
+    )?;
+    if count != groups || groups == 0 {
+        return Err(format!(
+            "the build adds {count} construction(s), not the {groups} asset group(s) built"
+        ));
+    }
+    let mut lists = Vec::with_capacity(count);
+    for i in 0..count {
+        let record = begin + i * layout::ENTITY_SIZE;
+        let what = format!("asset group {}", i + 1);
+        let file = crate::modules::res_name(heap, record + layout::ENTITY_FILE, &what)?;
+        if !file.is_empty() {
+            return Err(format!("{what} is a construction of {file}"));
+        }
+        let flag = read(heap, record + layout::ENTITY_AUTO_REMOVABLE, 1, &what)?;
+        if flag[0] != 1 {
+            return Err(format!("{what} is not auto-removable"));
+        }
+        let raw = read(heap, record + layout::ASSET_SUBS, 24, &what)?;
+        let (subs, n) = vector(&raw, 0, layout::SUB_SIZE, MAX_ASSET_GROUPS, &what)?;
+        if n != 1 {
+            return Err(format!("{what} has {n} subconstructions, not one"));
+        }
+        let models = read(heap, subs + layout::SUB_MODELS, 24, &what)?;
+        if vector(&models, 0, layout::MODEL_SIZE, MAX_GROUP_ASSETS, &what)?.1 == 0 {
+            return Err(format!("{what} has no models"));
+        }
+        let at = subs + layout::SUB_ALIGNMENTS;
+        let list = read(heap, at, 24, &what)?;
+        if list.iter().any(|b| *b != 0) {
+            return Err(format!("{what} has terrain alignment lists already"));
+        }
+        lists.push(at);
+    }
+    let mut element = vec![0u8; layout::ALIGNMENT_SIZE];
+    element[layout::ALIGNMENT_SLOPE_LOW..layout::ALIGNMENT_SLOPE_LOW + 4]
+        .copy_from_slice(&layout::SLOPE_LOW.to_le_bytes());
+    element[layout::ALIGNMENT_SLOPE_HIGH..layout::ALIGNMENT_SLOPE_HIGH + 4]
+        .copy_from_slice(&layout::SLOPE_HIGH.to_le_bytes());
+    for at in lists {
+        let data = heap
+            .allocate(layout::ALIGNMENT_SIZE)
+            .ok_or_else(|| "the game's allocator gave nothing".to_string())?;
+        if !heap.write(data, &element) {
+            return Err("the terrain alignment list could not be written".into());
+        }
+        let end = (data + layout::ALIGNMENT_SIZE) as u64;
+        let mut vector = Vec::with_capacity(24);
+        vector.extend_from_slice(&(data as u64).to_le_bytes());
+        vector.extend_from_slice(&end.to_le_bytes());
+        vector.extend_from_slice(&end.to_le_bytes());
+        if !heap.write(at, &vector) {
+            return Err("the group's terrain alignment lists could not be written".into());
+        }
+    }
+    Ok(())
 }
 
 /// The running game's memory and allocator.
@@ -1277,8 +1383,10 @@ mod tests {
             false
         }
 
+        /// Poisoned, as the game's allocator gives no zeroed memory: what
+        /// is filled must be written whole.
         fn allocate(&mut self, len: usize) -> Option<usize> {
-            let at = self.alloc(vec![0; len]);
+            let at = self.alloc(vec![0xcd; len]);
             self.allocated.push(at);
             Some(at)
         }
@@ -1773,5 +1881,140 @@ mod tests {
                 .unwrap_err()
                 .contains("no carrier")
         );
+    }
+
+    /// A build of `n` asset groups as the game script makes them: each an
+    /// auto-removable construction of no file with one subconstruction and
+    /// no terrain alignment list. Answers the memory, the payload and each
+    /// group's subconstruction.
+    fn script_groups(n: usize) -> (Fake, usize, Vec<usize>) {
+        let mut fake = Fake::new();
+        let model = fake.alloc(vec![0u8; layout::MODEL_SIZE]);
+        let subs: Vec<usize> = (0..n)
+            .map(|_| {
+                let mut sub = vec![0u8; layout::SUB_SIZE];
+                put_vector(&mut sub, layout::SUB_MODELS, model, 1, layout::MODEL_SIZE);
+                fake.alloc(sub)
+            })
+            .collect();
+        let mut records = vec![0u8; n * layout::ENTITY_SIZE];
+        for (i, sub) in subs.iter().enumerate() {
+            let record = &mut records[i * layout::ENTITY_SIZE..(i + 1) * layout::ENTITY_SIZE];
+            put_u64(
+                record,
+                layout::ENTITY_FILE + crate::modules::layout::STRING_CAPACITY,
+                15,
+            );
+            put_u64(
+                record,
+                layout::ENTITY_FILE
+                    + crate::modules::layout::STRING_SIZE
+                    + crate::modules::layout::STRING_CAPACITY,
+                15,
+            );
+            record[layout::ENTITY_AUTO_REMOVABLE] = 1;
+            put_vector(record, layout::ASSET_SUBS, *sub, 1, layout::SUB_SIZE);
+        }
+        let records_at = fake.alloc(records);
+        let payload = fake.alloc(vec![0; layout::PROPOSAL_LEN + 0x100]);
+        put_vector(
+            fake.bytes(payload),
+            layout::TO_ADD,
+            records_at,
+            n,
+            layout::ENTITY_SIZE,
+        );
+        (fake, payload, subs)
+    }
+
+    /// The list vector of the subconstruction at `sub`: begin, end, capacity.
+    fn alignment_lists(fake: &Fake, sub: usize) -> [u64; 3] {
+        let raw = fake.read(sub + layout::SUB_ALIGNMENTS, 24).unwrap();
+        [u64_at(&raw, 0), u64_at(&raw, 8), u64_at(&raw, 16)]
+    }
+
+    #[test]
+    fn asset_groups_the_script_built_get_the_tools_empty_terrain_alignment_list() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let (mut fake, payload, subs) = script_groups(2);
+        arm_groups(2);
+        assert_eq!(inject(&mut fake, payload), Ok(true));
+        assert_eq!(disarm(), Some(true));
+        // Each group: one list, as the tool's, in a vector of its own.
+        let mut expected = vec![0u8; layout::ALIGNMENT_SIZE];
+        expected[layout::ALIGNMENT_SLOPE_LOW..layout::ALIGNMENT_SLOPE_LOW + 4]
+            .copy_from_slice(&0.75f32.to_le_bytes());
+        expected[layout::ALIGNMENT_SLOPE_HIGH..layout::ALIGNMENT_SLOPE_HIGH + 4]
+            .copy_from_slice(&2.5f32.to_le_bytes());
+        let mut seen = Vec::new();
+        for sub in &subs {
+            let [begin, end, capacity] = alignment_lists(&fake, *sub);
+            assert_ne!(begin, 0);
+            assert_eq!(end, begin + layout::ALIGNMENT_SIZE as u64);
+            assert_eq!(capacity, end);
+            let begin = usize::try_from(begin).unwrap();
+            assert_eq!(fake.read(begin, layout::ALIGNMENT_SIZE).unwrap(), expected);
+            seen.push(begin);
+        }
+        assert_ne!(seen[0], seen[1]);
+        // Given once: a second time, the groups have lists and the build is
+        // refused.
+        assert!(
+            align_groups(&mut fake, payload, 2)
+                .unwrap_err()
+                .contains("has terrain alignment lists already")
+        );
+    }
+
+    #[test]
+    fn a_build_not_of_the_groups_armed_is_refused_and_left_alone() {
+        // Another count than the script built.
+        let (mut fake, payload, subs) = script_groups(2);
+        assert_eq!(
+            align_groups(&mut fake, payload, 3),
+            Err("the build adds 2 construction(s), not the 3 asset group(s) built".into())
+        );
+        // A group not auto-removable (another construction).
+        let (mut other, at, other_subs) = script_groups(2);
+        let records =
+            usize::try_from(u64_at(&other.read(at + layout::TO_ADD, 8).unwrap(), 0)).unwrap();
+        assert!(other.write(
+            records + layout::ENTITY_SIZE + layout::ENTITY_AUTO_REMOVABLE,
+            &[0]
+        ));
+        assert_eq!(
+            align_groups(&mut other, at, 2),
+            Err("asset group 2 is not auto-removable".into())
+        );
+        // A group whose list vector holds anything: refused before any is
+        // written, so the first group keeps none either.
+        let (mut third, at3, third_subs) = script_groups(2);
+        assert!(third.write(
+            third_subs[1] + layout::SUB_ALIGNMENTS + 16,
+            &0x1000u64.to_le_bytes()
+        ));
+        assert_eq!(
+            align_groups(&mut third, at3, 2),
+            Err("asset group 2 has terrain alignment lists already".into())
+        );
+        // A group of no models.
+        let (mut fourth, at4, fourth_subs) = script_groups(1);
+        assert!(fourth.write(
+            fourth_subs[0] + layout::SUB_MODELS + 8,
+            &fourth.read(fourth_subs[0] + layout::SUB_MODELS, 8).unwrap()
+        ));
+        assert_eq!(
+            align_groups(&mut fourth, at4, 1),
+            Err("asset group 1 has no models".into())
+        );
+        for (memory, list) in [
+            (&fake, &subs),
+            (&other, &other_subs),
+            (&third, &third_subs),
+            (&fourth, &fourth_subs),
+        ] {
+            assert_eq!(alignment_lists(memory, list[0]), [0, 0, 0]);
+            assert!(memory.allocated.is_empty());
+        }
     }
 }

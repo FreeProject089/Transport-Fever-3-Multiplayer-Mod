@@ -515,8 +515,9 @@ protected folder such as Program Files.
   together, a moment after your click, and your company pays as usual.
   After the room builds a segment, choose the next start point. Continuing
   automatically from that segment is available for controlled testing with
-  `TPF3MP_TOOL_CONTINUE=1`; it is off by default pending an input-cancellation
-  check in the real game. A
+  `TPF3MP_TOOL_CONTINUE=1`; it is off by default until the owner turns it
+  on (the input-cancellation check passed in the real game on 2026-10-19:
+  a right-click while the room builds ends it). A
   station or depot placed by a road is joined to it, as in single player.
   Street stops, on one side or both, go on with the stop tool; the stop
   goes where your cursor is on the road. The road tools tab works too:
@@ -526,7 +527,9 @@ protected folder such as Program Files.
   a track's type and its decorations (seen with the road tools; the track
   tools are not yet tried in a real game). Remove them, and roads and
   tracks, with the bulldozer: a two-sided stop goes with one click, and
-  a track takes its signals with it.
+  a track takes its signals with it. A street with stops on it still says
+  "Not in multiplayer yet": remove its stops first (`bulldozeStops`, off
+  until a two-game room accepts it).
 - **Airfields and airports.** Build the game's stock airfield or airport
   from **Air** with a hangar if you want to buy aircraft there. Place roads
   near the passenger building as in the base game. Use **Configure** on
@@ -639,7 +642,9 @@ protected folder such as Program Files.
   stops the build. A track started close to a node of a track with
   signals, where the tool moves that node and puts the signal back on the
   redrawn track, keeps the old signal there too (`refitSignals`; accepted
-  in a two-game room on build 40420).
+  in a two-game room on build 40420). A street started beside a junction
+  near a stop does the same with the stop (`keptStops`), off until a
+  two-game room accepts it: until then it says "Not in multiplayer yet".
 
 ## Playtesting before the game is out
 

@@ -401,7 +401,8 @@ pub struct Link {
     /// tool moved them: a track split where a signal stands, the signal on
     /// the piece it stood on (schema 27). Empty for an edge that takes
     /// none, or that rebuilds a removed edge in place, which takes all its
-    /// objects.
+    /// objects. A street's stops the same way, each on its side (the same
+    /// entries, their removal a street's; no wire change).
     #[serde(default)]
     pub kept: BoundedVec<KeptSignal, MAX_EDGE_SIGNALS>,
 }
@@ -410,6 +411,8 @@ pub struct Link {
 /// this construction on the polyline's removal number `removal` (from 0)
 /// within a quarter of a metre of `at`, its place along that edge from the
 /// removal's `a` end. None, or more than one, refuses the whole build.
+/// On a street removal it names a stop the same way; a link's entries of
+/// one removal, construction and place name both stops of a two-sided stop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeptSignal {
     pub removal: u16,
@@ -636,9 +639,12 @@ pub struct AssetRef {
 
 /// The asset bulldozer's removal: the group, named by its first asset and
 /// how many it holds, and the assets taken out of it. Every game finds the
-/// group that holds exactly that many assets, the first one and every one
-/// removed among them, and builds it again from its own copy without them;
-/// any other group refuses it.
+/// one group that holds every asset removed, whatever it holds by then (an
+/// earlier removal from the same group in the room rebuilt it smaller), and
+/// builds it again from its own copy without them. Where more than one
+/// group holds them, only the one of that many assets with the first among
+/// them is taken; none, or no single such one, refuses it. A group of
+/// another size than `count` is taken only when owned as `owned` says.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetRemoval {
     pub first: AssetRef,

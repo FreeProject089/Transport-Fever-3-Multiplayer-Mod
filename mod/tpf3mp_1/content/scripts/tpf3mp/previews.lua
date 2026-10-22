@@ -28,6 +28,17 @@
 --   drawn, and why one does not show are said in the log, and what this
 --   game says of a member's preview each time that changes (`verdict`): a
 --   preview drawn red is one this game calls critical or finds errors in.
+-- - **Paced.** Making and drawing a long track's preview takes this game
+--   up to a sixth of a second (the game's evaluation of the proposal,
+--   filling the renderer and makeProposalData's conversions), and the
+--   builder's tool changes it up to five times a second while it
+--   drags. So a member's next preview is drawn no sooner than PACE times
+--   what their last one cost here, at most MAX_WAIT after it, and one
+--   member's at most a frame: what comes in between replaces the one
+--   waiting, so the latest is always drawn. A short street's preview, a
+--   few milliseconds, still shows as often as it comes; a preview gone
+--   goes at once. One the hook could not draw (every renderer busy) is
+--   tried again the same way, in a frame that draws nothing new.
 --
 -- Ported from TpF2 Multiplayer's shared build previews (mp/previews.lua in
 -- tpf2-multiplayer), on the room's own action schema.
@@ -50,6 +61,10 @@ local TOOL_EVERY = 0.25
 local RETRY_EVERY = 0.5
 -- Members whose first preview the log says, at most.
 local MAX_SAID = 16
+-- A member's next preview is drawn no sooner than PACE times what making
+-- and drawing their last one cost, and at most MAX_WAIT seconds later.
+previews.PACE = 9
+previews.MAX_WAIT = 2
 
 -- What the player's tool shows: the tool's id and the game's list of
 -- active tools at its last proposal (`tools`, nil where the game cannot
@@ -60,6 +75,9 @@ local lookedAt = nil
 -- The other members' previews, by player id: { proposal =, context =,
 -- company =, kind =, seq = }; and whose first was said, and drawn.
 local remote, said, saidCount, drawnSaid = {}, {}, 0, {}
+-- The members' previews waiting to be drawn, by player id: the latest
+-- action each sent; and when each member's next may be drawn.
+local pending, dueAt = {}, {}
 -- Counts the previews made, so each has a viewer id of its own.
 local made = 0
 -- Previews this game could not make, said in the log, at most.
@@ -77,7 +95,9 @@ local retriedAt = nil
 -- log once every COST_EVERY seconds while any came (os.clock: elapsed time
 -- on Windows, CPU time on Linux and macOS):
 -- the previews made, drawn and retried, each { n =, ms =, max = }, and the
--- parts of the longest make (tpf3mp/apply.lua, apply.lastCost).
+-- parts of the longest make (tpf3mp/apply.lua, apply.lastCost) and of the
+-- longest draw (the hook's, Link:drawCost, the rest being makeProposalData's
+-- conversions, and the verdict read after it).
 local COST_EVERY = 10
 local function newCost() return { make = { n = 0, ms = 0, max = 0 }, draw = { n = 0, ms = 0, max = 0 },
 	retry = { n = 0, ms = 0, max = 0 } } end
@@ -94,9 +114,12 @@ local function activeTools(api)
 	return table.concat(names, ", ")
 end
 
+-- The clock everything here is timed by (the tests give their own).
+previews.clock = os.clock
+
 local function now()
-	local ok, t = pcall(os.clock)
-	return ok and t or 0
+	local ok, t = pcall(previews.clock)
+	return ok and type(t) == "number" and t or 0
 end
 
 local function spent(what, t0)
@@ -116,7 +139,8 @@ local function costLine(link, t)
 		local function part(name, p) return string.format("%s %d in %.1f ms (longest %.1f)", name, p.n, p.ms, p.max) end
 		link:log(string.format("build previews in the last %.1f s: ", t - costSince)
 			.. part("made", c.make) .. (c.slowest and (" [" .. c.slowest .. "]") or "") .. ", "
-			.. part("drawn", c.draw) .. ", " .. part("retried", c.retry))
+			.. part("drawn", c.draw) .. (c.slowestDraw and (" [" .. c.slowestDraw .. "]") or "") .. ", "
+			.. part("retried", c.retry))
 	end
 	cost, costSince = newCost(), t
 end
@@ -244,6 +268,22 @@ function previews.verdict(data)
 	return table.concat(parts, ", ")
 end
 
+-- What a draw that took `ms` cost, by part: the hook's (Link:drawCost),
+-- the rest of makeProposalData's, and reading the game's verdict, `verdictMs`.
+local function drawParts(link, ms, verdictMs)
+	local evaluate, fill, terrain
+	if type(link.drawCost) == "function" then evaluate, fill, terrain = link:drawCost() end
+	local text
+	if evaluate ~= nil then
+		local rest = ms - evaluate - fill - terrain
+		if rest < 0 then rest = 0 end
+		text = string.format("evaluate %.1f ms, fill %.1f, terrain %.1f, rest %.1f, ", evaluate, fill, terrain, rest)
+	else
+		text = ""
+	end
+	return text .. string.format("verdict %.1f", verdictMs)
+end
+
 -- What this game says of member `from`'s `kind` preview, in the log when
 -- it changed, a few dozen times.
 local function judged(link, from, kind, data)
@@ -262,11 +302,70 @@ local function unshown(link, kind, why)
 	link:log("another member's " .. tostring(kind) .. " preview does not show here: " .. tostring(why))
 end
 
+-- Whether member `from`'s next preview may be drawn at `t`: never drawn
+-- yet, or due; a clock gone back (os.clock wraps) is never waited out.
+local function isDue(from, t)
+	local due = dueAt[from]
+	return due == nil or t >= due or due - t > previews.MAX_WAIT
+end
+
+-- Makes member `from`'s preview `action` into its proposal and draws it
+-- (`previews.take`). Answers what that cost, in milliseconds.
+local function show(link, make, draw, from, action)
+	local had = remote[from] ~= nil
+	remote[from] = nil
+	local kind = next(action)
+	local t0 = now()
+	local ok, proposal, context, company = pcall(make, action, from)
+	local ms = spent("make", t0)
+	if ms >= cost.make.max then
+		local okA, applyModule = pcall(require, "tpf3mp.apply")
+		local parts = okA and type(applyModule) == "table" and applyModule.costText
+			and applyModule.costText(applyModule.lastCost) or ""
+		cost.slowest = tostring(kind) .. (parts ~= "" and (": " .. parts) or "")
+	end
+	if ok and proposal ~= nil then
+		made = made + 1
+		local kept = { proposal = proposal, context = context, company = company,
+			kind = kind, seq = made }
+		remote[from] = kept
+		if draw then
+			local d0 = now()
+			local called, drawn, why = pcall(draw, from, kept)
+			local drawMs = spent("draw", d0)
+			ms = ms + drawMs
+			if called and drawn then
+				kept.undrawn = nil
+				local v0 = now()
+				judged(link, from, kind, why)
+				if drawMs >= cost.draw.max then
+					cost.slowestDraw = drawParts(link, drawMs, math.max(0, (now() - v0) * 1000))
+				end
+				if not drawnSaid[from] then
+					drawnSaid[from] = true
+					link:log("drawing another member's build preview: " .. tostring(kind)
+						.. " from " .. from:sub(1, 16))
+				end
+			else
+				if had then pcall(draw, from, nil) end
+				kept.undrawn = true
+				unshown(link, kind, called and why or drawn)
+			end
+		end
+	else
+		if had and draw then pcall(draw, from, nil) end
+		unshown(link, kind, ok and context or proposal)
+	end
+	return ms
+end
+
 -- In the Multiplayer plugin, once a frame: takes what changed of the other
 -- members' previews and makes each into its proposal with
 -- `make(action, from)`, which answers the proposal, its context and the
 -- company it is built for, or nil and why; then has `draw(from, kept)`
 -- draw it, or with nil clear it, which answers true, or nil and why.
+-- A member's new preview waits while they are not due yet (PACE), and one
+-- member's at most is drawn a call; one gone is cleared at once.
 -- Returns whether any changed.
 function previews.take(link, make, draw)
 	local changed = false
@@ -274,69 +373,59 @@ function previews.take(link, make, draw)
 		local from, action = change.from, change.action
 		if type(from) == "string" then
 			changed = true
-			local had = remote[from] ~= nil
-			remote[from] = nil
-			if type(action) ~= "table" and had and draw then pcall(draw, from, nil) end
 			if type(action) == "table" then
 				local kind = next(action)
 				if not said[from] and saidCount < MAX_SAID then
 					said[from], saidCount = true, saidCount + 1
 					link:log("another member's build preview arrived: " .. tostring(kind) .. " from " .. from:sub(1, 16))
 				end
-				local t0 = now()
-				local ok, proposal, context, company = pcall(make, action, from)
-				local ms = spent("make", t0)
-				if ms >= cost.make.max then
-					local okA, applyModule = pcall(require, "tpf3mp.apply")
-					local parts = okA and type(applyModule) == "table" and applyModule.costText
-						and applyModule.costText(applyModule.lastCost) or ""
-					cost.slowest = tostring(kind) .. (parts ~= "" and (": " .. parts) or "")
-				end
-				if ok and proposal ~= nil then
-					made = made + 1
-					local kept = { proposal = proposal, context = context, company = company,
-						kind = kind, seq = made }
-					remote[from] = kept
-					if draw then
-						local d0 = now()
-						local called, drawn, why = pcall(draw, from, kept)
-						spent("draw", d0)
-						if called and drawn then
-							kept.undrawn = nil
-							judged(link, from, kind, why)
-							if not drawnSaid[from] then
-								drawnSaid[from] = true
-								link:log("drawing another member's build preview: " .. tostring(kind)
-									.. " from " .. from:sub(1, 16))
-							end
-						else
-							if had then pcall(draw, from, nil) end
-							kept.undrawn = true
-							unshown(link, kind, called and why or drawn)
-						end
-					end
-				else
-					if had and draw then pcall(draw, from, nil) end
-					unshown(link, kind, ok and context or proposal)
-				end
+				pending[from] = action
+			else
+				pending[from] = nil
+				local had = remote[from] ~= nil
+				remote[from] = nil
+				if had and draw then pcall(draw, from, nil) end
 			end
 		end
 	end
-	-- The ones made but not drawn, tried again now and then: a renderer may
-	-- have come free since.
-	if draw then
-		local t = now()
+	-- One member's waiting preview, once they are due: the one waiting
+	-- longest past their due time.
+	local t = now()
+	local next_, nextDue = nil, nil
+	for from in pairs(pending) do
+		if isDue(from, t) then
+			local due = dueAt[from] or -math.huge
+			if nextDue == nil or due < nextDue or (due == nextDue and from < next_) then
+				next_, nextDue = from, due
+			end
+		end
+	end
+	if next_ ~= nil then
+		local action = pending[next_]
+		pending[next_] = nil
+		local ms = show(link, make, draw, next_, action)
+		dueAt[next_] = now() + math.min(previews.MAX_WAIT, previews.PACE * ms / 1000)
+	-- Else one made but not drawn, tried again now and then (a renderer may
+	-- have come free since), paced as a new one: never one whose member
+	-- sent a newer, which is drawn instead once they are due.
+	elseif draw then
 		if retriedAt == nil or t - retriedAt >= RETRY_EVERY or t < retriedAt then
 			retriedAt = t
+			local again = nil
 			for from, kept in pairs(remote) do
-				if kept.undrawn then
-					local r0 = now()
-					local called, drawn, data = pcall(draw, from, kept)
-					spent("retry", r0)
-					if called and drawn then
-						kept.undrawn = nil
-						judged(link, from, kept.kind, data)
-					end
+				if kept.undrawn and pending[from] == nil and isDue(from, t) and (again == nil or from < again) then
+					again = from
+				end
+			end
+			if again ~= nil then
+				local kept = remote[again]
+				local r0 = now()
+				local called, drawn, data = pcall(draw, again, kept)
+				local ms = spent("retry", r0)
+				dueAt[again] = now() + math.min(previews.MAX_WAIT, previews.PACE * ms / 1000)
+				if called and drawn then
+					kept.undrawn = nil
+					judged(link, again, kept.kind, data)
 				end
 			end
 		end
@@ -353,6 +442,7 @@ end
 -- Forgets everything: a new world's GUI.
 function previews.reset()
 	showing, lookedAt, remote, said, saidCount, toldTools = nil, nil, {}, {}, 0, false
+	pending, dueAt = {}, {}
 	retriedAt = nil
 	made, unmade, drawnSaid = 0, 0, {}
 	verdicts, verdictsSaid = {}, 0

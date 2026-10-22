@@ -149,7 +149,7 @@ function geom.continues(from, to)
 	end
 	if near(from.a, to.a) and aligned(from.ta, to.ta) then return true end
 	if near(from.b, to.b) and aligned(from.tb, to.tb) then return true end
-	return nil, "a signal onto an edge that does not go on from its track"
+	return nil, "a stop or signal onto an edge that does not go on from its track"
 end
 
 -- How near the edge that takes a signal must run where the signal stood,
@@ -169,11 +169,11 @@ function geom.runsThrough(from, at, to)
 	local u, d = geom.parameterAt(to.a, to.ta, to.b, to.tb, spot[1], spot[2])
 	local h = geom.hermitePos(to.a, to.ta, to.b, to.tb, u)[3]
 	if d > geom.STAND_TOL or math.abs(h - spot[3]) > geom.STAND_TOL then
-		return nil, "a signal onto an edge that does not run where it stood"
+		return nil, "a stop or signal onto an edge that does not run where it stood"
 	end
 	if not aligned(geom.hermiteTangent(from.a, from.ta, from.b, from.tb, at),
 		geom.hermiteTangent(to.a, to.ta, to.b, to.tb, u)) then
-		return nil, "a signal onto an edge that runs the other way where it stood"
+		return nil, "a stop or signal onto an edge that runs the other way where it stood"
 	end
 	return true
 end
@@ -186,7 +186,7 @@ function geom.keepsSignal(from, at, to)
 	if geom.continues(from, to) then return true end
 	local ok = geom.runsThrough(from, at, to)
 	if ok then return true end
-	return nil, "a signal onto an edge that neither goes on from its track nor runs where it stood"
+	return nil, "a stop or signal onto an edge that neither goes on from its track nor runs where it stood"
 end
 
 -- Nearest point of the curve to the cursor's forward viewing ray. The

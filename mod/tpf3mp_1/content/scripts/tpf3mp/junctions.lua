@@ -193,22 +193,92 @@ local function captureConfig(c, w, source, memo)
 	return config
 end
 
+-- A captured configuration (nil for none) in one line, to compare two of
+-- them at the same node as the wire carries them: edges by their ends in
+-- either order, phases in whole milliseconds. The game's empty one (no
+-- turns, crosswalks, light or phases, preference Auto, no double slip
+-- switch, no phases set by hand) is none: the bridge window gives it to
+-- every node of a track the room built, which has no configuration
+-- (build 40420, 2026-10-19), and a node without one is the same to the game.
+-- Crosswalks are a set in the game (docs/HOOKS.md, a hash set of edge ids),
+-- listed in an order of their ids: the bridge window's new edges list a
+-- node's two crosswalks the other way round at about a third of a road
+-- bridge's nodes (28 of 94 in a room, build 40420, 2026-10-19), every other
+-- setting the same. So they compare as a set, unless the node has phases,
+-- which name its crosswalks by their place in that order.
+local function configWords(config)
+	if config == nil then return "none" end
+	if #config.connections == 0 and #config.crosswalks == 0 and #config.phases == 0 and config.light == nil
+		and config.preference == "Auto" and not config.double_slip and not config.custom_phases then
+		return "none"
+	end
+	local function ms(seconds)
+		local scaled = seconds * 1000
+		local whole = math.floor(scaled)
+		if scaled - whole >= 0.5 then whole = whole + 1 end
+		return string.format("%d", whole)
+	end
+	local out = { config.preference, tostring(config.light), tostring(config.double_slip),
+		tostring(config.custom_phases) }
+	for _, t in ipairs(config.connections) do
+		out[#out+1] = edgeKey(t.incoming) .. ":" .. t.lane_in .. ">" .. edgeKey(t.outgoing) .. ":" .. t.lane_out
+			.. ":" .. tostring(t.road) .. ":" .. tostring(t.tram)
+	end
+	local walks = {}
+	for _, e in ipairs(config.crosswalks) do walks[#walks+1] = "walk " .. edgeKey(e) end
+	if #config.phases == 0 then table.sort(walks) end
+	for _, walk in ipairs(walks) do out[#out+1] = walk end
+	for _, p in ipairs(config.phases) do
+		out[#out+1] = "phase " .. ms(p.duration) .. "/" .. ms(p.minimum) .. "/" .. tostring(p.skip)
+			.. ":" .. table.concat(p.locked, ",")
+	end
+	return table.concat(out, "|")
+end
+
 -- Capture both updates and explicit resets; preserve order within a config
 -- because a traffic-light phase's indices address that order.
-function junctions.capture(street)
+--
+-- `changedOnly` leaves out a node's settings that are those it has now, a
+-- configuration named by the ends of its edges (configWords; the game's
+-- empty one where it has none, or a reset of a node with none): for a rebuild of edges between the nodes they joined (the road and
+-- track modifiers, a bridge's or tunnel's type from its window). The game's
+-- proposal names the new edges at every node at a rebuilt edge, and a long
+-- bridge has more of them than an action carries (MAX_JUNCTIONS); every game
+-- keeps a node's settings across the edges rebuilt at it itself
+-- (junctions.into, `preserve`), so such a node needs nothing carried. Returns
+-- the changes, and how many were left out.
+function junctions.capture(street, changedOnly)
 	local adds, removes = list(get(street, "nodeConfigsToAdd")), list(get(street, "nodeConfigsToRemove"))
-	if #adds == 0 and #removes == 0 then return {} end
+	if #adds == 0 and #removes == 0 then return {}, 0 end
 	local w, changes, seen = world(street), {}, {}
+	local base, same = changedOnly and world(nil), 0
+	local function kept(id, config)
+		if not changedOnly or id < 0 then return true end
+		-- Settings it cannot read now are carried, as before.
+		local read, now = pcall(function()
+			local old = component(id, "BASE_NODE_CONFIG")
+			return configWords(old and captureConfig(old, base))
+		end)
+		if not read or now ~= configWords(config) then return true end
+		same = same + 1
+		return false
+	end
 	for _, record in ipairs(adds) do
 		if seen[record.entity] then error("a junction configured twice", 0) end
 		seen[record.entity] = true
-		changes[#changes+1] = { node = w.node(record.entity), config = captureConfig(record.comp, w) }
+		local config = captureConfig(record.comp, w)
+		if kept(record.entity, config) then
+			changes[#changes+1] = { node = w.node(record.entity), config = config }
+		end
 	end
 	for _, id in ipairs(removes) do
-		if not seen[id] then changes[#changes+1] = { node = w.node(id) } seen[id] = true end
+		if not seen[id] then
+			seen[id] = true
+			if kept(id, nil) then changes[#changes+1] = { node = w.node(id) } end
+		end
 	end
 	table.sort(changes, function(a,b) return nodeKey(a.node) < nodeKey(b.node) end)
-	return changes
+	return changes, same
 end
 
 -- A node configuration's settings in this game's own terms (edge entities,
@@ -453,6 +523,50 @@ function junctions.renamed(proposal, nodes, old, new, comp)
 	return junctions.renamedAll(proposal, nodes, { [old] = { id = new, comp = comp } })
 end
 
+-- Every node of the street system read once for one proposal being made
+-- (tpf3mp/apply.lua networkInto): each network's node-to-edges map
+-- (getNode2StreetEdgeMap, getNode2TrackEdgeMap), and each node's position
+-- (BASE_NODE), read on first use and kept. Each map lists every node of
+-- the street system, of either network (build 40420, Japan_2: ~5,800 keys
+-- in each), so one network's read reads every node: the split lookup read
+-- them all for each network it resolved in, and the junctions read them
+-- all again (2026-10-19: 60-200 ms of a long track's apply in the watching
+-- game). The world must not change while one is used: it lives as long as
+-- one proposal is put together, before anything is sent. `source` is the
+-- api, as elsewhere here.
+function junctions.nodeIndex(source)
+	local api = source or api
+	local BASE_NODE = api.type.ComponentType.BASE_NODE
+	local maps, positions = {}, {}
+	local index = {}
+	-- The network's map, held while it is read (on TPF2 a pairs() straight
+	-- off the call let the GC free the map mid-loop).
+	function index.map(kind)
+		local m = maps[kind]
+		if m == nil then
+			m = api.engine.system.streetSystem["getNode2" .. kind .. "EdgeMap"]()
+			maps[kind] = m
+		end
+		return m
+	end
+	-- The node's position as { x =, y =, z = }, as the engine has it (by
+	-- name, else by index), or nil where it has no BASE_NODE or no position.
+	-- What the engine raises is raised, and nothing kept.
+	function index.position(node)
+		local p = positions[node]
+		if p == nil then
+			local c = api.engine.getComponent(node, BASE_NODE)
+			local v = c and c.position
+			if v then p = { x = v.x or v[1], y = v.y or v[2], z = v.z or v[3] } else p = false end
+			positions[node] = p
+		end
+		return p or nil
+	end
+	return index
+end
+
+local function finite(n) return type(n) == "number" and n == n and math.abs(n) ~= math.huge end
+
 -- Add configs to a SimpleProposal. Match in three dimensions and reject
 -- ambiguous parallel edges/nodes instead of picking a game's lowest id.
 -- `preserve` names the existing nodes whose incident edges are rebuilt.
@@ -462,9 +576,12 @@ end
 -- refresh give it the game's own, the same in every game. `narrow`, when
 -- given, is asked about each change's node and the configuration made for
 -- it (nil for a reset) before it goes in, and raises to refuse it
--- (junctions.requireNarrow). Returns the nodes left so.
-function junctions.into(proposal, changes, preserve, mine, gone, narrow)
+-- (junctions.requireNarrow). `index` is the proposal's junctions.nodeIndex,
+-- where its maker read the nodes already; a fresh one otherwise. Returns
+-- the nodes left so.
+function junctions.into(proposal, changes, preserve, mine, gone, narrow, index)
 	if #(changes or {}) == 0 and #(preserve or {}) == 0 then return end
+	index = index or junctions.nodeIndex()
 	local s = proposal.streetProposal
 	local w = world(s)
 	for id in pairs(gone or {}) do w.removed[id] = true end
@@ -478,73 +595,78 @@ function junctions.into(proposal, changes, preserve, mine, gone, narrow)
 	-- whole world could match (2026-10-16: reading every edge of the world
 	-- took ~600 ms of every road build that rebuilt an edge in a late game,
 	-- a street upgrade included; its ~10,000 nodes alone take 40-65 ms).
-	-- A node's position is read plainly where it is three finite numbers,
-	-- as w.position reads it; anything else goes through w.position, which
-	-- refuses it as before (its guarded reads cost ~20 us a node).
+	-- A node's position is used where it reads as three finite numbers;
+	-- anything else, a read that raises included, goes through w.position,
+	-- which reads it guarded and refuses it as before. The edges' ends
+	-- (w.edge) are their nodes' positions, so w.position answers from those
+	-- read here first.
 	local positions = {}
-	local BASE_NODE = api.type.ComponentType.BASE_NODE
+	local position = w.position
+	function w.position(id)
+		return w.nodes[id] or positions[id] or position(id)
+	end
 	local function at(node)
 		local p = positions[node]
 		if p then return p end
-		local read, x, y, z = pcall(function()
-			local c = api.engine.getComponent(node, BASE_NODE)
-			local v = c and c.position
-			if v == nil then return nil end
-			return v.x, v.y, v.z
-		end)
-		if read and type(x) == "number" and type(y) == "number" and type(z) == "number"
-			and x == x and y == y and z == z and math.abs(x) ~= math.huge and math.abs(y) ~= math.huge
-			and math.abs(z) ~= math.huge then
-			p = { x = x, y = y, z = z }
-		else
-			p = w.position(node)
-		end
+		local read, q = pcall(index.position, node)
+		if read and q and finite(q.x) and finite(q.y) and finite(q.z) then p = q else p = position(node) end
 		positions[node] = p
 		return p
 	end
-	-- The nodes by the metre square their position is in, so a place's
-	-- nodes are looked for in the squares within `near` of it only (a
-	-- junction's every turn and crosswalk names two places): those 3 mm
-	-- around it, a millimetre more than `near` takes, for rounding. `+ 0`
-	-- makes -0 the square of 0.
-	local cells = {}
-	local function cell(x, y) return (math.floor(x) + 0) .. "," .. (math.floor(y) + 0) end
-	local maps, allNodes = {}, {}
+	-- The nodes by the metre square their position is in (cells[x][y], each
+	-- the floor of a coordinate), so a place's nodes are looked for in the
+	-- squares within `near` of it only (a junction's every turn and crosswalk
+	-- names two places, and every change a node): those 3 mm around it, a
+	-- millimetre more than `near` takes, for rounding. Each node once, with
+	-- the edges each map lists at it (`ids`, by network): a node is a node
+	-- of each network whose map has it.
+	local cells, entries = {}, {}
 	for _, kind in ipairs({ "Street", "Track" }) do
-		maps[kind] = api.engine.system.streetSystem["getNode2" .. kind .. "EdgeMap"]()
-		for node, ids in pairs(maps[kind]) do
-			local p = at(node)
-			if not removedNodes[node] then
-				allNodes[#allNodes+1] = { id = node, network = kind, at = p }
+		for node, ids in pairs(index.map(kind)) do
+			local e = entries[node]
+			if e == nil then
+				local p = at(node)
+				e = { id = node, at = p, ids = {} }
+				entries[node] = e
+				-- `+ 0` makes -0 the square of 0.
+				local x, y = math.floor(p.x) + 0, math.floor(p.y) + 0
+				local column = cells[x]
+				if column == nil then column = {} cells[x] = column end
+				local bucket = column[y]
+				if bucket == nil then bucket = {} column[y] = bucket end
+				bucket[#bucket+1] = e
 			end
-			local key = cell(p.x, p.y)
-			local bucket = cells[key]
-			if bucket == nil then bucket = {} cells[key] = bucket end
-			bucket[#bucket+1] = { at = p, ids = ids }
+			e.ids[kind] = ids
 		end
 	end
+	local function nodesNear(p)
+		local out = {}
+		local x0, x1 = math.floor(p.x - 0.003) + 0, math.floor(p.x + 0.003) + 0
+		local y0, y1 = math.floor(p.y - 0.003) + 0, math.floor(p.y + 0.003) + 0
+		for x = x0, x1 do
+			local column = cells[x]
+			for y = y0, y1 do
+				for _, e in ipairs(column and column[y] or {}) do
+					if near(e.at, p) then out[#out+1] = e end
+				end
+			end
+		end
+		return out
+	end
+	-- The proposal's own nodes, of the network their edges make them.
+	local proposed = {}
 	for id, p in pairs(w.nodes) do
 		local n = w.node(id)
-		allNodes[#allNodes+1] = { id = id, network = n.network, at = p }
+		proposed[#proposed+1] = { id = id, network = n.network, at = p }
 	end
 	local proposedEdges, read = {}, {}
 	for id, e in pairs(w.edges) do proposedEdges[id] = { ref = w.edge(id), comp = e.comp } end
 	-- The edges at the nodes near `p` that stay, and the proposal's own.
 	local function edgesAt(p)
-		local out, keys = {}, {}
-		for _, x in ipairs({ p.x - 0.003, p.x + 0.003 }) do
-			for _, y in ipairs({ p.y - 0.003, p.y + 0.003 }) do
-				local key = cell(x, y)
-				if not keys[key] then keys[key] = true keys[#keys+1] = key end
-			end
-		end
-		local nodes = {}
-		for _, key in ipairs(keys) do
-			for _, n in ipairs(cells[key] or {}) do nodes[#nodes+1] = n end
-		end
-		for _, n in ipairs(nodes) do
-			if near(n.at, p) then
-				for _, id in ipairs(list(n.ids)) do
+		local out = {}
+		for _, n in ipairs(nodesNear(p)) do
+			for _, kind in ipairs({ "Street", "Track" }) do
+				for _, id in ipairs(list(n.ids[kind])) do
 					if not w.removed[id] and not out[id] then
 						local e = read[id]
 						if e == nil then
@@ -559,13 +681,19 @@ function junctions.into(proposal, changes, preserve, mine, gone, narrow)
 		for id, e in pairs(proposedEdges) do out[id] = e end
 		return out
 	end
+	-- The node of the reference's network at its place, of the world (but
+	-- for the nodes the proposal removes) or of the proposal; two refuse.
 	local function resolveNode(ref)
 		local found
-		for _, n in ipairs(allNodes) do
-			if n.network == ref.network and near(n.at, ref.at) then
-				if found and found ~= n.id then error("ambiguous junction position", 0) end
-				found = n.id
-			end
+		local function take(id)
+			if found and found ~= id then error("ambiguous junction position", 0) end
+			found = id
+		end
+		for _, n in ipairs(nodesNear(ref.at)) do
+			if n.ids[ref.network] ~= nil and not removedNodes[n.id] then take(n.id) end
+		end
+		for _, n in ipairs(proposed) do
+			if n.network == ref.network and near(n.at, ref.at) then take(n.id) end
 		end
 		if not found then error("the junction no longer exists", 0) end
 		return found

@@ -1034,7 +1034,11 @@ for the table (`bridge.find`). Its contract is in
   hook fills in at that build's apply; `true`, or `nil` and why.
   `terrain()` disarms and answers whether a build was filled (`nil` when
   none was armed). Optional, as `built`: without it no terraform applies
-  ("Terraforming" below).
+  ("Terraforming" below). Since Lua contract version 16, `t` may be
+  `{ groups = n }`: the next build adds the `n` asset groups the game
+  script built, and the hook gives each the asset tools' empty terrain
+  alignment list at its apply ("Asset groups built in Lua" below);
+  without it no asset group is built in a room.
 - `tpf3mp_native.applied(index, ok, entity, why)`: in the game script's
   `postUpdate`, after the batch's action `index` (from 1): whether it went,
   the entity it made, if any, and why not.
@@ -1250,15 +1254,25 @@ part (`tpf3mp/apply.lua`, `apply.costText`): `nodes <network>` a read of
 a whole network (its nodes), `near <network>` a preview's octree lookup of
 nodes (the edges found; docs/BUILDING.md), `constructionAt` the search of every
 construction (how many), `junctions` the junction settings it keeps,
-`verdict` the game's `makeProposalData`, `refresh` and `regenerate` the
-game's own proposals for a construction, and `commands` every command it
-sent. The second at each checkpoint, by kind of action. A preview of
+`verdict` the game's `makeProposalData`, `command made` the making of a
+build's command (`makeWorldBuildProposalCmd`, which converts and prepares
+the proposal again: 15-95 ms of a long track), `refresh` and `regenerate`
+the game's own proposals for a construction, and `commands` every command
+it sent. The second at each checkpoint, by kind of action. A preview of
 another member's build is made the same way in the GUI (`tpf3mp/previews.lua`),
 and every 10 s while any arrive:
 
 ```
 mod: build previews in the last 10.0 s: made 25 in 1396.0 ms (longest 158.0) [BuildRoad: nodes Street 1x 133.0 ms (4945)], drawn 25 in 405.0 ms (longest 29.0), retried 0 in 0.0 ms (longest 0.0)
+mod: build previews in the last 10.0 s: made 12 in 46.0 ms (longest 7.0) [BuildTrack], drawn 12 in 651.0 ms (longest 164.0) [evaluate 99.5 ms, fill 3.1, terrain 0.1, rest 61.3, verdict 0.0], retried 0 in 0.0 ms (longest 0.0)
 ```
+
+The longest draw's parts, where the hook says them
+(`tpf3mp_native.drawcost()`, "Build previews" below): `evaluate` the
+game's `CreateProposalData`, `fill` the member's renderer filled from it,
+`terrain` the view terrain composed again, `rest` what else
+`makeProposalData` spent (its conversions between Lua and the game), and
+`verdict` reading what the game said of it.
 
 ### The room's world
 
@@ -2927,7 +2941,23 @@ construction's window its edits:
     modifiers' rebuild is (`capture.inPlace`, `capture.modify`) and travels
     as a `BuildRoad` or `BuildTrack`, its edges' bridge or tunnel type
     included; a stop or signal on those edges must be kept in place, as
-    for the modifiers. With `acceptance.lua`'s `bridges` off it is
+    for the modifiers. The game's proposal gives every node at a rebuilt
+    edge its junction settings again, naming the new edges; the build
+    carries only those that differ from the node's settings now (by the
+    ends of the edges they name; the game's empty settings, which the
+    window gives every node of a track the room built, count as none, as
+    such a node has; a node's crosswalks as a set, unless it has light
+    phases, since the game keeps them in a hash set of edge ids and
+    lists them in an order of those ids, which the new edges change), as
+    every game keeps a node's settings
+    across the edges it rebuilds at it (`junctions.capture`
+    `changedOnly`, `junctions.into` `preserve`). A long track bridge
+    (2026-10-19, build 40420) named 128 nodes and was refused before it
+    was sent, "BuildTrack.polyline.junctions: invalid length 128"; a
+    93-piece road bridge then still carried 28 nodes, each only with its
+    two crosswalks the other way round; a
+    rebuild that does change more than 64 nodes' settings still is.
+    With `acceptance.lua`'s `bridges` off it is
     refused, saying it awaits two-player game acceptance: it travels as an
     ordinary build, so the gate is at the capture. `bridges` is on since a
     two-player game on build 40420 (2026-10-11) carried track and road
@@ -3012,7 +3042,8 @@ construction's window its edits:
   every existing non-waypoint signal is declared and kept on its continuing
   piece (`Link::kept`, BUILDING.md; `splitSignals`), and a signal the tool
   puts back where it stood on a track it redraws around a node it moves,
-  kept as the old signal on that piece (`refitSignals`).
+  kept as the old signal on that piece (`refitSignals`); a street's stops
+  the same way, on their sides (`keptStops`, off until a two-player game).
 - **The bulldozer** (`bulldozer`): its proposal removes one construction
   (with the construction's own entrance edge and node) or edges of one
   network (with the nodes they leave on their own). It becomes a
@@ -3084,8 +3115,20 @@ construction's window its edits:
   `colliders`; a `Proposal.TransformedModel` `id`, `tag`, `transf` and
   `thin` (the binding's registration, `RegisterUsertypesTransport`). The
   tool also gives its subconstruction one empty terrain alignment list,
-  which no binding reaches; it aligns no terrain. Every game finds the
-  one group of that size holding them all, builds the same full proposal
+  which no binding reaches; it aligns no terrain. The hook gives the
+  rebuilt group that list ("Asset groups built in Lua" below). Every game finds the
+  one group holding every asset removed, whatever it holds by then: two
+  quick clicks on trees of one group are both captured against the group
+  before the first comes back from the room, and the first's replay
+  rebuilds it smaller, maybe without its first asset (launcher run
+  2026-10-19: the second was refused in both games). Where more than one
+  group holds them, only the one of the captured size with the first
+  asset among them is taken; none, or no single such one, refuses it in
+  every game alike. A group of another size than captured must be owned
+  as the click saw it (the acting company's where `owned`, no one's
+  otherwise), else it is refused: another player's brush stroke may have
+  replaced it with a group of their company's, which the rebuild would
+  hand to another owner. It builds the same full proposal
   (`api.type.Proposal`) from its own copy less those assets, sends it as
   the player's company's build, and logs the group, its assets before,
   and the group holding the first asset kept (or, with none kept, the
@@ -3102,8 +3145,11 @@ construction's window its edits:
   `edgeObjectsToRemove` are exactly the signals on its removed tracks
   (each type `SIGNAL`, listed once, no construction removed with them);
   the replay removes the tracks with those signals and refuses a stop or
-  another company's signal on them. An edge with a stop on it is
-  refused.
+  another company's signal on them. A street removed with stops on it
+  goes the same way, its `edgeObjectsToRemove` exactly the stops on it
+  (town buildings along it allowed, no other construction), behind
+  `bulldozeStops` (off until a two-player game; the replay asks it too).
+  Any other edge with a stop on it is refused.
 - **The stop tool** (`streetTerminalBuilder`): a stop on a street. The
   tool queues a `WorldBuildProposal` (command 52 from
   `UI::StreetTerminalBuilder`, found statically), which the hook's gate
@@ -3305,8 +3351,8 @@ never hands the callback a result of its own:
 
 The click is dropped, and the tool left as the game left it, when the
 player starts a segment (even one let go again before the room built),
-the native builder resets its proposal after the click was captured,
-the tool misses frames (closed), the room
+the native builder resets its proposal again after the click's own reset
+(below), the tool misses frames (closed), the room
 refuses or does not apply the build or applies it without such an edge,
 the game leaves the room, or 15 s pass. The direction rule is the
 game's, counted in the GUI's state as the game counts it, with one
@@ -3316,11 +3362,38 @@ click's end snapped to something does not matter: a track snapped to a
 street beside it, as a guide, still goes on in its direction.)
 A right-click while the click waits passes through the tool's own input
 handler with no start point (`UI::StreetBuilder` vf2, 0x581479..0x5814d7).
-The native proposal-reset detour now drops a kept click if that path resets
+The native proposal-reset detour drops a kept click if that path resets
 the builder; continuation remains off even with test opt-in if this detour
-fails to install. Closing the tool also drops it after missed frames. Whether
-the parent handler can leave the tool open without resetting remains to be
-checked in game, so default continuation stays off. "Closed" is three GUI frames without the
+fails to install. `UpdateEngine` itself resets the proposal right after
+`Add` returns (40420 0x58935a, 40418 0x58a06a, 40408 0x58a07a: the path
+from `Add` there is unconditional), with `all` 0; every other caller of
+`ResetProposal` (the abort in vf2, the frame's lambda, vf5, vf16 and the
+rest, nine sites in all) passes 1. So the click's first reset with `all` 0
+is its own and keeps the click; any other reset of that builder drops it,
+before or after the room's answer. A click whose own reset has not come by
+the tool's next frame is dropped too. (The 2026-10-19 launcher run, before
+this rule, dropped every click at its own reset.) The tool's
+game-state-swap callback (the constructor's lambda_11, 40420 0x56caa0)
+also resets with `all` 1, when an entity the proposal snaps to changed
+revision: a room build landing under the cursor does that, which dropped
+one click of eleven in the 2026-10-19 room test. The detour's entry passes
+the reset's return address along (`[rsp]` in `r8`; the reset takes two
+arguments), and a reset returning past the swap callback's call (profile
+target `StreetBuilder state swap/ResetProposal call`, checked to call the
+reset itself) keeps the click, if the tool, read before the game's reset
+runs, has no start point and drags nothing (a start the player picked
+since the tool's last frame would otherwise be cleared unseen and the old
+click revived; an unreadable tool drops it). It does not stand in for the
+click's own reset. When that target does not resolve or check, every reset other than
+the click's own drops it, as before. A right-click abort still drops it:
+in the 2026-10-19 room test (40420) its reset returned past `UI::StreetBuilder`
+vf16's call (0x57b883), while a click closing a loop onto an existing node
+got the swap's reset and was kept; the drop line in `hook.log` names the
+reset's return address relative to the image.
+Closing the tool also drops it after missed frames. The right-click abort
+that leaves the tool open resets it (room test above); no other input is
+known that leaves the tool open without a reset. Default continuation
+stays off until the owner turns it on. "Closed" is three GUI frames without the
 tool's frame, counted from the click's own; a tool closed and opened
 again faster than that is not seen.
 Profile targets, all optional: `StreetBuilder::UpdateEngine/Add call`,
@@ -3466,7 +3539,7 @@ lets the road and track tools build through an edge with a stop on it. A
 track signal (not a waypoint) may also move onto the piece of a track
 the build cuts that goes on from one of its old track's ends, or that
 runs where it stood, the same way, where the tool put it (`Link::kept`,
-BUILDING.md).
+BUILDING.md), and so may a street's stop, on its side (`keptStops`).
 
 A track's catenary and type travel the same way, as far as the game's
 scripts say (build 40408's `construction_react_util.tl`: the
@@ -3485,12 +3558,13 @@ after it, not what it had):
 
 ```
 handed the player's build to the room [+e-1/0:8(...)>9(...) -e100:8(...)>9(...)]
-upgrade handed to the room: street upgrade of 1 edge(s) rebuilt in place; template ::/street/standard/town_medium_new.lua; 4 lane(s) carrying PERSON CAR BUS TRUCK TRAM ELECTRIC_TRAM TRAM_TRACK ELECTRIC_TRAM_TRACK; lane speeds 13.89 to 13.89; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0
+upgrade handed to the room: street upgrade of 1 edge(s) rebuilt in place; template ::/street/standard/town_medium_new.lua; 4 lane(s) carrying PERSON CAR BUS TRUCK TRAM ELECTRIC_TRAM TRAM_TRACK ELECTRIC_TRAM_TRACK; lane speeds 13.89 to 13.89; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0; junction settings 0
 building +e-1/0:8>9 ::/street/standard/town_medium_new.lua -e100 -n -c8,9
-upgrade applied: street upgrade of 1 edge(s) rebuilt in place; template ...; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0
+upgrade applied: street upgrade of 1 edge(s) rebuilt in place; template ...; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0; junction settings 0
 ```
 
-(the template, modes and speeds illustrative), and for an electrified
+(the template, modes and speeds illustrative; `junction settings` the
+nodes whose settings the build changes and carries), and for an electrified
 track `track upgrade of N edge(s) rebuilt in place; template ...; M
 lane(s) carrying TRAIN ELECTRIC_TRAIN; ...`. A game whose build fails says
 `action 1 of this step was not applied: ...` instead of `upgrade
@@ -3845,6 +3919,27 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
   BuildTrack preview, as this game sees it: critical, errors Construction
   Not Possible"; the entities it collides with by kind, edge, node,
   construction or town building, and their ids).
+- **Paced by their cost.** Drawing a long track's preview takes the
+  watching game 60 to 170 ms, a frame it stutters (Japan_2, build 40420:
+  the game's evaluation 13 to 100 ms, filling the renderer 3 to 57 ms,
+  `makeProposalData`'s conversions between Lua and the game 15 to 86 ms,
+  the terrain nothing), and the builder's tool changes it up to five
+  times a second while it drags: drawn as it came, 23 to 31 a 10 s,
+  up to a fifth of the watcher's time. So
+  `tpf3mp/previews.lua` draws a member's next preview no sooner than
+  `PACE` (9) times what making and drawing their last one cost here, and
+  at most `MAX_WAIT` (2 s) after it, so the previews take at most about a
+  tenth of the watcher's time; one member's at most a frame. A preview
+  that comes while its member waits replaces the one waiting, so the
+  latest always shows; a short street's, a few milliseconds, still shows
+  as often as it comes, and a preview gone goes at once. One the hook
+  could not draw (all 16 renderers busy) is tried again paced the same
+  way, in a frame that draws nothing new, and never while its member has
+  sent a newer one. The log's
+  "build previews in the last 10 s" line says the previews made and drawn
+  and, for the longest draw, its parts: the game's evaluation, filling
+  the renderer and composing the terrain (`tpf3mp_native.drawcost()`),
+  the rest of `makeProposalData` and reading the verdict.
 - **Their terrain**, composed as TpF2 Multiplayer composed it. A preview's
   cuts and embankments are terrain heights its renderer uploads into the
   one view terrain every renderer shares: `EndHeightMod` (`0x7bbae0`)
@@ -3983,6 +4078,55 @@ and builds the stroke's groups through the game's own Lua, as the
 bulldozer's replay rebuilds one (`api.type.Proposal.ConstructionEntity`,
 an autoRemovable desc, one subconstruction of the trees), for the acting
 company. A group missing or ambiguous in a game refuses the stroke there.
+
+#### Asset groups built in Lua
+
+The asset tools (`construction_builder_util::CreateProposalAddAsset`,
+0xa31030 on build 40420, 0xa2fb00 on 40408) give a group's one
+subconstruction one terrain alignment list, all zero but its slopes:
+`EQUAL`, no faces, `slopeLow` 0.75 and `slopeHigh` 2.5, the 0x48 bytes
+of the vector at subconstruction + 0x210 (subconstructions of 0x318
+bytes in the vector at + 0xa30 of the `toAdd` entity, whose
+`desc.autoRemovable` is the byte at + 0x4b1). `ProcessTerrainAlignment`
+(0xa28f90; 0xa27a60) derives, for a subconstruction with no list at
+all, an `EQUAL` alignment from each model's bounding box, which levels
+the ground in a rectangle around every tree; nothing a script controls
+gates it (not the `Context`, not `thin`). A group built in Lua has no
+list: `Proposal.Subconstruction` binds `models`, `station`, `depot`,
+`industry`, `metadata`, `laneLists` and `colliders`, not
+`terrainAlignmentLists`. In the room run of 2026-10-19 every brush
+stroke and tree bulldoze left a square of changed ground around its
+trees in both games, which single player does not.
+
+So the game script arms the hook with how many groups the build adds
+(`tpf3mp_native.terrain({ groups = n })`) and sends it; the hook's apply
+detour, before the game builds the proposal's data (`sub_a212d0` at
+0x9e29b5 on 40420, `sub_a1fd10` at 0x9e1215 on 40408, both inside the
+apply it calls), gives each group that list, in a vector of the game's
+own allocator (`terrain::align_groups`). A hook whose build detours
+are not in refuses the arming, so nothing is sent: the build would go
+through as the script made it. The build must add exactly
+those `n` entities, each an auto-removable construction of no file with
+one subconstruction whose list vector is empty; anything else refuses
+the build, and nothing is written. `terrain()` then answers whether it
+did, and the action fails in every game unless it did. The log says, in
+every game:
+
+```
+asset groups: gave the room's 2 group(s) the tool's empty terrain alignment list
+```
+
+Seen in a two-game room on build 40420 (2026-10-20, run align-1020d,
+MP_Test_2): a brush stroke of 14 groups and six tree bulldoze rebuilds
+were each given the list in both games, a group's last tree bulldozed
+armed nothing, and no square of levelled ground showed around the trees
+in either game. `api.engine.terrain.getHeightAt` (with terrain
+alignments) and `getBaseHeightAt` (without) differ at those groups' trees
+by at most 0.05 m, within what an untouched map group shows (0.065 m,
+the sampling's own), and the same in both games. Lua cannot read the
+alignment component itself (no `ComponentType` names it), and its
+`makeProposalData` takes only a `SimpleProposal`, so no preview of an
+asset group's alignment either.
 
 ### The world's lanes
 
