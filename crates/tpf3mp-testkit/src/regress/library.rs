@@ -9,11 +9,11 @@ use tpf3mp_proto::{
     action::{
         Action, AssignLine, Bulldoze, BuyVehicle, CompanyId, CompanyOp, ConsistPart,
         ConstructionBuild, ConstructionRef, CreateLine, Decoration, EdgeEnds, EdgeKind,
-        EdgeObjectKind, EdgeRef, EditLine, Lane, LineChange, LineData, LineId, LineStop, Link,
-        LoadMode, Network, Param, ParamValue, PlaceStop, Polyline, Pos, Pos2, Prospect, Renamed,
-        ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId, StopRules, Structure, Tangent,
-        Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild, Tram, Transform, UnitDir,
-        VehicleChange, VehicleId, VehicleOp, Vertex,
+        EdgeObjectKind, EdgeRef, EditLine, Fraction, KeptSignal, Lane, LineChange, LineData,
+        LineId, LineStop, Link, LoadMode, Network, Param, ParamValue, PlaceStop, Polyline, Pos,
+        Pos2, Prospect, Renamed, ReplaceVehicle, ReplacedPart, Resolve, RoadBuild, StationId,
+        StopRules, Structure, Tangent, Terminal, Terraform, TerrainCell, Tint, TownId, TrackBuild,
+        Tram, Transform, UnitDir, VehicleChange, VehicleId, VehicleOp, Vertex,
     },
 };
 
@@ -353,6 +353,14 @@ pub fn place_stop(a: Pos, b: Pos, pos: Pos) -> Action {
         name: None,
         params: BoundedVec::empty(),
     })
+}
+
+fn place_two_sided_stop(a: Pos, b: Pos, pos: Pos) -> Action {
+    let Action::PlaceStop(mut stop) = place_stop(a, b, pos) else {
+        unreachable!("place_stop builds a PlaceStop action")
+    };
+    stop.two_sided = true;
+    Action::PlaceStop(stop)
 }
 
 pub fn bulldoze_stop(a: Pos, b: Pos, pos: Pos) -> Action {
@@ -867,23 +875,38 @@ fn demolition_scenario() -> Scenario {
         .expect_all([Check::EdgeObjects(1), Check::Stations(1)])
         .act(0, place_stop(a, b, stop1))
         .expect(Check::Ignored(1))
-        // A street with a stop on it stays.
-        .act(0, bulldoze_edges(Network::Street, &[(a, b)]))
-        .expect_all([Check::Ignored(2), Check::StreetEdges(2)])
         .act(0, place_stop(b, c, stop2))
         .act(0, line("Stops", &[0, 1]))
-        // A stop a line uses stays.
+        // A street with a stop a line uses stays.
+        .act(0, bulldoze_edges(Network::Street, &[(a, b)]))
+        .expect_all([
+            Check::Ignored(2),
+            Check::StreetEdges(2),
+            Check::EdgeObjects(2),
+        ])
+        // A stop a line uses also stays when removed on its own.
         .act(0, bulldoze_stop(b, c, stop2))
         .expect_all([Check::Ignored(3), Check::EdgeObjects(2)])
         .act(0, edit(0, LineChange::Delete))
         .act(0, bulldoze_stop(b, c, stop2))
         .expect_all([Check::EdgeObjects(1), Check::Stations(1)])
         .act(0, bulldoze_edges(Network::Street, &[(c, b)]))
-        .expect(Check::StreetEdges(1))
+        .expect_all([
+            Check::StreetEdges(1),
+            Check::EdgeObjects(1),
+            Check::Stations(1),
+        ])
+        // Once unserved, a street with a stop and the stop go together.
+        .act(0, bulldoze_edges(Network::Street, &[(a, b)]))
+        .expect_all([
+            Check::StreetEdges(0),
+            Check::EdgeObjects(0),
+            Check::Stations(0),
+        ])
         .act(0, construction(BUS_STATION, at(0, 40), "Gone soon"))
         .expect(Check::Constructions(1))
         .act(0, bulldoze_construction(BUS_STATION, at(1, 41)))
-        .expect_all([Check::Constructions(0), Check::Stations(1)])
+        .expect_all([Check::Constructions(0), Check::Stations(0)])
         .act(0, bulldoze_construction(BUS_STATION, at(0, 40)))
         .expect(Check::Ignored(4))
         .scenario(
@@ -1272,9 +1295,8 @@ fn junctions_scenario() -> Scenario {
         )
 }
 
-/// The junction edit a room carries before the junction acceptance: the
-/// junction window's double slip switch where two tracks cross, turned on
-/// and off again, the preference set to No with it as the window does.
+/// A junction at an edge-split crossing with no pre-existing node
+/// configuration: the switch remains usable, with ownership refused.
 fn double_slip_scenario() -> Scenario {
     use tpf3mp_proto::action::{
         JunctionChange, JunctionConfig, JunctionEdit, NodeRef, TrafficPreference,
@@ -1301,31 +1323,210 @@ fn double_slip_scenario() -> Scenario {
         })
     };
     Script::default()
+        .act(0, track(vec![new(west), new(east)], &Structure::Ground))
         .act(
             0,
             track(
-                vec![new(west), new(crossing), new(east)],
+                vec![new(south), split(crossing, Network::Track, west, east), new(north)],
                 &Structure::Ground,
             ),
         )
-        .act(
-            0,
-            track(
-                vec![new(south), node(crossing, Network::Track), new(north)],
-                &Structure::Ground,
-            ),
-        )
-        .expect(Check::TrackEdges(4))
+        .expect_all([
+            Check::Junctions(0),
+            Check::TrackEdges(4),
+            Check::Ignored(0),
+        ])
+        .act(1, switch(true))
+        .expect_all([
+            Check::Junctions(0),
+            Check::TrackEdges(4),
+            Check::Ignored(1),
+        ])
         .act(0, switch(true))
-        .expect_all([Check::Junctions(1), Check::Ignored(0)])
+        .expect_all([Check::Junctions(1), Check::Ignored(1)])
         .act(0, switch(false))
-        .expect_all([Check::Junctions(1), Check::Ignored(0)])
+        .expect_all([Check::Junctions(1), Check::Ignored(1)])
         .scenario(
             "double_slip",
-            "a double slip switch where two tracks cross, turned on and off again",
+            "a newly edge-split track crossing without base settings; ownership refusal and double slip on/off",
             true,
             2,
         )
+        .exact()
+}
+
+/// Both network builders carry a non-empty level crossing type. A duplicate
+/// proposal from another company is refused without changing either type.
+fn crossing_types_scenario() -> Scenario {
+    const CROSSING_TYPE: &str = "c.rcr";
+    let (west, crossing, east) = (at(-1000, 0), at(0, 0), at(1000, 0));
+    let (south, north) = (at(0, -1000), at(0, 1000));
+    let (west2, crossing2, east2) = (at(9000, 10_000), at(10_000, 10_000), at(11_000, 10_000));
+    let (south2, north2) = (at(10_000, 9000), at(10_000, 11_000));
+    let crossing_road = || {
+        Action::BuildRoad(RoadBuild {
+            street: text(STREET),
+            style: None,
+            bus_lane: false,
+            tram: Tram::None,
+            polyline: polyline(
+                vec![
+                    new(south),
+                    split(crossing, Network::Track, west, east),
+                    new(north),
+                ],
+                &Structure::Ground,
+            ),
+            crossing_type: Some(text(CROSSING_TYPE)),
+        })
+    };
+    let crossing_track = || {
+        Action::BuildTrack(TrackBuild {
+            track: text(TRACK),
+            style: None,
+            catenary: true,
+            polyline: polyline(
+                vec![
+                    new(south2),
+                    split(crossing2, Network::Street, west2, east2),
+                    new(north2),
+                ],
+                &Structure::Ground,
+            ),
+            crossing_type: Some(text(CROSSING_TYPE)),
+        })
+    };
+    Script::default()
+        .act(0, track(vec![new(west), new(east)], &Structure::Ground))
+        .act(0, crossing_road())
+        .act(0, road(vec![new(west2), new(east2)]))
+        .act(0, crossing_track())
+        .expect_all([
+            Check::StreetEdges(4),
+            Check::TrackEdges(4),
+            Check::Ignored(0),
+        ])
+        .act(
+            1,
+            Action::BuildRoad(RoadBuild {
+                street: text(STREET),
+                style: None,
+                bus_lane: false,
+                tram: Tram::None,
+                polyline: polyline(
+                    vec![new(south), node(crossing, Network::Track), new(north)],
+                    &Structure::Ground,
+                ),
+                crossing_type: Some(text(CROSSING_TYPE)),
+            }),
+        )
+        .expect_all([
+            Check::StreetEdges(4),
+            Check::TrackEdges(4),
+            Check::Ignored(1),
+        ])
+        .scenario(
+            "crossing_types",
+            "BuildRoad and BuildTrack preserve toolbar crossing types; a duplicate build leaves both results unchanged",
+            true,
+            2,
+        )
+        .exact()
+}
+
+/// The street edge model is straight. Rebuild it around a new junction,
+/// carrying a two-sided stop onto the continuing link, then refuse a
+/// bulldoze while a line serves a second stop and remove both stops after
+/// deleting the line.
+fn stop_edges_scenario() -> Scenario {
+    let (a, b, middle, branch) = (at(0, 0), at(1000, 0), at(500, 0), at(500, 500));
+    let (c, d, single_stop) = (at(0, 1000), at(1000, 1000), at(500, 1000));
+    let vertices = vec![
+        node(a, Network::Street),
+        new(middle),
+        node(b, Network::Street),
+        new(branch),
+    ];
+    let mut links = polyline(
+        vec![
+            node(a, Network::Street),
+            new(middle),
+            node(b, Network::Street),
+        ],
+        &Structure::Ground,
+    )
+    .links
+    .to_vec();
+    links[0].kept = list(vec![
+        KeptSignal {
+            removal: 0,
+            at: Fraction(250_000),
+            model: text(STREET_STOP),
+        },
+        KeptSignal {
+            removal: 0,
+            at: Fraction(250_000),
+            model: text(STREET_STOP),
+        },
+    ]);
+    let mut branch_link =
+        polyline(vec![new(middle), new(branch)], &Structure::Ground).links[0].clone();
+    branch_link.from = 1;
+    branch_link.to = 3;
+    links.push(branch_link);
+    let rebuilt = Action::BuildRoad(RoadBuild {
+        street: text(STREET),
+        style: None,
+        bus_lane: false,
+        tram: Tram::None,
+        polyline: Polyline::new(list(vertices), list(links), list(vec![street_edge(a, b)]))
+            .expect("a straight street rebuild around one branch"),
+        crossing_type: None,
+    });
+    Script::default()
+        .act(0, road(vec![new(a), new(b)]))
+        .act(0, place_two_sided_stop(a, b, at(250, 0)))
+        .act(0, rebuilt)
+        .act(0, road(vec![new(c), new(d)]))
+        .act(0, place_stop(c, d, single_stop))
+        .expect_all([
+            Check::StreetEdges(4),
+            Check::Stations(2),
+            Check::EdgeObjects(3),
+            Check::Ignored(0),
+        ])
+        .act(0, line("Stops", &[0, 1]))
+        .act(0, bulldoze_edges(Network::Street, &[(c, d)]))
+        .expect_all([
+            Check::StreetEdges(4),
+            Check::Stations(2),
+            Check::EdgeObjects(3),
+            Check::Lines(1),
+            Check::Ignored(1),
+        ])
+        .act(0, edit(0, LineChange::Delete))
+        .act(0, bulldoze_edges(Network::Street, &[(c, d)]))
+        .expect_all([
+            Check::StreetEdges(3),
+            Check::Stations(1),
+            Check::EdgeObjects(2),
+            Check::Lines(0),
+            Check::Ignored(1),
+        ])
+        .act(0, bulldoze_edges(Network::Street, &[(a, middle)]))
+        .expect_all([
+            Check::StreetEdges(2),
+            Check::Stations(0),
+            Check::EdgeObjects(0),
+            Check::Ignored(1),
+        ])
+        .scenario(
+            "stop_edges",
+            "keep a two-sided stop with its station group through a street rebuild; refuse served stops and bulldoze unserved stops",
+            true,
+            1,
+        )
+        .exact()
 }
 
 /// Every scenario, the quick ones first.
@@ -1335,6 +1536,8 @@ pub fn scenarios() -> Vec<Arc<Scenario>> {
         rail_line_scenario(),
         junctions_scenario(),
         double_slip_scenario(),
+        crossing_types_scenario(),
+        stop_edges_scenario(),
         two_companies_scenario(),
         airport_support_scenario(),
         refusals_scenario(),

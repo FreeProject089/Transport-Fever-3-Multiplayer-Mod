@@ -102,6 +102,9 @@ type P = [i32; 3];
 /// An edge: its network and its ends, the lesser first, so the key does not
 /// depend on which end a game calls `node0`.
 type EdgeKey = (u8, P, P);
+/// A stop on an edge. A two-sided stop has one object for each side at the
+/// same place and in the same station group.
+type ObjectKey = (EdgeKey, P, bool);
 
 fn p(pos: &Pos) -> P {
     [pos.x, pos.y, pos.z]
@@ -222,6 +225,7 @@ struct Edge {
 struct EdgeObject {
     model: String,
     left: bool,
+    direction: P,
     owner: u32,
     /// The station a stop is.
     station: Option<u32>,
@@ -304,7 +308,8 @@ struct State {
     companies: BTreeMap<u32, Company>,
     edges: BTreeMap<EdgeKey, Edge>,
     junctions: BTreeMap<(u8, P), JunctionConfig>,
-    objects: BTreeMap<(EdgeKey, P), EdgeObject>,
+    crossing_types: BTreeMap<P, String>,
+    objects: BTreeMap<ObjectKey, EdgeObject>,
     constructions: BTreeMap<(String, P), Construction>,
     stations: BTreeMap<u32, Station>,
     lines: BTreeMap<u32, Line>,
@@ -434,6 +439,7 @@ impl State {
                 &road.polyline,
                 company,
                 ROAD_COST_PER_M,
+                road.crossing_type.as_ref().map(ResName::as_str),
             ),
             Action::BuildTrack(track) => self.build(
                 Network::Track,
@@ -441,6 +447,7 @@ impl State {
                 &track.polyline,
                 company,
                 TRACK_COST_PER_M,
+                track.crossing_type.as_ref().map(ResName::as_str),
             ),
             Action::Bulldoze(bulldoze) => self.bulldoze(bulldoze, company),
             Action::BuildConstruction(build) => self.construct(build, company),
@@ -599,7 +606,7 @@ impl State {
                 if self
                     .objects
                     .keys()
-                    .any(|(edge, there)| *edge == key && within(*there, at, EDGE_TOLERANCE))
+                    .any(|(edge, there, _)| *edge == key && within(*there, at, EDGE_TOLERANCE))
                 {
                     refuse!("something already stands there on the edge");
                 }
@@ -618,15 +625,28 @@ impl State {
                     id
                 });
                 self.charge(company, CONSTRUCTION_COST)?;
-                self.objects.insert(
-                    (key, at),
-                    EdgeObject {
-                        model,
-                        left: stop.left,
-                        owner: company,
-                        station,
-                    },
-                );
+                let direction = [stop.direction.x, stop.direction.y, stop.direction.z];
+                let sides: &[bool] = if stop.two_sided {
+                    if stop.left {
+                        &[true, false]
+                    } else {
+                        &[false, true]
+                    }
+                } else {
+                    std::slice::from_ref(&stop.left)
+                };
+                for left in sides {
+                    self.objects.insert(
+                        (key, at, *left),
+                        EdgeObject {
+                            model: model.clone(),
+                            left: *left,
+                            direction,
+                            owner: company,
+                            station,
+                        },
+                    );
+                }
                 Ok(())
             }
             Action::Terraform(terraform) => self.terraform(terraform, company),
@@ -969,10 +989,22 @@ impl State {
         polyline: &Polyline,
         company: u32,
         cost_per_m: i64,
+        crossing_type: Option<&str>,
     ) -> Result<(), Refusal> {
         let n = net(network);
-        // Existing nodes are found before anything is removed: within one
-        // build a node outlives its edges, as in the game's proposal.
+        let has_network = |node: P, target: u8, edges: &BTreeMap<EdgeKey, Edge>| {
+            edges
+                .keys()
+                .any(|(found, a, b)| *found == target && (*a == node || *b == node))
+        };
+        let mut crossings_before = BTreeSet::new();
+        for (_, a, b) in self.edges.keys() {
+            for node in [*a, *b] {
+                if has_network(node, 0, &self.edges) && has_network(node, 1, &self.edges) {
+                    crossings_before.insert(node);
+                }
+            }
+        }
         let mut at: Vec<Option<P>> = Vec::with_capacity(polyline.vertices.len());
         for vertex in polyline.vertices.iter() {
             let pos = p(&vertex.pos);
@@ -985,7 +1017,6 @@ impl State {
                 Resolve::Split(_) => None,
             });
         }
-        // The nodes it removes, found before anything is.
         let mut gone = Vec::with_capacity(polyline.removed_nodes.len());
         for node in polyline.removed_nodes.iter() {
             let pos = p(&node.at);
@@ -1002,19 +1033,18 @@ impl State {
             }
             gone.push((net(node.network), found));
         }
-        // An edge with something on it goes only where a link rebuilds it in
-        // place, between the same ends: a road or track modifier's upgrade,
-        // whose new edge keeps what stood on the old (docs/BUILDING.md).
-        let mut carried = Vec::new();
+
+        let mut removals = Vec::with_capacity(polyline.removals.len());
+        let mut removed = BTreeSet::new();
         for removal in polyline.removals.iter() {
             let key = self.find_edge(net(removal.network), &removal.ends)?;
-            if self.unobstructed(&key).is_err() {
-                carried.push(key);
+            if !removed.insert(key) {
+                refuse!("the build removes an edge twice");
             }
+            removals.push(key);
             self.edges.remove(&key);
         }
-        // A node goes with its last edge; the game refuses to remove one
-        // that still has any.
+
         for (network, node) in gone {
             let kept = self
                 .edges
@@ -1024,6 +1054,7 @@ impl State {
                 refuse!("the node at {node:?} still has edges");
             }
         }
+        let mut new_points = BTreeSet::new();
         for (vertex, slot) in polyline.vertices.iter().zip(at.iter_mut()) {
             if let Resolve::Split(edge) = &vertex.resolve {
                 let pos = p(&vertex.pos);
@@ -1037,6 +1068,7 @@ impl State {
                     .insert(edge_key(key.0, key.1, pos), split.clone());
                 self.edges.insert(edge_key(key.0, pos, key.2), split);
                 *slot = Some(pos);
+                new_points.insert(pos);
             }
         }
         let at: Vec<P> = at
@@ -1044,13 +1076,12 @@ impl State {
             .map(|pos| pos.expect("every vertex resolved above"))
             .collect();
         let mut cost: i64 = 0;
+        let mut new_edges = Vec::with_capacity(polyline.links.len());
         for link in polyline.links.iter() {
             let (a, b) = (at[usize::from(link.from)], at[usize::from(link.to)]);
             if a == b {
                 refuse!("an edge from a point to itself");
             }
-            // The build's own kind, or the kind the link keeps: a piece of
-            // the street it joins, rebuilt through the new junction.
             let (ln, own) = match &link.kind {
                 Some(other) => (net(other.network), other.template.as_str()),
                 None => (n, kind),
@@ -1072,15 +1103,154 @@ impl State {
                     owner: Some(company),
                 },
             );
+            new_edges.push(key);
+            new_points.insert(a);
+            new_points.insert(b);
             cost = cost.saturating_add(metres(a, b).saturating_mul(cost_per_m));
         }
-        for key in carried {
-            if !self.edges.contains_key(&key) {
+
+        let mut carried = BTreeMap::<ObjectKey, (EdgeKey, P)>::new();
+        for (link_index, link) in polyline.links.iter().enumerate() {
+            let target = new_edges[link_index];
+            let target_a = at[usize::from(link.from)];
+            let target_b = at[usize::from(link.to)];
+            for kept in link.kept.iter() {
+                let removal_index = usize::from(kept.removal);
+                let Some(source) = removals.get(removal_index).copied() else {
+                    refuse!("a kept object names no removed edge");
+                };
+                if source.0 != target.0 {
+                    refuse!("a kept object changes network");
+                }
+                if !(0..=1_000_000).contains(&kept.at.0) {
+                    refuse!("a kept object has a fraction outside its edge");
+                }
+                if self.edges.contains_key(&source) {
+                    refuse!("an object is kept onto an edge rebuilt in place");
+                }
+                let removal = &polyline.removals[removal_index];
+                let removal_a = p(&removal.ends.a);
+                let removal_b = p(&removal.ends.b);
+                let expected = std::array::from_fn(|i| {
+                    let delta = i64::from(removal_b[i]) - i64::from(removal_a[i]);
+                    let value = i64::from(removal_a[i]) + delta * i64::from(kept.at.0) / 1_000_000;
+                    i32::try_from(value).unwrap_or(if value < 0 { i32::MIN } else { i32::MAX })
+                });
+                let found = self
+                    .objects
+                    .iter()
+                    .filter(|(object_key @ (edge, object_at, _), object)| {
+                        *edge == source
+                            && object.model == kept.model.as_str()
+                            && within(*object_at, expected, 250)
+                            && !carried.contains_key(object_key)
+                    })
+                    .min_by_key(|((_, object_at, _), _)| dist2(*object_at, expected))
+                    .map(|(object_key, object)| (*object_key, object.clone()));
+                let Some((object_key, object)) = found else {
+                    refuse!("no {} at the kept place", kept.model);
+                };
+                let is_stop = object.station.is_some();
+                if (source.0 == 0) != is_stop {
+                    refuse!("a stop or signal is carried onto the wrong network");
+                }
+                let target_on_segment = |point: P| {
+                    let d = std::array::from_fn::<_, 3, _>(|i| {
+                        i128::from(target_b[i]) - i128::from(target_a[i])
+                    });
+                    let ap = std::array::from_fn::<_, 3, _>(|i| {
+                        i128::from(point[i]) - i128::from(target_a[i])
+                    });
+                    let len2: i128 = d.iter().map(|v| v * v).sum();
+                    let projection: i128 = ap.iter().zip(d).map(|(a, b)| a * b).sum();
+                    if len2 == 0 || projection < 0 || projection > len2 {
+                        return false;
+                    }
+                    let distance_num: i128 = (0..3)
+                        .map(|i| {
+                            let difference = ap[i] * len2 - d[i] * projection;
+                            difference * difference
+                        })
+                        .sum();
+                    distance_num <= i128::from(250_i64).pow(2) * len2.pow(2)
+                };
+                if !target_on_segment(object_key.1) {
+                    refuse!("the kept edge does not run through the object's place");
+                }
+                if carried.insert(object_key, (target, expected)).is_some() {
+                    refuse!("an object is kept twice");
+                }
+            }
+        }
+
+        for source in &removals {
+            let objects: Vec<_> = self
+                .objects
+                .keys()
+                .filter(|(edge, _, _)| edge == source)
+                .copied()
+                .collect();
+            if objects.is_empty() || self.edges.contains_key(source) {
+                continue;
+            }
+            if objects.iter().any(|object| !carried.contains_key(object)) {
                 refuse!("something stands on the edge");
             }
         }
+        let mut moved: Vec<(ObjectKey, EdgeObject)> = Vec::new();
+        for (source_object, (target, expected)) in carried {
+            let mut object = self
+                .objects
+                .remove(&source_object)
+                .expect("carried object was resolved above");
+            let direction = [
+                i64::from(target.2[0]) - i64::from(target.1[0]),
+                i64::from(target.2[1]) - i64::from(target.1[1]),
+                i64::from(target.2[2]) - i64::from(target.1[2]),
+            ];
+            let dot: i64 = direction
+                .iter()
+                .zip(object.direction)
+                .map(|(new, old)| new.saturating_mul(i64::from(old)))
+                .sum();
+            if dot < 0 {
+                object.left = !object.left;
+            }
+            object.direction = [
+                i32::try_from(direction[0]).unwrap_or(i32::MAX),
+                i32::try_from(direction[1]).unwrap_or(i32::MAX),
+                i32::try_from(direction[2]).unwrap_or(i32::MAX),
+            ];
+            let destination = (target, expected, object.left);
+            if self.objects.contains_key(&destination)
+                || moved.iter().any(|(key, _)| *key == destination)
+            {
+                refuse!("two objects share one side of the new edge");
+            }
+            moved.push((destination, object));
+        }
+        self.objects.extend(moved);
+
         self.edit_junctions(&polyline.junctions, company)?;
-        self.charge(company, cost)
+        self.charge(company, cost)?;
+
+        let is_crossing = |node: P, edges: &BTreeMap<EdgeKey, Edge>| {
+            [0, 1].into_iter().all(|network| {
+                edges
+                    .keys()
+                    .any(|(n, a, b)| *n == network && (*a == node || *b == node))
+            })
+        };
+        self.crossing_types
+            .retain(|node, _| is_crossing(*node, &self.edges));
+        if let Some(crossing_type) = crossing_type {
+            for point in new_points {
+                if is_crossing(point, &self.edges) && !crossings_before.contains(&point) {
+                    self.crossing_types.insert(point, crossing_type.to_owned());
+                }
+            }
+        }
+        Ok(())
     }
 
     fn bulldoze(&mut self, bulldoze: &Bulldoze, company: u32) -> Result<(), Refusal> {
@@ -1104,7 +1274,23 @@ impl State {
                     if owner.is_some_and(|owner| owner != company) {
                         refuse!("the edge is company-{}'s", owner.unwrap_or_default());
                     }
-                    self.unobstructed(&key)?;
+                    let objects: Vec<_> = self
+                        .objects
+                        .keys()
+                        .filter(|(edge, _, _)| *edge == key)
+                        .copied()
+                        .collect();
+                    if *network == Network::Street && !objects.is_empty() {
+                        if objects.iter().any(|object| {
+                            self.objects[object].station.is_none()
+                                || self.objects[object].owner != company
+                        }) {
+                            refuse!("a street has an object the company may not remove");
+                        }
+                        self.remove_objects(&objects)?;
+                    } else {
+                        self.unobstructed(&key)?;
+                    }
                     self.edges.remove(&key);
                 }
             }
@@ -1238,7 +1424,7 @@ impl State {
                 Network::Track => TRACK_COST_PER_M,
             };
             let template = first.template.as_str().to_owned();
-            self.build(first.network, &template, connection, company, cost)?;
+            self.build(first.network, &template, connection, company, cost, None)?;
         }
         Ok(())
     }
@@ -1280,20 +1466,20 @@ impl State {
         key: EdgeKey,
         at: &Pos,
         model: &ResName,
-        taken: &[(EdgeKey, P)],
+        taken: &[ObjectKey],
         company: u32,
-    ) -> Result<(EdgeKey, P), Refusal> {
+    ) -> Result<ObjectKey, Refusal> {
         let at = p(at);
         let found = self
             .objects
             .iter()
-            .filter(|(k @ (on, there), object)| {
+            .filter(|(k @ (on, there, _), object)| {
                 *on == key
                     && !taken.contains(k)
                     && object.model == model.as_str()
                     && within(*there, at, EDGE_TOLERANCE)
             })
-            .min_by_key(|((_, there), _)| dist2(*there, at))
+            .min_by_key(|((_, there, _), _)| dist2(*there, at))
             .map(|(k, object)| (*k, object.owner));
         let Some((object, owner)) = found else {
             refuse!("no {model} there");
@@ -1306,7 +1492,7 @@ impl State {
 
     /// Removes edge objects with their stations, none unless every station
     /// is unserved.
-    fn remove_objects(&mut self, objects: &[(EdgeKey, P)]) -> Result<(), Refusal> {
+    fn remove_objects(&mut self, objects: &[ObjectKey]) -> Result<(), Refusal> {
         for object in objects {
             if let Some(station) = self.objects[object].station {
                 self.unserved(station)?;
@@ -1352,7 +1538,7 @@ impl State {
 
     /// Refuses when a stop or signal stands on the edge.
     fn unobstructed(&self, key: &EdgeKey) -> Result<(), Refusal> {
-        if self.objects.keys().any(|(edge, _)| edge == key) {
+        if self.objects.keys().any(|(edge, _, _)| edge == key) {
             refuse!("something stands on the edge");
         }
         Ok(())
@@ -1767,7 +1953,10 @@ impl ModelWorld {
             .map(|(id, st)| (*id, st.at, st.name.as_str()))
             .collect();
         vec![
-            lane_digest(lane::NETWORK, &(&s.edges, &s.terrain, &s.junctions)),
+            lane_digest(
+                lane::NETWORK,
+                &(&s.edges, &s.terrain, &s.junctions, &s.crossing_types),
+            ),
             lane_digest(
                 lane::CONSTRUCTIONS,
                 &(
@@ -1893,7 +2082,7 @@ fn lane_digest<T: Serialize>(lane: u16, value: &T) -> LaneDigest {
 
 #[cfg(test)]
 mod tests {
-    use tpf3mp_proto::{Platform, Text, action::LoanTerms};
+    use tpf3mp_proto::{BoundedVec, Platform, Text, action::LoanTerms};
 
     use super::*;
 
@@ -2509,5 +2698,172 @@ mod tests {
             2,
             "{kinds:?}"
         );
+    }
+    #[test]
+    fn road_and_track_builds_preserve_crossing_types_and_refuse_duplicate_edges_atomically() {
+        use crate::regress::{library, script::Item};
+
+        let players = [PlayerId(FixedBytes([8; 32])), PlayerId(FixedBytes([9; 32]))];
+        let mut world = joined(&players);
+        let initial_network = world.lanes()[0];
+        let scenario = library::scenarios()
+            .into_iter()
+            .find(|scenario| scenario.name == "crossing_types")
+            .unwrap();
+        let actions: Vec<_> = scenario
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Act { actor, action } => Some((*actor, action)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(actions.len(), 5);
+
+        for (seq, (actor, action)) in actions.iter().take(4).enumerate() {
+            act(&mut world, seq as u64 + 3, players[*actor], action);
+            assert!(world.ignored().is_empty(), "{:?}", world.ignored());
+        }
+        assert_ne!(world.lanes()[0], initial_network);
+        assert_eq!(
+            world.state.crossing_types,
+            BTreeMap::from([
+                ([0, 0, 0], "c.rcr".to_owned()),
+                ([10_000_000, 10_000_000, 0], "c.rcr".to_owned()),
+            ])
+        );
+        let before_duplicate = world.lanes()[0];
+        act(&mut world, 7, players[actions[4].0], actions[4].1);
+        assert_eq!(world.lanes()[0], before_duplicate);
+        assert_eq!(world.state.crossing_types.len(), 2);
+        assert!(
+            world.ignored()[0].1.contains("already built"),
+            "{:?}",
+            world.ignored()
+        );
+        let loaded = ModelWorld::load(&world.save()).unwrap();
+        assert_eq!(loaded.lanes(), world.lanes());
+    }
+
+    #[test]
+    fn street_stop_rebuilds_keep_station_groups_and_bulldozing_checks_lines() {
+        use crate::regress::{library, script::Item};
+        use tpf3mp_proto::action::Fraction;
+
+        let player = PlayerId(FixedBytes([10; 32]));
+        let mut world = joined(&[player]);
+        let scenario = library::scenarios()
+            .into_iter()
+            .find(|scenario| scenario.name == "stop_edges")
+            .unwrap();
+        let actions: Vec<_> = scenario
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Act { action, .. } => Some(action),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(actions.len(), 10);
+        let mut seq = 2;
+        for action in &actions[..2] {
+            act(&mut world, seq, player, action);
+            seq += 1;
+        }
+        assert_eq!(world.state.objects.len(), 2);
+        assert!(
+            world
+                .state
+                .objects
+                .values()
+                .all(|object| object.station == Some(0))
+        );
+
+        // A moved stop whose declared fraction does not identify the source
+        // object is refused without changing edges, stations, objects or money.
+        let before_edges = world.state.edges.clone();
+        let before_objects = world.state.objects.clone();
+        let before_stations = world.state.stations.clone();
+        let before_money = world.state.companies[&0].money;
+        let mut malformed = actions[2].clone();
+        let Action::BuildRoad(build) = &mut malformed else {
+            panic!("the third action rebuilds a street");
+        };
+        let mut links = build.polyline.links.to_vec();
+        let mut kept = links[0].kept.to_vec();
+        kept[0].at = Fraction(750_000);
+        links[0].kept = BoundedVec::new(kept).unwrap();
+        build.polyline.links = BoundedVec::new(links).unwrap();
+        act(&mut world, seq, player, &malformed);
+        seq += 1;
+        assert_eq!(world.state.edges, before_edges);
+        assert_eq!(world.state.objects, before_objects);
+        assert_eq!(world.state.stations, before_stations);
+        assert_eq!(world.state.companies[&0].money, before_money);
+        assert!(
+            world
+                .ignored()
+                .last()
+                .unwrap()
+                .1
+                .contains("at the kept place"),
+            "{:?}",
+            world.ignored()
+        );
+
+        act(&mut world, seq, player, actions[2]);
+        seq += 1;
+        let kept_edge = edge_key(0, p(&library::at(0, 0)), p(&library::at(500, 0)));
+        let kept_objects: Vec<_> = world
+            .state
+            .objects
+            .iter()
+            .filter(|(_, object)| object.station == Some(0))
+            .collect();
+        assert_eq!(kept_objects.len(), 2);
+        assert!(
+            kept_objects
+                .iter()
+                .all(|((edge, at, _), _)| { *edge == kept_edge && *at == p(&library::at(250, 0)) })
+        );
+        assert_eq!(world.state.stations[&0].name, "Stop 0");
+
+        for action in &actions[3..6] {
+            act(&mut world, seq, player, action);
+            seq += 1;
+        }
+        assert_eq!(
+            world.state.lines[&0].stops,
+            vec![(0, Some(0)), (1, Some(0))]
+        );
+        let before_refusal = (
+            world.state.edges.clone(),
+            world.state.objects.clone(),
+            world.state.stations.clone(),
+        );
+        act(&mut world, seq, player, actions[6]);
+        seq += 1;
+        assert_eq!(world.state.edges, before_refusal.0);
+        assert_eq!(world.state.objects, before_refusal.1);
+        assert_eq!(world.state.stations, before_refusal.2);
+        assert!(
+            world
+                .ignored()
+                .last()
+                .unwrap()
+                .1
+                .contains("line-0 stops at station-1"),
+            "{:?}",
+            world.ignored()
+        );
+
+        for action in &actions[7..] {
+            act(&mut world, seq, player, action);
+            seq += 1;
+        }
+        assert_eq!(world.state.edges.len(), 2);
+        assert!(world.state.stations.is_empty());
+        assert!(world.state.objects.is_empty());
+        assert_eq!(world.ignored().len(), 2);
     }
 }

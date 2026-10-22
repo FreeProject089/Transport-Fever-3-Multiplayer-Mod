@@ -11,15 +11,22 @@ to stay under 10 minutes a platform once the real game plays it.
 Today the games play a model of the game (below), not Transport Fever 3.
 The `junctions` scenario builds a street junction, applies turns,
 crosswalks and timed light phases, refuses another company's edit and
-resets it. The `double_slip` scenario turns a double slip switch on and
-off where two tracks cross, the one junction edit a room carries before
-the junction acceptance.
-Junction state participates in the model's network digest.
-The native/Lua adapter tests and pending real-game checklist are in
-[HOOKS.md](HOOKS.md#junction-tools).
-The script, the runner and the checks do not depend on which: the real
-game's hook plugs into the same script once it applies actions ("With the
-real game").
+resets it. `double_slip` splits an existing track edge to make a new
+crossing with no junction settings, refuses another company's switch edit,
+then turns the switch on and off. `crossing_types` builds crossings from
+both the street and track tools with a non-None toolbar type, and confirms
+a duplicate build is refused without changing the crossings. `stop_edges`
+moves a two-sided stop through a straight street rebuild, refuses to
+bulldoze a stop served by a line, then removes the unserved one-sided and
+two-sided stops.
+
+Junction settings and crossing types participate in the model's network
+digest. These scripts exercise deterministic replay and model behavior; they
+do not establish the native game's acceptance for any feature gate. The
+native/Lua adapter tests and pending real-game checklist are in
+[HOOKS.md](HOOKS.md#junction-tools). The script, runner and checks do not
+depend on which: the real game's hook plugs into the same script once it
+applies actions ("With the real game").
 
 ## Running it
 
@@ -151,12 +158,23 @@ money. Vehicles on lines carry passengers between stations, with fares
 and upkeep, driven by a seeded generator. Vehicles and stations have
 names and vehicles a colour, set as their windows set them (`Rename`,
 `VehicleOp` `Recolor`) and only by the company that owns them; the
-`line-editing` and `two-companies` scenarios check both. An action is applied whole or
-not at all. An edge with a stop on it is removed only where the same build
-rebuilds it between the same ends (an upgrade tool's build), and the stop
-stays; the `upgrades` scenario plays that, an electrified track and a
-terraform in bands. Its lanes are the network, constructions, lines, vehicles and
-the economy.
+`line-editing` and `two-companies` scenarios check both. An action is applied
+whole or not at all. An edge with a stop on it is removed only where the same
+build rebuilds it between the same ends (an upgrade tool's build), and the
+stop stays; the `upgrades` scenario plays that, an electrified track and a
+terraform in bands.
+
+The stop model also handles the straight street cases in `stop_edges`: a
+link's `kept` entries must name an existing stop on the declared removal at
+the declared fraction, and the destination link must run through that place.
+It carries both sides of a two-sided stop with their shared station id.
+Street bulldozing can remove company-owned stops only when no line serves
+them; other objects on a street still block removal. This model does not
+recreate curved road geometry or the native game's station-group and stop
+placement rules, so it is focused regression coverage rather than game
+acceptance. Crossing resources are kept by node only while both street and
+track edges still meet there. The model's lanes are the network,
+constructions, lines, vehicles and the economy.
 
 It is not Transport Fever 3. It tests the stack, the scripts and the
 checks, and it pins down what the hook must do (resolve by position, fail
