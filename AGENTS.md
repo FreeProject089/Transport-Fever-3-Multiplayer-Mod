@@ -181,8 +181,12 @@ starting any task, check it against that page and
   Decisions and their reasons are in [docs/DECISIONS.md](docs/DECISIONS.md);
   record a new decision there instead of rewriting an old one.
 - **Tests with the change.** A behaviour change comes with a test that fails
-  without it. Run `cargo fmt --all`, `cargo clippy --workspace --all-targets
-  -- -D warnings` and `cargo test --workspace` before pushing.
+  without it. Before pushing, run `cargo fmt --all`, `cargo clippy` of the
+  crates you changed (`-p <crate> --all-targets -- -D warnings`) and the
+  tests that cover the change. The whole suite (`cargo clippy --workspace
+  --all-targets -- -D warnings`, `cargo test --workspace`) must pass before
+  the pull request: locally, or as the `ci` run on your branch in your own
+  fork, which runs it on all three platforms.
 - **Docs with the change.** Update the doc that describes what changed
   (`docs/PROTOCOL.md`, `docs/OPERATIONS.md`, `docs/PLAYING.md`, …) in the
   same change. Bump `PROTOCOL_VERSION`, `BRIDGE_VERSION` or the log's
