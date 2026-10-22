@@ -211,7 +211,8 @@ roads.MODES = { "PERSON", "CARGO", "CAR", "BUS", "TRUCK", "TRAM", "ELECTRIC_TRAM
 -- edge has after it: its template, the transport modes of its lanes (a tram
 -- track is TRAM_TRACK, catenary ELECTRIC_TRAIN or ELECTRIC_TRAM_TRACK), the
 -- lanes' speeds, its decorations, the towns' lock and the company's
--- ownership. nil for any other build.
+-- ownership; and how many junctions' settings it carries. nil for any
+-- other build.
 function roads.upgradeSummary(action)
 	if type(action) ~= "table" then return nil end
 	local body, network = action.BuildRoad, "street"
@@ -277,6 +278,7 @@ function roads.upgradeSummary(action)
 	if fromTemplate > 0 then parts[#parts + 1] = fromTemplate .. " edge(s) with their template's lanes" end
 	parts[#parts + 1] = "decorations " .. (#decorations > 0 and table.concat(decorations, ", ") or "none")
 	parts[#parts + 1] = "locked " .. locked .. ", owned " .. owned
+	parts[#parts + 1] = "junction settings " .. #(polyline.junctions or {})
 	return table.concat(parts, "; ")
 end
 

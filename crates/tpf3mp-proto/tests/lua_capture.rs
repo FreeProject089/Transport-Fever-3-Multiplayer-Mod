@@ -887,14 +887,14 @@ fn an_upgrade_is_said_in_one_line_and_another_build_is_not_an_upgrade() {
             TRACK_MODIFY_PROPOSAL,
             "roads.upgradeSummary(engine.captureModify({ toAdd = {}, toRemove = {}, proposal = street }))"
         ),
-        "track upgrade of 1 edge(s) rebuilt in place; template track/high_speed.track_template; 1 lane(s) carrying TRAIN ELECTRIC_TRAIN; lane speeds 83.333 to 83.333; decorations none; locked 0, owned 0"
+        "track upgrade of 1 edge(s) rebuilt in place; template track/high_speed.track_template; 1 lane(s) carrying TRAIN ELECTRIC_TRAIN; lane speeds 83.333 to 83.333; decorations none; locked 0, owned 0; junction settings 0"
     );
     assert_eq!(
         summary(
             &modify_proposal("{ { 555, 0 } }", "{}"),
             "roads.upgradeSummary(engine.captureModify({ toAdd = {}, toRemove = {}, proposal = street }))"
         ),
-        "street upgrade of 2 edge(s) rebuilt in place; template street/country_tram.street_template; 2 edge(s) with their template's lanes; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 1, owned 1"
+        "street upgrade of 2 edge(s) rebuilt in place; template street/country_tram.street_template; 2 edge(s) with their template's lanes; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 1, owned 1; junction settings 0"
     );
     // A new street onto another's middle is no upgrade.
     let other = capture_with(
@@ -989,6 +989,202 @@ fn a_bridge_window_rebuild_travels_as_the_track_it_rebuilds() {
         why.contains("removes an edge with a stop or signal"),
         "{why}"
     );
+}
+
+/// A track bridge of 127 pieces, nodes 1000-1127 along x = 1000..2270 with
+/// the edges 2000-2126 between them, each inner node turning its one lane
+/// from the piece before onto the next; its type changed in its window. As
+/// the game makes the proposal (build 40420), every node at a rebuilt piece
+/// gets its settings again naming the new pieces, and every old one goes.
+/// `CHANGE` is a Lua statement run on the proposal's configurations, keyed
+/// by node.
+fn long_bridge(change: &str) -> String {
+    format!(
+        "(function()
+            local N = 127
+            local ct, enum = api.type.ComponentType, api.type.enum
+            ct.BASE_EDGE, ct.BASE_NODE_CONFIG = 5, 6
+            enum.TrafficLightPreference = {{ AUTO = 0, YES = 1, NO = 2 }}
+            local function at(i) return v(1000 + 10 * i, 0, 20) end
+            local function config(i, edge)
+                local turns = {{}}
+                if i > 0 and i < N then
+                    turns[1] = {{ segment0 = edge(i - 1), lane0 = 0, segment1 = edge(i), lane1 = 0,
+                                  withRoad = false, withTram = false }}
+                end
+                return {{ laneConnections = turns, crosswalks = {{}}, trafficLightPreference = 0,
+                          trafficLightConfig = {{ trafficLightType = -1, states = {{}} }},
+                          doubleSlipSwitch = false, userModifiedTrafficLightStates = false }}
+            end
+            local old = function(i) return 2000 + i end
+            local new = function(i) return -1 - i end
+            local getComponent = api.engine.getComponent
+            api.engine.getComponent = function(id, kind)
+                local i = id - 1000
+                if kind == 1 and i >= 0 and i <= N then return {{ position = at(i) }} end
+                if kind == 6 and i >= 0 and i <= N then return config(i, old) end
+                if kind == 5 and id >= 2000 and id < 2000 + N then
+                    return {{ node0 = id - 1000, node1 = id - 999 }}
+                end
+                return getComponent(id, kind)
+            end
+            local tracks = api.engine.system.streetSystem.getNodeTrackSegments
+            api.engine.system.streetSystem.getNodeTrackSegments = function(n)
+                local i = n - 1000
+                if i < 0 or i > N then return tracks(n) end
+                local out = {{}}
+                if i > 0 then out[#out + 1] = old(i - 1) end
+                if i < N then out[#out + 1] = old(i) end
+                return out
+            end
+            local added, removed, configs, removes = {{}}, {{}}, {{}}, {{}}
+            for i = 0, N - 1 do
+                added[#added + 1] = {{ entity = new(i), type = 1, comp = {{ node0 = 1000 + i, node1 = 1001 + i,
+                    tangent0 = v(10, 0, 0), tangent1 = v(10, 0, 0), type = 1, typeIndex = 3,
+                    roadTemplate = 'track/standard.track_template', roadStyle = '', objects = {{}} }} }}
+                removed[#removed + 1] = {{ entity = old(i), type = 1, comp = {{ node0 = 1000 + i, node1 = 1001 + i,
+                    objects = {{}} }} }}
+            end
+            local byNode = {{}}
+            for i = 0, N do
+                byNode[1000 + i] = config(i, new)
+                configs[#configs + 1] = {{ entity = 1000 + i, comp = byNode[1000 + i] }}
+                removes[#removes + 1] = 1000 + i
+            end
+            {change}
+            return {{ addedNodes = {{}}, addedSegments = added, removedSegments = removed, removedNodes = {{}},
+                      nodeConfigsToAdd = configs, nodeConfigsToRemove = removes }}
+        end)()"
+    )
+}
+
+/// A long track bridge's type changed in its window was refused before it
+/// was sent (2026-10-19, build 40420: "BuildTrack.polyline.junctions:
+/// invalid length 128, expected a list of at most 64 items"): the window's
+/// proposal names every node's settings again, with the rebuilt pieces in
+/// place of the old. Settings the rebuild does not change stay out of the
+/// action, since every game keeps those at the nodes of the edges it
+/// rebuilds; one that does change is carried.
+#[test]
+fn a_long_bridge_window_rebuild_carries_only_the_junction_settings_it_changes() {
+    let action = decode(window_build(&long_bridge(""), true).unwrap());
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    assert_eq!(track.polyline.links.len(), 127);
+    assert_eq!(track.polyline.removals.len(), 127);
+    assert!(
+        track.polyline.junctions.is_empty(),
+        "{:?}",
+        track.polyline.junctions
+    );
+    // And it fits one action's payload.
+    assert_eq!(
+        Action::from_payload(&action.to_payload().unwrap()).unwrap(),
+        action
+    );
+    let summary = capture_with(
+        &long_bridge(""),
+        "roads.upgradeSummary(require('tpf3mp.capture').windowBuild(nil, \
+         { toAdd = {}, toRemove = {}, proposal = street }))",
+    )
+    .unwrap();
+    assert!(
+        matches!(&summary, LuaValue::String(s) if s.ends_with(b"; junction settings 0")),
+        "{summary:?}"
+    );
+
+    // The double slip switch at node 1050 turned on with it, and the turn
+    // at 1070 onto another lane: those two go, at their nodes.
+    let action = decode(
+        window_build(
+            &long_bridge(
+                "byNode[1050].doubleSlipSwitch = true \
+                 byNode[1070].laneConnections[1].lane1 = 1",
+            ),
+            true,
+        )
+        .unwrap(),
+    );
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    let at: Vec<i32> = track
+        .polyline
+        .junctions
+        .iter()
+        .map(|change| change.node.at.x)
+        .collect();
+    assert_eq!(at, [1_500_000, 1_700_000]);
+    assert!(
+        track.polyline.junctions[0]
+            .config
+            .as_ref()
+            .unwrap()
+            .double_slip
+    );
+
+    // A node whose settings go, and one that had none and gets the game's:
+    // both changes, both carried.
+    let action = decode(
+        window_build(
+            &long_bridge(
+                "configs[11] = configs[#configs] configs[#configs] = nil \
+                 local getComponent = api.engine.getComponent \
+                 api.engine.getComponent = function(id, kind) \
+                     if kind == 6 and id == 1020 then return nil end \
+                     return getComponent(id, kind) end",
+            ),
+            true,
+        )
+        .unwrap(),
+    );
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    let changes: Vec<(i32, bool)> = track
+        .polyline
+        .junctions
+        .iter()
+        .map(|change| (change.node.at.x, change.config.is_some()))
+        .collect();
+    assert_eq!(changes, [(1_100_000, false), (1_200_000, true)]);
+
+    // A bridge the room built has no settings at its nodes (the room's
+    // track builds give none), and the window gives each the game's empty
+    // one (seen on build 40420, 2026-10-19: no turns, no light, preference
+    // Auto): nothing to carry. One node given a preference too goes.
+    let empty = "for _, c in pairs(byNode) do c.laneConnections = {} end \
+                 local getComponent = api.engine.getComponent \
+                 api.engine.getComponent = function(id, kind) \
+                     if kind == 6 and id >= 1000 and id <= 1127 then return nil end \
+                     return getComponent(id, kind) end";
+    let action = decode(window_build(&long_bridge(empty), true).unwrap());
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    assert!(
+        track.polyline.junctions.is_empty(),
+        "{:?}",
+        track.polyline.junctions
+    );
+    let action = decode(
+        window_build(
+            &long_bridge(&format!("{empty} byNode[1030].trafficLightPreference = 2")),
+            true,
+        )
+        .unwrap(),
+    );
+    let Action::BuildTrack(track) = &action else {
+        panic!("{action:?}")
+    };
+    let at: Vec<i32> = track
+        .polyline
+        .junctions
+        .iter()
+        .map(|change| change.node.at.x)
+        .collect();
+    assert_eq!(at, [1_300_000], "the node set to No");
 }
 
 /// The track tool's proposal for a track started from the middle of the

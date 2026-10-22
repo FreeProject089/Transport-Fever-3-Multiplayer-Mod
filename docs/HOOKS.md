@@ -2935,7 +2935,18 @@ construction's window its edits:
     modifiers' rebuild is (`capture.inPlace`, `capture.modify`) and travels
     as a `BuildRoad` or `BuildTrack`, its edges' bridge or tunnel type
     included; a stop or signal on those edges must be kept in place, as
-    for the modifiers. With `acceptance.lua`'s `bridges` off it is
+    for the modifiers. The game's proposal gives every node at a rebuilt
+    edge its junction settings again, naming the new edges; the build
+    carries only those that differ from the node's settings now (by the
+    ends of the edges they name; the game's empty settings, which the
+    window gives every node of a track the room built, count as none, as
+    such a node has), as every game keeps a node's settings
+    across the edges it rebuilds at it (`junctions.capture`
+    `changedOnly`, `junctions.into` `preserve`). A long track bridge
+    (2026-10-19, build 40420) named 128 nodes and was refused before it
+    was sent, "BuildTrack.polyline.junctions: invalid length 128"; a
+    rebuild that does change more than 64 nodes' settings still is.
+    With `acceptance.lua`'s `bridges` off it is
     refused, saying it awaits two-player game acceptance: it travels as an
     ordinary build, so the gate is at the capture. `bridges` is on since a
     two-player game on build 40420 (2026-10-11) carried track and road
@@ -3520,12 +3531,13 @@ after it, not what it had):
 
 ```
 handed the player's build to the room [+e-1/0:8(...)>9(...) -e100:8(...)>9(...)]
-upgrade handed to the room: street upgrade of 1 edge(s) rebuilt in place; template ::/street/standard/town_medium_new.lua; 4 lane(s) carrying PERSON CAR BUS TRUCK TRAM ELECTRIC_TRAM TRAM_TRACK ELECTRIC_TRAM_TRACK; lane speeds 13.89 to 13.89; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0
+upgrade handed to the room: street upgrade of 1 edge(s) rebuilt in place; template ::/street/standard/town_medium_new.lua; 4 lane(s) carrying PERSON CAR BUS TRUCK TRAM ELECTRIC_TRAM TRAM_TRACK ELECTRIC_TRAM_TRACK; lane speeds 13.89 to 13.89; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0; junction settings 0
 building +e-1/0:8>9 ::/street/standard/town_medium_new.lua -e100 -n -c8,9
-upgrade applied: street upgrade of 1 edge(s) rebuilt in place; template ...; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0
+upgrade applied: street upgrade of 1 edge(s) rebuilt in place; template ...; decorations ::/infrastructure/edge_addons/barrier_b.edge; locked 0, owned 0; junction settings 0
 ```
 
-(the template, modes and speeds illustrative), and for an electrified
+(the template, modes and speeds illustrative; `junction settings` the
+nodes whose settings the build changes and carries), and for an electrified
 track `track upgrade of N edge(s) rebuilt in place; template ...; M
 lane(s) carrying TRAIN ELECTRIC_TRAIN; ...`. A game whose build fails says
 `action 1 of this step was not applied: ...` instead of `upgrade

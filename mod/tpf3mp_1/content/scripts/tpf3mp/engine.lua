@@ -547,7 +547,8 @@ end
 -- `constructions` "town" lets the proposal carry town buildings only: the
 -- ones a road modifier clears and puts back along the road, which every
 -- game's build clears again as the tool's does (ignoreErrors,
--- tpf3mp/apply.lua).
+-- tpf3mp/apply.lua). `changedOnly` leaves out the junction settings the
+-- build does not change (junctions.capture), for a rebuild of edges in place.
 local function townBuildingsOnly(proposal)
 	for _, e in ipairs(list(get(proposal, "toRemove"))) do
 		-- A town building is a construction that lists its town buildings
@@ -564,7 +565,7 @@ local function townBuildingsOnly(proposal)
 	end
 end
 
-function engine.fromProposal(proposal, network, constructions)
+function engine.fromProposal(proposal, network, constructions, changedOnly)
 	local street = get(proposal, "proposal")
 	if street == nil then error("a proposal with no street proposal", 0) end
 	if constructions == "town" then
@@ -585,8 +586,9 @@ function engine.fromProposal(proposal, network, constructions)
 		return nil
 	end
 
+	local settings = junctions.capture(street, changedOnly)
 	local capture = { network = network, nodes = {}, edges = {}, removed = {}, removedNodes = {},
-		junctions = junctions.capture(street), objectAdds = objectAdds, objectRemoves = objectRemoves }
+		junctions = settings, objectAdds = objectAdds, objectRemoves = objectRemoves }
 	for _, n in ipairs(added) do
 		capture.nodes[#capture.nodes + 1] = { id = n.entity, pos = vec3(n.comp.position) }
 	end
@@ -1995,7 +1997,7 @@ function engine.captureModify(proposal)
 		and #list(get(street,"removedNodes")) == 0 and #list(get(street,"removedSegments")) == 0 then
 		return junctions.edit(proposal)
 	end
-	local ok, capture = pcall(engine.fromProposal, proposal, nil, "town")
+	local ok, capture = pcall(engine.fromProposal, proposal, nil, "town", true)
 	if not ok then return nil, tostring(capture) end
 	if capture == nil then return false end
 	return roads.capture(capture, engine.world())
