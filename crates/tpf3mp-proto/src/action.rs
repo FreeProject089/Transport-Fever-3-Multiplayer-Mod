@@ -636,9 +636,12 @@ pub struct AssetRef {
 
 /// The asset bulldozer's removal: the group, named by its first asset and
 /// how many it holds, and the assets taken out of it. Every game finds the
-/// group that holds exactly that many assets, the first one and every one
-/// removed among them, and builds it again from its own copy without them;
-/// any other group refuses it.
+/// one group that holds every asset removed, whatever it holds by then (an
+/// earlier removal from the same group in the room rebuilt it smaller), and
+/// builds it again from its own copy without them. Where more than one
+/// group holds them, only the one of that many assets with the first among
+/// them is taken; none, or no single such one, refuses it. A group of
+/// another size than `count` is taken only when owned as `owned` says.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetRemoval {
     pub first: AssetRef,

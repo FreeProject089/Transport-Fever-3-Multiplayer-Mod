@@ -9870,10 +9870,14 @@ GROUPS = {
     [7004] = { fir(800, 70, 1.5) },
 }
 FULL = { [7002] = { boulder(602, 50) }, [7003] = { boulder(700, 60) } }
+-- Who owns a group (PLAYER_OWNED), where anyone does.
+api.type.ComponentType.PLAYER_OWNED = 32
+OWNERS = {}
 local get = api.engine.getComponent
 api.engine.getComponent = function(e, kind)
     if kind == 30 and GROUPS[e] then return {} end
     if kind == 31 and GROUPS[e] then return { fatInstances = FULL[e] or {}, thinInstances = GROUPS[e] } end
+    if kind == 32 and GROUPS[e] then return OWNERS[e] and { player = OWNERS[e] } end
     return get(e, kind)
 end
 api.engine.util.octree = { findEntitiesInCircle = function(at, r, kind)
@@ -9918,8 +9922,8 @@ end
 /// player's game names the group by its first tree and how many it holds,
 /// and the trees taken out by model and place; every game rebuilds its own
 /// copy of the group without them, for the acting company, and says so in
-/// its log. Without the flag, and wherever the group is not exactly the
-/// player's, nothing is removed.
+/// its log. Without the flag, and wherever no group holds the trees taken
+/// out, nothing is removed.
 #[test]
 fn trees_bulldozed_go_in_every_game_behind_the_flag() {
     let (lua, _script) = engine();
@@ -10002,10 +10006,9 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
             .contains("trees: after the rebuild 1 group(s) hold the first tree kept, of 4 assets"),
         "{logged}"
     );
-    // A game whose group is not the player's (a tree fewer) refuses, and
-    // sends nothing.
+    // A game without the tree removed refuses, and sends nothing.
     lua.load(
-        "SENT = {} HOOK.applied = {} table.remove(GROUPS[7000], 4) \
+        "SENT = {} HOOK.applied = {} table.remove(GROUPS[7000], 2) \
          HOOK.batch = { TREES } HOOK.origins = { A } UPDATE({}, STATE, 0.2)",
     )
     .exec()
@@ -10014,7 +10017,154 @@ fn trees_bulldozed_go_in_every_game_behind_the_flag() {
         eval(
             "local a = HOOK.applied[1] return tostring(a.ok) .. ':' .. tostring(a.why) .. ':' .. #SENT"
         ),
-        "false:no asset group of 4 assets with those trees here:0"
+        "false:no asset group with those trees here (the first, ::/assets/trees/fir.mdl at 14.00, 21.00):0"
+    );
+}
+
+/// Two quick clicks of the asset bulldozer on trees of one group, both
+/// captured against the group of four before the first came back from the
+/// room (launcher run 2026-10-19: the second was refused in both games,
+/// "no asset group of 19 assets with those trees here"). The first takes
+/// the group's first fir; the game rebuilds the group as another entity
+/// of three. The second is found by the fir it takes, in the group as it
+/// stands now, and every game rebuilds it with the two firs left, owned as
+/// the click saw it. A group of another size owned otherwise than the
+/// click saw it (another's brush stroke replaced it) is refused. Where
+/// more than one group holds the trees, only the one of the captured size
+/// with the first tree among them is taken; else the removal is refused.
+#[test]
+fn two_quick_tree_bulldozes_in_one_group_both_go() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    lua.load(FAKE_TREES).exec().unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code).eval::<String>().unwrap_or_else(|error| {
+            panic!(
+                "{code}: {error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        })
+    };
+    lua.load(
+        "HOOK.trees = true A = string.rep('a', 64) \
+         local capture = ug_require('tpf3mp_1::/scripts/tpf3mp/capture.lua') \
+         FIRST, SECOND = capture.bulldoze(TOOL({ 1 })), capture.bulldoze(TOOL({ 3 })) \
+         function TAKE(x, y) \
+             return { Bulldoze = { Assets = { first = FIRST.Bulldoze.Assets.first, count = 4, \
+                 removed = { { model = '::/assets/trees/fir.mdl', at = { x = x, y = y, z = 3 } } }, \
+                 mirrored = false, owned = false } } } \
+         end \
+         function APPLY(action) \
+             SENT = {} HOOK.applied = {} HOOK.logged = {} \
+             HOOK.batch = { action } HOOK.origins = { A } UPDATE({}, STATE, 0.2) \
+             local a = HOOK.applied[1] \
+             local out = { tostring(a.ok) .. (a.why and (':' .. a.why) or ''), #SENT } \
+             local p = SENT[1] and SENT[1].proposal \
+             if p then \
+                 out[#out + 1] = p.toRemove[1] \
+                 local ce = p.toAdd and p.toAdd[1] \
+                 for _, m in ipairs(ce and ce.construction.subconstructions[1].models or {}) do \
+                     out[#out + 1] = string.format('%g,%g', m.transf[4][1], m.transf[4][2]) \
+                 end \
+             end \
+             return table.concat(out, '|') \
+         end",
+    )
+    .exec()
+    .unwrap();
+    // Both name the group of four by its first fir, (10, 20).
+    assert_eq!(
+        eval(
+            "local f, s = FIRST.Bulldoze.Assets, SECOND.Bulldoze.Assets \
+             return table.concat({ f.count, f.first.at.x, f.removed[1].at.x, s.count, s.first.at.x, \
+                 s.removed[1].at.x }, '|')"
+        ),
+        "4|10|10|4|10|18"
+    );
+    assert_eq!(eval("return APPLY(FIRST)"), "true|1|7000|14,21|18,19|22,20");
+    // The game rebuilt it: 7000 is gone, 7010 holds the three firs kept.
+    lua.load(
+        "GROUPS[7010] = { GROUPS[7000][2], GROUPS[7000][3], GROUPS[7000][4] } GROUPS[7000] = nil",
+    )
+    .exec()
+    .unwrap();
+    // Owned by a company since (another's brush stroke replaced it), not
+    // no one's as the click saw it: refused, nothing sent.
+    assert_eq!(
+        eval("OWNERS[7010] = 902 local r = APPLY(SECOND) OWNERS[7010] = nil return r"),
+        "false:asset group 7010, of 3 assets since the click's 4, is company 902's, not no one's \
+         as the click saw it|0"
+    );
+    // A click that saw its own company's group, on a group no one owns now:
+    // refused too.
+    assert_eq!(
+        eval(
+            "SECOND.Bulldoze.Assets.owned = true local r = APPLY(SECOND) \
+             SECOND.Bulldoze.Assets.owned = false return r"
+        ),
+        format!(
+            "false:asset group 7010, of 3 assets since the click's 4, is no one's, not company {}'s \
+             as the click saw it|0",
+            eval("return tostring(api.engine.util.getPlayer())")
+        )
+    );
+    // A click that saw its own company's group, on that company's group:
+    // it goes, the rebuild the company's again.
+    assert_eq!(
+        eval(
+            "SECOND.Bulldoze.Assets.owned = true OWNERS[7010] = api.engine.util.getPlayer() \
+             local r = APPLY(SECOND) .. '|' .. SENT[1].proposal.toAdd[1].playerEntity \
+             SECOND.Bulldoze.Assets.owned = false OWNERS[7010] = nil return r"
+        ),
+        format!(
+            "true|1|7010|14,21|22,20|{}",
+            eval("return tostring(api.engine.util.getPlayer())")
+        )
+    );
+    assert_eq!(eval("return APPLY(SECOND)"), "true|1|7010|14,21|22,20");
+    let logged = eval("return table.concat(HOOK.logged, '|')");
+    assert!(
+        logged.contains(
+            "trees: asset group 7010 of 3 assets, 1 removed (::/assets/trees/fir.mdl at 18.00,19.00), \
+             rebuilt with 2"
+        ),
+        "{logged}"
+    );
+    // The same click again, its fir gone: refused, nothing sent.
+    lua.load("GROUPS[7011] = { GROUPS[7010][1], GROUPS[7010][3] } GROUPS[7010] = nil")
+        .exec()
+        .unwrap();
+    assert_eq!(
+        eval("return APPLY(SECOND)"),
+        "false:no asset group with those trees here (the first, ::/assets/trees/fir.mdl at 18.00, 19.00)|0"
+    );
+    // Two groups holding the fir taken, neither of the captured size with
+    // its first fir: refused.
+    lua.load(
+        "GROUPS[7012] = { GROUPS[7011][1], \
+             { modelId = 41, pos = { x = 50, y = 50, z = 3 }, rot = 0, scale = 1 } }",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(
+        eval("return APPLY(TAKE(14, 21))"),
+        "false:more than one asset group with those trees here, and not one alone of 4 assets \
+         with the first of them|0"
+    );
+    // One of them of the captured size with the first fir among them:
+    // that one is taken.
+    lua.load(
+        "GROUPS[7011] = nil GROUPS[7013] = { \
+             { modelId = 41, pos = { x = 10, y = 20, z = 3 }, rot = 0, scale = 1.25 }, \
+             GROUPS[7012][1], GROUPS[7012][2], \
+             { modelId = 41, pos = { x = 60, y = 60, z = 3 }, rot = 0, scale = 1 } }",
+    )
+    .exec()
+    .unwrap();
+    assert_eq!(
+        eval("return APPLY(TAKE(14, 21))"),
+        "true|1|7013|10,20|50,50|60,60"
     );
 }
 

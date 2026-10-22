@@ -3109,7 +3109,18 @@ construction's window its edits:
   `thin` (the binding's registration, `RegisterUsertypesTransport`). The
   tool also gives its subconstruction one empty terrain alignment list,
   which no binding reaches; it aligns no terrain. Every game finds the
-  one group of that size holding them all, builds the same full proposal
+  one group holding every asset removed, whatever it holds by then: two
+  quick clicks on trees of one group are both captured against the group
+  before the first comes back from the room, and the first's replay
+  rebuilds it smaller, maybe without its first asset (launcher run
+  2026-10-19: the second was refused in both games). Where more than one
+  group holds them, only the one of the captured size with the first
+  asset among them is taken; none, or no single such one, refuses it in
+  every game alike. A group of another size than captured must be owned
+  as the click saw it (the acting company's where `owned`, no one's
+  otherwise), else it is refused: another player's brush stroke may have
+  replaced it with a group of their company's, which the rebuild would
+  hand to another owner. It builds the same full proposal
   (`api.type.Proposal`) from its own copy less those assets, sends it as
   the player's company's build, and logs the group, its assets before,
   and the group holding the first asset kept (or, with none kept, the
