@@ -1526,7 +1526,6 @@ fn stop_edges_scenario() -> Scenario {
             true,
             1,
         )
-        .exact()
 }
 
 /// Every scenario, the quick ones first.
