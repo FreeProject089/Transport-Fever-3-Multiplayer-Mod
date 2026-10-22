@@ -1590,11 +1590,11 @@ junction acceptance.
 
 Touches: PLAN.md, Part 3, the junction item; `strict_junctions` remains off.
 
-### D30 amendment (2026-10-19, *proposed*): the switch at a track crossing with no settings yet
+### D30 amendment (2026-10-22, owner-approved): the switch at a track crossing with no settings yet
 
-*Proposed, for the owner (Juliansgith) to approve or refuse. Not in force
-until approved; D30 as approved still refuses this case ("a new
-configuration is refused").*
+The owner approved this narrow amendment in the review of PR #173 on
+2026-10-22 while requesting integration of the remaining PRs. D30's
+general refusal of new configurations remains in force outside this case.
 
 In a two-game launcher run on 2026-10-19 (dev 02829e36, build 40420) the
 double slip switch went at an older crossing that already had junction
@@ -1602,7 +1602,7 @@ settings, but was refused at every crossing of two tracks the room had
 just built: such a node has no configuration yet, and the junction window
 puts a new one there (with no lane connections).
 
-Proposed: at a node with no configuration yet that has track and no
+At a node with no configuration yet that has track and no
 street, the gate compares the new configuration against the settings that
 node has without one: no lane connections, crosswalks, light or phases,
 the preference Auto, the switch off. So the switch turned on goes there,
