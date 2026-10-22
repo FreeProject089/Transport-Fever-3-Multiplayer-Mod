@@ -977,6 +977,21 @@ about 600 ms of every road build that rebuilt an edge in a late game
 (2026-10-16), a street upgrade included; with the nodes looked up by the
 metre square they are in, 40-65 ms, and the whole build 80-130 ms.
 
+Each network's node map (`getNode2StreetEdgeMap`, `getNode2TrackEdgeMap`)
+lists every node of the street system, of either network (build 40420:
+~5,800 keys in each on Japan_2). So a build that resolves a node or a
+split read every node's position for that (once for each network it
+resolves in), and its junctions read every node's position again and
+both maps again; and each junction a change names was looked for among
+every node of both lists. A long track across roads spent 60-200 ms of its
+apply in the watching game there (2026-10-19). Now one build reads each map
+and every node's position once (`junctions.nodeIndex`, shared by the
+vertices, removals and junctions of one proposal, before anything is
+sent), and a change's junction is looked for in the metre squares around
+its place, as its turns' edges are: the same nodes found, the same ones
+refused. Keeping an existing junction's settings still reads the few nodes
+its turns name again, as before.
+
 A preview of another player's road (docs/HOOKS.md, "Build previews"), which
 nothing of reaches the world, finds its nodes near the places it names
 through the engine's octree: the edges whose boxes reach a column 2 m
