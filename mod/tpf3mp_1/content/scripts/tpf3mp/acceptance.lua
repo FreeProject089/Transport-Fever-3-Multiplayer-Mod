@@ -35,10 +35,13 @@
 -- two-player acceptance yet; keep it refused until that run is recorded.
 -- The road and track tools' toolbar crossing type (BuildRoad/BuildTrack
 -- crossing_type, schema 28) passed staged two-game runs on build 40420,
--- 2026-10-17, on Japan_2 (crossing-tool-1017b, crossing-tool-1017c); off
--- until the owner takes them, or an ordinary-start run, as its acceptance.
--- While off, a road/track build uses the established, checked build channel
--- without a toolbar preference; the engine picks the crossing type.
+-- 2026-10-17, on Japan_2 (crossing-tool-1017b, crossing-tool-1017c), and
+-- ordinary-start two-game acceptance on build 40420, 2026-10-19: two
+-- launchers against a local server, the room created, joined by invite and
+-- started from the launcher, Japan_2 with its mods; a road across a track and
+-- a track across a road, each with a picked type (jp_double_rht,
+-- jp_gantry_single_lht), laid alike in both games, every rolling world check
+-- equal.
 -- Construction rejoin's two native commands have no proven atomic failure
 -- path; while off, a refused first proposal cannot remove any existing track.
 local acceptance = {
@@ -55,7 +58,7 @@ local acceptance = {
     paint = true,
     assets = true,
     crossings = false,
-    crossingTypes = false,
+    crossingTypes = true,
     rejoinConstruction = false,
 }
 

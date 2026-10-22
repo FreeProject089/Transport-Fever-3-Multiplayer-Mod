@@ -16475,10 +16475,13 @@ fn unaccepted_ports_cannot_be_sent_or_replayed() {
             assert(not applied and why:find('awaits two%-player game acceptance'), tostring(why))
         end
         assert(#HOOK.commands == 0)
-        -- Rename/recolour, subsidies and line waypoints passed two-player
-        -- acceptance; the crossing channel remains gated pending ordinary-
-        -- start two-player acceptance.
+        -- Rename/recolour, subsidies, line waypoints and the road and track
+        -- tools' toolbar crossing type (2026-10-19) passed two-player
+        -- acceptance; the crossing window's channel remains gated pending
+        -- ordinary-start two-player acceptance.
         local accepted = {
+            { BuildRoad = { crossing_type = 'c.rcr' } },
+            { BuildTrack = { crossing_type = 'c.rcr' } },
             { CreateLine = { line = { stops = { { waypoints = { {} } } } } } },
             { EditLine = { line = 1, change = { Update = { stops = { { waypoints = { {} } } } } } } },
             { Rename = { what = { Vehicle = 1 }, name = 'x' } },

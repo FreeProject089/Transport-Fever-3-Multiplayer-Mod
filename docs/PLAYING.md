@@ -488,8 +488,8 @@ protected folder such as Program Files.
   type swap; that UI flow is not carried and remains refused, as do rebuilds
   that change segments or junction settings. `crossings` stays gated off
   pending ordinary-start two-player acceptance. The type picked in the road
-  or track tool's toolbar for a new crossing is built and waits for its
-  acceptance too: until then each game lays the era's type, as before.
+  or track tool's toolbar for a new crossing goes to the room: every game
+  lays the crossing of that type.
 - **Line waypoints.** Add waypoints to a line's route in the line
   manager as usual: the line is changed in every player's game, each
   waypoint on the same lane or, for an aircraft, at the same place.

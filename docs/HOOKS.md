@@ -3733,14 +3733,17 @@ crossing laid anew of another type than the toolbar's, or one extended
 that lost its own, is logged ("took type"), not refused: the build went,
 and the network lane of the room's world checks reads every crossing's
 type, so games that laid different types are found there. Behind
-`acceptance.lua`'s `crossingTypes`, off: while it is, the GUI sends such a
+`acceptance.lua`'s `crossingTypes`, on: with it off, the GUI sends such a
 build without the type, as before the channel, and a replay refuses one
 that carries it. Staged two-game runs on Japan_2 passed on 2026-10-17
 (`crossing-tool-1017b`: a track across a road, a road across a track and
 one of the preselected type, each of the picked type in both games, 20
 paired rolling world checks equal; `crossing-tool-1017c`: a parallel
 track keeping the existing crossing's type, a bridge carrying none, 19
-equal); ordinary-start acceptance is not yet recorded.
+equal), and ordinary-start acceptance on 2026-10-19 (two launchers, a
+local server, the room started from the launcher: a road across a track
+and a track across a road, each of its picked type in both games, every
+rolling world check equal).
 Not covered: a construction's or another tool's click whose proposal maps crossing
 nodes (read, never carried; none is known); the preview the other members
 see (sent before the click, without the type); the cost of a type (the
