@@ -23,8 +23,11 @@ patch does not require a relay upgrade or a room-log migration.
   balances still fail closed
   ([#185](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/185)).
 - **Street and track tool chains.** The tools now continue from the segment
-  the room built by default, and a right-click ends a chain. Set
-  `TPF3MP_TOOL_CONTINUE=0` (also `off`, `false`, or `no`) to turn this off
+  the room built by default, and a right-click ends a chain. In the recorded
+  run, a click immediately after a street segment joined a junction made no
+  segment; choose a new start point if that happens. Set
+  `TPF3MP_TOOL_CONTINUE=0` (also `off`, `false`, or `no`) to turn
+  automatic continuation off
   ([#185](https://github.com/Juliansgith/Transport-Fever-3-Multiplayer-Mod/pull/185)).
 
 The crossing **window** rebuild and the two-command snapped-construction

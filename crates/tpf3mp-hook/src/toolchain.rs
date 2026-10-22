@@ -84,9 +84,10 @@ pub const MAX_EDGES: usize = 4096;
 pub const SNAP_SIZE: usize = 0x34;
 /// The direction's size, as `StartAt` reads it.
 pub const DIRECTION_SIZE: usize = 0x14;
-/// On unless set to an explicit no: street and track chains, a junction
-/// and a right-click mid-chain matched the native tools in an ordinary-start
-/// two-game run on build 40423 (2026-10-22, gates-40423-a1).
+/// On unless set to an explicit no: street and track chains and a right-click
+/// mid-chain were seen in an ordinary-start two-game run on build 40423.
+/// A click immediately after one junction produced a zero-length proposal
+/// and no room action; see investigation/TPF3_GATES_2026-10-22.md.
 pub const ENV: &str = "TPF3MP_TOOL_CONTINUE";
 
 fn wanted(value: Option<&str>) -> bool {

@@ -514,10 +514,13 @@ protected folder such as Program Files.
 - **Roads, tracks, stations and depots.** Build them with the game's own
   street, track and construction tools: every player's game builds them
   together, a moment after your click, and your company pays as usual.
-  The street and track tools go on from the segment the room built, as in
-  single player; a right-click ends the chain, also while the room builds
-  (accepted in a two-game room on build 40423; `TPF3MP_TOOL_CONTINUE=0`
-  turns it off, and you choose each start point yourself). A
+  The street and track tools go on from the segment the room built; a
+  right-click ends the chain, also while the room builds. After a street
+  segment joins a junction, an immediate next click can make no segment;
+  choose a new start point if that happens. This was observed in a two-game
+  room on build 40423;
+  `TPF3MP_TOOL_CONTINUE=0` turns continuation off, so you choose each
+  start point yourself. A
   station or depot placed by a road is joined to it, as in single player.
   Street stops, on one side or both, go on with the stop tool; the stop
   goes where your cursor is on the road. The road tools tab works too:
