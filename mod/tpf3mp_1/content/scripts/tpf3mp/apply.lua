@@ -1425,6 +1425,16 @@ end
 -- reads it), the acting company's or no company's, on a link of track that
 -- goes on from one of its old track's ends, the same way, or runs where it
 -- stood, the same way (geom.keepsSignal, as the capture asks).
+-- A stop on a street the same, on a link of street (acceptance.lua's
+-- keptStops): a stop of either side, found by its construction and place.
+-- Both stops of a two-sided stop share both, and two stops facing each
+-- other nearly do, so the entries of one link that name the same removal
+-- and construction within twice the tolerance are found together: as
+-- many stops near them as entries, each a different side, all onto that
+-- link, each on its side as the room's removal runs (from its `a` end),
+-- which the link runs too: where this game's edge runs the other way, a
+-- stop's side on it is the other one, so every game puts it on the same
+-- side of the link.
 -- Anything missing or ambiguous refuses the whole build, in every game
 -- alike. Returns { link, entity, kind, pos } for each.
 local function keptSignals(polyline, removalEdges, network, at, dangling)
@@ -1436,58 +1446,117 @@ local function keptSignals(polyline, removalEdges, network, at, dangling)
 	if not any then return out end
 	if dangling then error("a construction's streets keep no signals", 0) end
 	local C = api.type.ComponentType
-	local SIGNAL = enum("EdgeObjectType").SIGNAL
+	local types = enum("EdgeObjectType")
+	local SIGNAL = types.SIGNAL
 	local lengths = {}
 	for j, link in ipairs(polyline.links) do
+		local done = {}
 		for n, kept in ipairs(link.kept or {}) do
-			local what = "link " .. j .. "'s signal " .. n
-			local r = polyline.removals[kept.removal + 1]
-			local e = removalEdges[kept.removal + 1]
-			if r == nil or e == nil then error(what .. ": no such removal", 0) end
-			local own = link.kind and link.kind.network or network
-			if r.network ~= "Track" or own ~= "Track" then error(what .. ": not on track", 0) end
-			-- The place is from the removal's `a` end; this game's edge may
-			-- run from its `b`.
-			local ea = arr(r.ends.a)
-			local dx, dy = e.a[1] - ea[1], e.a[2] - ea[2]
-			local flipped = dx * dx + dy * dy > END_TOLERANCE * END_TOLERANCE
-			local want = kept.at
-			if flipped then want = 1 - want end
-			lengths[e.id] = lengths[e.id] or edgeLength(e)
-			local best, bestComp
-			for _, o in ipairs(e.comp.objects or {}) do
-				local c = o[2] == SIGNAL and not seen[o[1]] and api.engine.getComponent(o[1], C.EDGE_OBJECT)
-				if c and c.edgeObjectConstruction == kept.model
-					and math.abs(c.param - want) * lengths[e.id] <= KEPT_TOLERANCE then
-					if best ~= nil then error(what .. ": two signals where one is kept", 0) end
-					best, bestComp = o[1], c
+			if not done[n] then
+				local what = "link " .. j .. "'s signal " .. n
+				local r = polyline.removals[kept.removal + 1]
+				local e = removalEdges[kept.removal + 1]
+				if r == nil or e == nil then error(what .. ": no such removal", 0) end
+				local own = link.kind and link.kind.network or network
+				local stop = r.network == "Street"
+				if stop then
+					what = "link " .. j .. "'s stop " .. n
+					if own ~= "Street" then error(what .. ": not on a street", 0) end
+					if acceptance.keptStops ~= true then error(what .. ": keptStops awaits two-player game acceptance", 0) end
+				elseif r.network ~= "Track" or own ~= "Track" then
+					error(what .. ": not on track", 0)
 				end
-			end
-			if best == nil then error(what .. ": no " .. tostring(kept.model) .. " where it is kept", 0) end
-			local list = api.engine.getComponent(best, C.SIGNAL_LIST)
-			local signals = list and list.signals or {}
-			if #signals == 0 then error(what .. ": a signal with no signal list", 0) end
-			for i = 1, #signals do
-				local kind = signals[i].type
-				if type(kind) ~= "number" or kind == api.type.Signal.Type.WAYPOINT then
-					error(what .. ": a waypoint, which lines name, kept on another edge", 0)
+				-- The place is from the removal's `a` end; this game's edge may
+				-- run from its `b`.
+				local ea = arr(r.ends.a)
+				local dx, dy = e.a[1] - ea[1], e.a[2] - ea[2]
+				local flipped = dx * dx + dy * dy > END_TOLERANCE * END_TOLERANCE
+				lengths[e.id] = lengths[e.id] or edgeLength(e)
+				-- The entries found together: this one, and for a stop the
+				-- link's later ones of the same removal and construction whose
+				-- places one stop could match both of (a stop each way facing
+				-- each other, a two-sided stop's two).
+				local group = { n }
+				if stop then
+					for m = n + 1, #link.kept do
+						local other = link.kept[m]
+						if other.removal == kept.removal and other.model == kept.model
+							and math.abs(other.at - kept.at) * lengths[e.id] <= 2 * KEPT_TOLERANCE then
+							group[#group + 1] = m
+						end
+					end
+					if #group > 2 then error(what .. ": more than two stops at one place", 0) end
 				end
+				local function near(param)
+					for _, m in ipairs(group) do
+						local want = link.kept[m].at
+						if flipped then want = 1 - want end
+						if math.abs(param - want) * lengths[e.id] <= KEPT_TOLERANCE then return true end
+					end
+					return false
+				end
+				local found = {}
+				for _, o in ipairs(e.comp.objects or {}) do
+					local ofKind
+					if stop then ofKind = o[2] == types.STOP_LEFT or o[2] == types.STOP_RIGHT else ofKind = o[2] == SIGNAL end
+					local c = ofKind and not seen[o[1]] and api.engine.getComponent(o[1], C.EDGE_OBJECT)
+					if c and c.edgeObjectConstruction == kept.model and near(c.param) then
+						if #found >= #group then
+							error(what .. (stop and ": more stops there than are kept" or ": two signals where one is kept"), 0)
+						end
+						found[#found + 1] = { entity = o[1], kind = o[2], comp = c }
+					end
+				end
+				if #found < #group then
+					error(what .. ": no " .. tostring(kept.model) .. " where it is kept", 0)
+				end
+				if #found == 2 and found[1].kind == found[2].kind then
+					error(what .. ": two stops on one side where a two-sided stop is kept", 0)
+				end
+				for _, f in ipairs(found) do
+					if not stop then
+						local list = api.engine.getComponent(f.entity, C.SIGNAL_LIST)
+						local signals = list and list.signals or {}
+						if #signals == 0 then error(what .. ": a signal with no signal list", 0) end
+						for i = 1, #signals do
+							local kind = signals[i].type
+							if type(kind) ~= "number" or kind == api.type.Signal.Type.WAYPOINT then
+								error(what .. ": a waypoint, which lines name, kept on another edge", 0)
+							end
+						end
+					end
+				end
+				mine(e.id, stop and "street" or "track")
+				for _, f in ipairs(found) do mine(f.entity, stop and "stop" or "signal") end
+				-- Checked along the removal as the room names it, from its `a`
+				-- end, so every game decides alike whichever way its own edge
+				-- runs.
+				local from = e
+				if flipped then from = { a = e.b, b = e.a, ta = scaled(e.tb, -1), tb = scaled(e.ta, -1) } end
+				local to = { a = at[link.from + 1], b = at[link.to + 1], ta = arr(link.tangent0), tb = arr(link.tangent1) }
+				for _, m in ipairs(group) do
+					local ok, why = geom.keepsSignal(from, link.kept[m].at, to)
+					if not ok then error(what .. ": " .. why, 0) end
+				end
+				for _, f in ipairs(found) do
+					seen[f.entity] = true
+					local pos
+					local t = f.comp.transf
+					if t and type(t[13]) == "number" then pos = { t[13], t[14], t[15] } end
+					local kind = f.kind
+					if stop and flipped then
+						kind = kind == types.STOP_LEFT and types.STOP_RIGHT or types.STOP_LEFT
+					end
+					-- A stop's station group, which holds its lines' stop: said
+					-- again after the build (settleKept).
+					local group
+					if stop then
+						pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(f.entity) end)
+					end
+					out[#out + 1] = { link = j, entity = f.entity, kind = kind, pos = pos, stop = stop, group = group }
+				end
+				for _, m in ipairs(group) do done[m] = true end
 			end
-			mine(e.id, "track")
-			mine(best, "signal")
-			-- Checked along the removal as the room names it, from its `a`
-			-- end, so every game decides alike whichever way its own edge
-			-- runs.
-			local from = e
-			if flipped then from = { a = e.b, b = e.a, ta = scaled(e.tb, -1), tb = scaled(e.ta, -1) } end
-			local to = { a = at[link.from + 1], b = at[link.to + 1], ta = arr(link.tangent0), tb = arr(link.tangent1) }
-			local ok, why = geom.keepsSignal(from, kept.at, to)
-			if not ok then error(what .. ": " .. why, 0) end
-			seen[best] = true
-			local pos
-			local t = bestComp.transf
-			if t and type(t[13]) == "number" then pos = { t[13], t[14], t[15] } end
-			out[#out + 1] = { link = j, entity = best, kind = SIGNAL, pos = pos }
 		end
 	end
 	return out
@@ -1496,7 +1565,8 @@ end
 -- After the build, each kept signal is still there, where it stood: the
 -- game moves a signal onto the piece of track that takes it. One gone is a
 -- world this mod cannot account for, so the room's replay stops
--- (replayFatal); one moved is said in the log.
+-- (replayFatal); one moved is said in the log. A kept stop says its
+-- station group before and after, which its lines name.
 local function settleKept(carried)
 	local C = api.type.ComponentType
 	local farthest
@@ -1514,9 +1584,22 @@ local function settleKept(carried)
 			end
 			if farthest == nil or moved > farthest then farthest = moved end
 		end
+		if c.stop then
+			local group
+			pcall(function() group = api.engine.system.stationGroupSystem.getStationGroup(c.entity) end)
+			log("kept stop " .. tostring(c.entity) .. " in station group " .. tostring(group)
+				.. (group == c.group and "" or (", was " .. tostring(c.group))))
+		end
+	end
+	local stops = 0
+	for _, c in ipairs(carried) do
+		if c.stop then stops = stops + 1 end
 	end
 	if #carried > 0 then
-		log("kept " .. #carried .. " signal(s) on the track's new pieces"
+		local what = stops == 0 and (#carried .. " signal(s) on the track's new pieces")
+			or stops == #carried and (stops .. " stop(s) on the street's new pieces")
+			or (#carried .. " stop(s) and signal(s) on the new pieces")
+		log("kept " .. what
 			.. (farthest and string.format(", the farthest moved %.2f m", farthest) or ", where they stand unread"))
 	end
 end
@@ -1779,6 +1862,18 @@ function networkInto(proposal, network, templateName, style, polyline, dangling,
 			for _, o in ipairs(objects) do give(into, o) end
 		end
 		removeEdge(e)
+	end
+	-- One stop a side on each new edge: a second is a fatal assert in the
+	-- game's lane creation (docs/BUILDING.md), whatever brought it there.
+	local stopTypes = next(objectsFor) ~= nil and enum("EdgeObjectType")
+	for j, objects in pairs(objectsFor) do
+		local sides = {}
+		for _, o in ipairs(objects) do
+			if o[2] == stopTypes.STOP_LEFT or o[2] == stopTypes.STOP_RIGHT then
+				if sides[o[2]] then error("link " .. j .. " would take two stops on one side", 0) end
+				sides[o[2]] = true
+			end
+		end
 	end
 	for j, objects in pairs(objectsFor) do links[j].comp.objects = objects end
 
@@ -2297,7 +2392,8 @@ end
 -- that names anything else refuses the removal, and one that leaves any
 -- out is given them, and must then read back exactly those, else the
 -- removal is refused too.
-local function withSignalsRemoved(proposal, signals)
+-- A street's stops go with it the same way (`network` "Street").
+local function withSignalsRemoved(proposal, signals, network)
 	local want, unique = {}, {}
 	for _, id in ipairs(signals) do
 		if not want[id] then unique[#unique + 1] = id end
@@ -2332,7 +2428,8 @@ local function withSignalsRemoved(proposal, signals)
 		pcall(function() proposal.proposal.edgeObjectsToRemove = signals end)
 		if not exactly(listed()) then error("the game's removal will not take the signals on the tracks", 0) end
 	end
-	log("removing signals " .. table.concat(signals, ",") .. " with their tracks")
+	log("removing " .. (network == "Street" and "stops " or "signals ") .. table.concat(signals, ",")
+		.. (network == "Street" and " with their streets" or " with their tracks"))
 end
 
 -- The bulldozer's removals, as the game makes them itself: a construction
@@ -2363,20 +2460,26 @@ function HANDLERS.Bulldoze(b)
 		for k, ends in ipairs(b.Edges.edges) do
 			local e = edgeBetween(nodes, network, arr(ends.a), arr(ends.b))
 			if e == nil then error("no " .. network .. " edge to remove (" .. k .. ")", 0) end
-			-- A track's signals go with it, as the bulldozer removes them; a
-			-- stop, or any object on a street, refuses it.
+			-- A track's signals go with it, as the bulldozer removes them, and
+			-- a street's stops with it once acceptance.lua's bulldozeStops is
+			-- on; anything else refuses it.
 			for _, o in ipairs(e.comp.objects or {}) do
-				if network ~= "Track" or o[2] ~= enum("EdgeObjectType").SIGNAL then
+				local types = enum("EdgeObjectType")
+				if network == "Track" and o[2] == types.SIGNAL then
+					mine(o[1], "signal")
+				elseif network == "Street" and (o[2] == types.STOP_LEFT or o[2] == types.STOP_RIGHT)
+					and acceptance.bulldozeStops == true then
+					mine(o[1], "stop")
+				else
 					error("edge " .. k .. " has a stop on it", 0)
 				end
-				mine(o[1], "signal")
 				signals[#signals + 1] = o[1]
 			end
 			mine(e.id, "road or track")
 			ids[#ids + 1] = e.id
 		end
 		proposal = proposals.makeSegmentsRemoveProposal(ids)
-		if #signals > 0 then withSignalsRemoved(proposal, signals) end
+		if #signals > 0 then withSignalsRemoved(proposal, signals, network) end
 		local gone = townBuildingsRemoved(proposal, b.Edges.buildings or {})
 		log("removing " .. network .. " edges " .. table.concat(ids, ",")
 			.. (gone ~= "" and (" and town buildings " .. gone) or ""))

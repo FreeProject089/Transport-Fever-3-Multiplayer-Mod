@@ -282,6 +282,42 @@ local function signalOn(entity)
 	return p, model
 end
 
+-- The objects a build may keep on another piece of their edge's network:
+-- a track's signals, a street's stops (either side). True for an object
+-- of type `kind` on an edge of `network`.
+local function movable(kind, network)
+	local types = enum("EdgeObjectType")
+	if network == "Track" then return kind == types.SIGNAL end
+	if network == "Street" then return kind == types.STOP_LEFT or kind == types.STOP_RIGHT end
+	return false
+end
+
+-- Where along its removed street the stop `entity` stands, and its
+-- construction (as signalOn a signal's); or raises.
+local function stopOn(entity)
+	local c
+	pcall(function() c = api.engine.getComponent(entity, api.type.ComponentType.EDGE_OBJECT) end)
+	local p, model = c and get(c, "param"), c and get(c, "edgeObjectConstruction")
+	if type(p) ~= "number" or type(model) ~= "string" or model == "" then
+		error("a stop it cannot read", 0)
+	end
+	return p, model
+end
+
+-- An object a build keeps on another piece: its place and construction.
+local function objectOn(entity, network)
+	if network == "Street" then return stopOn(entity) end
+	return signalOn(entity)
+end
+
+-- A stop kept on a street's new piece awaits its own acceptance (as a
+-- stop's Link.kept, acceptance.lua's keptStops); the capture says so first.
+local function stopsAccepted()
+	if module("acceptance").keptStops ~= true then
+		error("a stop the street tool keeps on a new piece awaits two-player game acceptance", 0)
+	end
+end
+
 -- A signal the track tool puts back where it stood. A track started close
 -- to a node of a track with signals: the tool removes that node, redraws
 -- the track through its own, and on an edge whose node it removes it
@@ -306,14 +342,22 @@ end
 -- acceptance.lua's refitSignals, which only the capture asks: the room
 -- carries it as a split's Link.kept. Returns the old signals so kept, by
 -- entity.
-local SIGNAL_CATEGORY = 2
+-- The street tool does the same with a stop (build 40420, 2026-10-19: a
+-- street started beside a junction, the stop on the edge whose node it
+-- removes in edgeObjectsToRemove, one record with category 0, its side
+-- (`left`) and the old stop's name and no model, on the piece between the
+-- tool's own nodes): kept the same way, on a street, the new stop's side
+-- the old one's (which also tells a two-sided stop's two apart), behind
+-- acceptance.lua's keptStops as well.
+local SIGNAL_CATEGORY, STOP_CATEGORY = 2, 0
 local function refitSignals(capture, connection, posOf)
 	local adds, removes = capture.objectAdds or {}, capture.objectRemoves or {}
 	if #adds == 0 and #removes == 0 then return {} end
 	local refused = "a build with a stop or signal"
 	if connection or #adds ~= #removes then error(refused, 0) end
-	local SIGNAL = enum("EdgeObjectType").SIGNAL
-	-- The removed signals, by entity, on the removed track edge each stands on.
+	local types = enum("EdgeObjectType")
+	-- The removed signals and stops, by entity, on the removed edge each
+	-- stands on.
 	local on = {}
 	for k, r in ipairs(capture.removed) do
 		for _, o in ipairs(r.typed or {}) do
@@ -324,42 +368,51 @@ local function refitSignals(capture, connection, posOf)
 	local removing = {}
 	for _, entity in ipairs(removes) do
 		local src = type(entity) == "number" and entity >= 0 and on[entity]
-		if not src or removing[entity] or src.kind ~= SIGNAL or capture.removed[src.k].network ~= "Track" then
+		local network = src and capture.removed[src.k].network
+		if not src or removing[entity] or not movable(src.kind, network) then
 			error(refused, 0)
 		end
 		-- A waypoint, which lines name, is never put back for another.
-		src.at = signalOn(entity)
+		src.at = objectOn(entity, network)
 		removing[entity] = src
 	end
-	-- The new signals, by the entity the proposal gives each.
+	-- The new signals and stops, by the entity the proposal gives each, with
+	-- the type its record says: a signal, or a stop on the side it names.
 	local new = {}
 	for _, rec in ipairs(adds) do
-		local id = get(rec, "resultEntity")
-		if get(rec, "category") ~= SIGNAL_CATEGORY or type(id) ~= "number" or id >= 0 or new[id] ~= nil then
+		local id, category, kind = get(rec, "resultEntity"), get(rec, "category"), nil
+		if category == SIGNAL_CATEGORY then
+			kind = types.SIGNAL
+		elseif category == STOP_CATEGORY and type(get(rec, "left")) == "boolean" then
+			kind = get(rec, "left") and types.STOP_LEFT or types.STOP_RIGHT
+		end
+		if kind == nil or type(id) ~= "number" or id >= 0 or new[id] ~= nil then
 			error(refused, 0)
 		end
-		new[id] = false
+		new[id] = { kind = kind }
 	end
 	local placed = {}
 	for _, e in ipairs(capture.edges) do
 		for i, o in ipairs(e.typed or {}) do
 			if removing[o[1]] then error(refused, 0) end
 			if o[1] < 0 then
-				if new[o[1]] ~= false or o[2] ~= SIGNAL or e.network ~= "Track" then error(refused, 0) end
-				new[o[1]] = true
-				placed[#placed + 1] = { e = e, i = i }
+				local rec = new[o[1]]
+				if rec == nil or rec.seen or o[2] ~= rec.kind or not movable(o[2], e.network) then error(refused, 0) end
+				rec.seen = true
+				placed[#placed + 1] = { e = e, i = i, kind = o[2] }
 			end
 		end
 	end
-	for _, seen in pairs(new) do
-		if not seen then error(refused, 0) end
+	for _, rec in pairs(new) do
+		if not rec.seen then error(refused, 0) end
 	end
-	-- The removed track edges by the nodes the build removes that they
-	-- end at: across such a node the track goes on as another removed edge.
+	-- The removed edges by the nodes the build removes that they end at:
+	-- across such a node the track or street goes on as another removed
+	-- edge of its network.
 	local gone = {}
 	for _, n in ipairs(capture.removedNodes) do gone[n.id] = {} end
 	for k, r in ipairs(capture.removed) do
-		if r.network == "Track" then
+		if r.network == "Track" or r.network == "Street" then
 			for _, n in ipairs({ r.node0, r.node1 }) do
 				if gone[n] then gone[n][#gone[n] + 1] = k end
 			end
@@ -378,7 +431,7 @@ local function refitSignals(capture, connection, posOf)
 		local edges = { src.k }
 		for _, n in ipairs({ r.node0, r.node1 }) do
 			for _, k in ipairs(gone[n] or {}) do
-				if k ~= src.k then edges[#edges + 1] = k end
+				if k ~= src.k and capture.removed[k].network == r.network then edges[#edges + 1] = k end
 			end
 		end
 		for _, k in ipairs(edges) do
@@ -412,7 +465,9 @@ local function refitSignals(capture, connection, posOf)
 		if not (to.a and to.b and to.ta and to.tb) then error("a signal's new track has no place here", 0) end
 		local match
 		for entity, src in pairs(removing) do
-			if standsOn(src, e, to) then
+			-- Its own type: a signal for a signal, a stop for a stop on the
+			-- same side, on a piece of its own network.
+			if src.kind == p.kind and capture.removed[src.k].network == e.network and standsOn(src, e, to) then
 				if match ~= nil then error("a build that replaces signals it cannot tell apart", 0) end
 				match = entity
 			end
@@ -424,11 +479,14 @@ local function refitSignals(capture, connection, posOf)
 	if module("acceptance").refitSignals ~= true then
 		error("a signal the track tool puts back awaits two-player game acceptance", 0)
 	end
+	for _, m in ipairs(pairsOf) do
+		if m.p.kind ~= types.SIGNAL then stopsAccepted() end
+	end
 	local refitted = {}
 	for _, m in ipairs(pairsOf) do
 		refitted[m.entity] = true
 		local e = m.p.e
-		e.typed[m.p.i] = { m.entity, SIGNAL }
+		e.typed[m.p.i] = { m.entity, m.p.kind }
 		e.objects = {}
 		for _, o in ipairs(e.typed) do e.objects[#e.objects + 1] = o[1] end
 		table.sort(e.objects)
@@ -501,9 +559,7 @@ function engine.keptInPlace(capture, connection)
 				end
 			end
 		end
-		local SIGNAL
-		pcall(function() SIGNAL = enum("EdgeObjectType").SIGNAL end)
-		local geometry = {}
+		local geometry, stops = {}, false
 		for _, e in ipairs(moving) do
 			local to
 			e.kept = {}
@@ -513,24 +569,27 @@ function engine.keptInPlace(capture, connection)
 					error("a build that moves a stop or signal", 0)
 				end
 				local r = capture.removed[src.k]
-				if SIGNAL == nil or o[2] ~= SIGNAL or r.network ~= "Track" or e.network ~= "Track" then
+				-- A track's signal onto a track, a street's stop onto a street,
+				-- its side kept (the piece runs the same way, below).
+				local read, carried = pcall(movable, o[2], r.network)
+				if not read or not carried or e.network ~= r.network then
 					error("a build that moves a stop or signal", 0)
 				end
-				local p, model = signalOn(o[1])
+				if r.network == "Street" then stops = true end
 				geometry[src.k] = geometry[src.k] or removedGeometry(r, posOf)
 				to = to or { a = posOf(e.node0), b = posOf(e.node1), ta = e.tangent0, tb = e.tangent1 }
 				if not (to.a and to.b and to.ta and to.tb) then error("a signal's new track has no place here", 0) end
-				local ok, why
-				if refitted[o[1]] then
-					ok, why = geom.keepsSignal(geometry[src.k], p, to)
-				else
-					ok, why = geom.continues(geometry[src.k], to)
-				end
+				local ok, why = true, nil
+				if not refitted[o[1]] then ok, why = geom.continues(geometry[src.k], to) end
+				if not ok then error(why, 0) end
+				local p, model = objectOn(o[1], r.network)
+				if refitted[o[1]] then ok, why = geom.keepsSignal(geometry[src.k], p, to) end
 				if not ok then error(why, 0) end
 				claimed[o[1]] = true
 				e.kept[#e.kept + 1] = { removal = src.k - 1, at = p, model = model }
 			end
 		end
+		if stops then stopsAccepted() end
 	end
 	for _, r in ipairs(capture.removed) do
 		for _, o in ipairs(r.objects) do
@@ -1172,13 +1231,15 @@ local function isTownBuilding(c)
 end
 
 -- Whether `removedObjects` (the proposal's edgeObjectsToRemove) are exactly
--- the objects `segments` carry, each a SIGNAL (the engine's type for signals
--- and waypoints alike) listed by one removed edge once: the signals the game
--- removes with the edges under them, and no stop or other object.
-local function signalsOfRemovedEdges(segments, removedObjects)
+-- the objects `segments` carry, each of a type `kinds` names (by default a
+-- SIGNAL, the engine's type for signals and waypoints alike) listed by one
+-- removed edge once: the objects the game removes with the edges under
+-- them, and nothing else.
+local function signalsOfRemovedEdges(segments, removedObjects, kinds)
 	local types = api.type.enum and api.type.enum.EdgeObjectType
 	local signal = types and types.SIGNAL
 	if type(signal) ~= "number" or #removedObjects == 0 then return false end
+	kinds = kinds or { [signal] = true }
 	local removed, occurrences = {}, {}
 	for i = 1, #removedObjects do
 		local row = removedObjects[i]
@@ -1193,7 +1254,7 @@ local function signalsOfRemovedEdges(segments, removedObjects)
 		for k = 1, #objects do
 			local pair = objects[k]
 			local entity, kind = get(pair, 1), get(pair, 2)
-			if kind ~= signal or not removed[entity] then
+			if kind == nil or not kinds[kind] or not removed[entity] then
 				return false
 			end
 			occurrences[entity] = (occurrences[entity] or 0) + 1
@@ -1320,13 +1381,34 @@ end
 -- construction, no object added, every removed edge a track, and the removed
 -- objects exactly its signals. Each game finds the same signals on the same
 -- tracks again before removing them (apply.lua, HANDLERS.Bulldoze).
+-- Streets the same with the stops on them (build 40420, 2026-10-19: a
+-- street with a two-sided stop, "2 Stops Will Be Removed"), each a stop of
+-- either side, and with the town buildings along them the game removes too
+-- (never another construction); behind acceptance.lua's bulldozeStops.
 local function trackRemovalSignals(toRemove, segments, objectsToAdd, objectsToRemove)
-	if #toRemove > 0 or #objectsToAdd > 0 or #segments == 0 then return false end
+	if #objectsToAdd > 0 or #segments == 0 then return false end
+	local network
 	for i = 1, #segments do
-		local ok, network = pcall(networkOf, segments[i])
-		if not ok or network ~= "Track" then return false end
+		local ok, n = pcall(networkOf, segments[i])
+		if not ok or (network ~= nil and n ~= network) then return false end
+		network = n
 	end
-	return signalsOfRemovedEdges(segments, objectsToRemove)
+	if network == "Track" then
+		if #toRemove > 0 then return false end
+		return signalsOfRemovedEdges(segments, objectsToRemove)
+	end
+	if network ~= "Street" then return false end
+	for _, e in ipairs(toRemove) do
+		if not isTownBuilding(api.engine.getComponent(e, api.type.ComponentType.CONSTRUCTION)) then return false end
+	end
+	local types = api.type.enum and api.type.enum.EdgeObjectType
+	local left, right = types and types.STOP_LEFT, types and types.STOP_RIGHT
+	if type(left) ~= "number" or type(right) ~= "number" or left == right then return false end
+	if not signalsOfRemovedEdges(segments, objectsToRemove, { [left] = true, [right] = true }) then return false end
+	if module("acceptance").bulldozeStops ~= true then
+		error("removing a street with its stops awaits two-player game acceptance", 0)
+	end
+	return true
 end
 
 -- The bulldozer's proposal as a Bulldoze action (tpf3mp_proto
@@ -1426,8 +1508,9 @@ function engine.bulldoze(proposal)
 			elseif n ~= network then
 				error("removing streets and tracks at once", 0)
 			end
-			-- Signals go with their tracks, each proven above to be one the
-			-- game removes with them; any other object refuses it.
+			-- Signals go with their tracks and stops with their streets, each
+			-- proven above to be one the game removes with them; any other
+			-- object refuses it.
 			if not trackSignals and #objectEntities(seg.comp) > 0 then
 				error("removing an edge with a stop or signal on it", 0)
 			end

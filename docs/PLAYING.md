@@ -527,7 +527,9 @@ protected folder such as Program Files.
   a track's type and its decorations (seen with the road tools; the track
   tools are not yet tried in a real game). Remove them, and roads and
   tracks, with the bulldozer: a two-sided stop goes with one click, and
-  a track takes its signals with it.
+  a track takes its signals with it. A street with stops on it still says
+  "Not in multiplayer yet": remove its stops first (`bulldozeStops`, off
+  until a two-game room accepts it).
 - **Airfields and airports.** Build the game's stock airfield or airport
   from **Air** with a hangar if you want to buy aircraft there. Place roads
   near the passenger building as in the base game. Use **Configure** on
@@ -640,7 +642,9 @@ protected folder such as Program Files.
   stops the build. A track started close to a node of a track with
   signals, where the tool moves that node and puts the signal back on the
   redrawn track, keeps the old signal there too (`refitSignals`; accepted
-  in a two-game room on build 40420).
+  in a two-game room on build 40420). A street started beside a junction
+  near a stop does the same with the stop (`keptStops`), off until a
+  two-game room accepts it: until then it says "Not in multiplayer yet".
 
 ## Playtesting before the game is out
 

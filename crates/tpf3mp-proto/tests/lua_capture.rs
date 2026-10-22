@@ -18,9 +18,9 @@ use mlua::{Lua, Table, Value};
 use tpf3mp_proto::{
     BoundedVec, Text,
     action::{
-        Action, AssetRef, AssetRemoval, Bulldoze, EdgeEnds, EdgeKind, EdgeRef, Fraction, Link,
-        Network, NodeRef, Polyline, Pos, Resolve, RoadBuild, Structure, Tangent, TrackBuild, Tram,
-        Vertex,
+        Action, AssetRef, AssetRemoval, Bulldoze, EdgeEnds, EdgeKind, EdgeRef, Fraction,
+        KeptSignal, Link, Network, NodeRef, Polyline, Pos, Resolve, RoadBuild, Structure, Tangent,
+        TrackBuild, Tram, Vertex,
     },
     lua::{LuaValue, action_from_lua},
 };
@@ -462,6 +462,15 @@ fn capture_with(street: &str, call: &str) -> Result<LuaValue, String> {
                          if kind == 3 and id == 557 then
                              return {{ param = 0.25, edgeObjectConstruction = '::/infrastructure/signal/waypoint.con' }}
                          end
+                         -- Stops, where 30-31 is a street: 560 three quarters of
+                         -- the way north, 561 and 562 a two-sided stop there.
+                         if kind == 3 and id == 560 then
+                             return {{ param = 0.75, edgeObjectConstruction = '::/stations/street/small_stops/small_new.con' }}
+                         end
+                         if kind == 3 and (id == 561 or id == 562) then
+                             return {{ param = 0.75,
+                                 edgeObjectConstruction = '::/stations/street/small_stops/small_new_twosided.con' }}
+                         end
                      end,
                      system = {{ streetSystem = {{
                          getNodeStreetSegments = function(n) return STREETS[n] or {{}} end,
@@ -627,7 +636,8 @@ const MODIFY_PROPOSAL: &str = "{
           type = 0, typeIndex = -1, roadTemplate = 'street/country_tram.street_template', roadStyle = '',
           objects = OBJECTS_B, edgeDecorations = { { 3, false } }, roadDevelopmentLocked = true } },
     },
-    removedSegments = { { entity = 100, type = 0, comp = { node0 = 8, node1 = 9, objects = { { 555, 0 } } } },
+    removedSegments = { { entity = 100, type = 0, comp = { node0 = 8, node1 = 9, tangent0 = v(0, 41, 0),
+                          tangent1 = v(0, 41, 0), objects = { { 555, 0 } } } },
                         { entity = 101, type = 0, comp = { node0 = 9, node1 = 10, objects = {} } } },
     removedNodes = { { entity = 9, comp = { position = v(50, 1, 0) } } },
 }";
@@ -664,9 +674,9 @@ fn a_road_modifier_travels_as_the_road_it_rebuilds() {
 
 #[test]
 fn a_stop_moves_with_a_road_only_on_the_edge_rebuilt_in_place() {
-    // Onto the other edge: refused.
+    // Onto the other edge, which does not go on from its own: refused.
     let why = capture_modify(&modify_proposal("{}", "{ { 555, 0 } }")).unwrap_err();
-    assert!(why.contains("a build that moves a stop or signal"), "{why}");
+    assert!(why.contains("does not go on from its track"), "{why}");
     // Dropped from the rebuilt edge: refused.
     let why = capture_modify(&modify_proposal("{}", "{}")).unwrap_err();
     assert!(
@@ -1754,6 +1764,261 @@ fn a_signal_the_tool_puts_back_across_a_removed_node_is_kept() {
             BEYOND_NORTH,
         ),
         "replaces a signal elsewhere",
+    );
+}
+
+/// As [`track_split_west`], with 30-31 a street and the pieces streets.
+fn street_split_west(old: &str, south: &str, north: &str, west: &str) -> String {
+    track_split_west(old, south, north, west)
+        .replace(", type = 1, comp", ", type = 0, comp")
+        .replace(
+            "track/standard.track_template",
+            "street/country.street_template",
+        )
+}
+
+/// As [`track_refit`], on the street.
+fn street_refit(old: &str, north: &str, adds: &str, removes: &str) -> String {
+    street_split_west(old, "{}", north, "{}").replace(
+        "removedNodes = {},",
+        &format!(
+            "removedNodes = {{}}, edgeObjectsToAdd = {adds}, edgeObjectsToRemove = {removes},"
+        ),
+    )
+}
+
+/// The street tool's capture, `gates` setting acceptance.lua first.
+fn capture_street_with(street: &str, gates: &str) -> Result<LuaValue, String> {
+    capture_with(
+        street,
+        &format!(
+            "(function() local a = require('tpf3mp.acceptance') {gates} \
+             return engine.captureBuild({{ toAdd = {{}}, toRemove = {{}}, proposal = street }}, 'Street') end)()"
+        ),
+    )
+}
+
+fn capture_stops(street: &str) -> Result<LuaValue, String> {
+    capture_street_with(street, "a.keptStops = true")
+}
+
+/// The street tool's record of a new stop, as build 40420 lists it
+/// (2026-10-19: the old stop's name, its side, no model).
+const NEW_STOP: &str = "{ resultEntity = -400000000, category = 0, left = true, oneWay = false, playerEntity = 3892, name = 'Minami-dori' }";
+
+const SMALL_STOP: &str = "::/stations/street/small_stops/small_new.con";
+const TWO_SIDED: &str = "::/stations/street/small_stops/small_new_twosided.con";
+
+fn kept_of(action: &Action) -> Vec<(usize, KeptSignal)> {
+    let Action::BuildRoad(road) = action else {
+        panic!("{action:?}")
+    };
+    road.polyline
+        .links
+        .iter()
+        .enumerate()
+        .flat_map(|(i, link)| link.kept.iter().map(move |k| (i, k.clone())))
+        .collect()
+}
+
+/// A street started beside a junction near a stop (build 40420,
+/// 2026-10-19, refused in a room before as "a build with a stop or
+/// signal"): the stop goes with the piece of its street the tool put it
+/// on, under its own entity, as a track's signal does; both stops of a
+/// two-sided stop together.
+#[test]
+fn a_street_cut_beside_its_stop_keeps_it_on_its_piece() {
+    let action = decode(
+        capture_stops(&street_split_west(
+            "{ { 560, 0 } }",
+            "{}",
+            "{ { 560, 0 } }",
+            "{}",
+        ))
+        .unwrap(),
+    );
+    let kept = kept_of(&action);
+    assert_eq!(kept.len(), 1, "{action:?}");
+    assert_eq!(kept[0].0, 1);
+    assert_eq!(kept[0].1.removal, 0);
+    assert_eq!(kept[0].1.at, Fraction(750_000));
+    assert_eq!(kept[0].1.model.as_str(), SMALL_STOP);
+
+    let pair = decode(
+        capture_stops(&street_split_west(
+            "{ { 561, 0 }, { 562, 1 } }",
+            "{}",
+            "{ { 561, 0 }, { 562, 1 } }",
+            "{}",
+        ))
+        .unwrap(),
+    );
+    let kept = kept_of(&pair);
+    assert_eq!(kept.len(), 2, "{pair:?}");
+    assert!(kept.iter().all(|(link, k)| *link == 1
+        && k.removal == 0
+        && k.at == Fraction(750_000)
+        && k.model.as_str() == TWO_SIDED));
+
+    // Off until its two-player game: refused when captured, and on sending
+    // and applying alike.
+    let gate = capture_street_with(
+        &street_split_west("{ { 560, 0 } }", "{}", "{ { 560, 0 } }", "{}"),
+        "a.keptStops = false",
+    )
+    .unwrap_err();
+    assert!(
+        gate.contains("keeps on a new piece awaits two-player game acceptance"),
+        "{gate}"
+    );
+    let check = capture_with(
+        &street_split_west("{ { 560, 0 } }", "{}", "{ { 560, 0 } }", "{}"),
+        "(function() local acceptance = require('tpf3mp.acceptance') acceptance.keptStops = true \
+         local a = engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Street') \
+         acceptance.keptStops = false local ok, why = acceptance.check(a) \
+         return ok == false and why or 'let through' end)()",
+    );
+    assert_eq!(
+        check,
+        Ok(LuaValue::String(
+            b"keptStops awaits two-player game acceptance".to_vec()
+        ))
+    );
+    // A track's kept signal does not ask it.
+    let signal = capture_with(
+        &track_split("{ { 556, 2 } }", "{}", "{ { 556, 2 } }"),
+        "(function() local acceptance = require('tpf3mp.acceptance') acceptance.keptStops = false \
+         local a = engine.captureBuild({ toAdd = {}, toRemove = {}, proposal = street }, 'Track') \
+         local ok, why = acceptance.check(a) return ok == false and why or 'let through' end)()",
+    );
+    assert_eq!(signal, Ok(LuaValue::String(b"let through".to_vec())));
+}
+
+#[test]
+fn a_street_cut_that_moves_a_stop_elsewhere_is_refused() {
+    let refused = |street: String, why: &str| {
+        let got = capture_stops(&street).unwrap_err();
+        assert!(got.contains(why), "{why}: {got}");
+    };
+    // Onto the new street west of the cut, which does not go on from it.
+    refused(
+        street_split_west("{ { 560, 0 } }", "{}", "{}", "{ { 560, 0 } }"),
+        "does not go on from its track",
+    );
+    // Onto the other side of its street.
+    refused(
+        street_split_west("{ { 560, 0 } }", "{}", "{ { 560, 1 } }", "{}"),
+        "moves a stop or signal",
+    );
+    // A signal on a street, or a stop onto a track from a street.
+    refused(
+        street_split_west("{ { 556, 2 } }", "{}", "{ { 556, 2 } }", "{}"),
+        "moves a stop or signal",
+    );
+    // Dropped, or one of a two-sided stop's two.
+    refused(
+        street_split_west("{ { 560, 0 } }", "{}", "{}", "{}"),
+        "removes an edge with a stop or signal",
+    );
+    refused(
+        street_split_west("{ { 561, 0 }, { 562, 1 } }", "{}", "{ { 561, 0 } }", "{}"),
+        "removes an edge with a stop or signal",
+    );
+}
+
+/// A street started beside a junction near a stop, the tool replacing the
+/// stop on the edge whose node it removes with a new record on the piece
+/// that runs where it stood (build 40420, 2026-10-19): kept as the old
+/// stop under its own entity, its lines, group and name its own, as a
+/// track's signal the tool puts back.
+#[test]
+fn a_stop_the_street_tool_puts_back_is_kept_on_its_piece() {
+    let refit = street_refit(
+        "{ { 560, 0 } }",
+        "{ { -400000000, 0 } }",
+        &format!("{{ {NEW_STOP} }}"),
+        "{ 560 }",
+    );
+    let decoded = decode(capture_stops(&refit).unwrap());
+    let kept = decode(
+        capture_stops(&street_split_west(
+            "{ { 560, 0 } }",
+            "{}",
+            "{ { 560, 0 } }",
+            "{}",
+        ))
+        .unwrap(),
+    );
+    assert_eq!(decoded, kept, "the same as the stop kept by its entity");
+
+    // Both stops of a two-sided stop, each by its side.
+    let records = format!(
+        "{{ {NEW_STOP}, {} }}",
+        NEW_STOP
+            .replace("-400000000", "-400000001")
+            .replace("left = true", "left = false")
+    );
+    let pair = street_refit(
+        "{ { 561, 0 }, { 562, 1 } }",
+        "{ { -400000001, 1 }, { -400000000, 0 } }",
+        &records,
+        "{ 562, 561 }",
+    );
+    let decoded = decode(capture_stops(&pair).unwrap());
+    let kept = kept_of(&decoded);
+    assert_eq!(kept.len(), 2, "{decoded:?}");
+    assert!(
+        kept.iter()
+            .all(|(link, k)| *link == 1 && k.model.as_str() == TWO_SIDED)
+    );
+
+    let refused = |street: String, why: &str| {
+        let got = capture_stops(&street).unwrap_err();
+        assert!(got.contains(why), "{why}: {got}");
+    };
+    // The new stop on the other side, or its record saying another side.
+    refused(
+        street_refit(
+            "{ { 560, 0 } }",
+            "{ { -400000000, 1 } }",
+            &format!("{{ {NEW_STOP} }}"),
+            "{ 560 }",
+        ),
+        "a build with a stop or signal",
+    );
+    refused(
+        street_refit(
+            "{ { 560, 0 } }",
+            "{ { -400000000, 1 } }",
+            &format!("{{ {} }}", NEW_STOP.replace("left = true", "left = false")),
+            "{ 560 }",
+        ),
+        "replaces a signal elsewhere",
+    );
+    // A record with no side, or a signal's record for a stop.
+    refused(
+        street_refit(
+            "{ { 560, 0 } }",
+            "{ { -400000000, 0 } }",
+            &format!("{{ {} }}", NEW_STOP.replace("left = true, ", "")),
+            "{ 560 }",
+        ),
+        "a build with a stop or signal",
+    );
+    refused(
+        street_refit(
+            "{ { 560, 0 } }",
+            "{ { -400000000, 0 } }",
+            &format!("{{ {} }}", NEW_STOP.replace("category = 0", "category = 2")),
+            "{ 560 }",
+        ),
+        "a build with a stop or signal",
+    );
+    // Off: refused when captured.
+    let gate = capture_street_with(&refit, "a.keptStops = false").unwrap_err();
+    assert!(
+        gate.contains("keeps on a new piece awaits two-player game acceptance"),
+        "{gate}"
     );
 }
 

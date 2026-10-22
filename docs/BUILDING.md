@@ -38,7 +38,7 @@ The shape tells the tool apart (measured unless noted):
 | stop, signal, waypoint placement | the edge removed and re-added, plus one edge-object record |
 | stop or signal bulldoze | the edge removed and re-added without the object; a two-sided stop's two objects together (build 40420) |
 | construction bulldoze | `toRemove` populated, nothing added |
-| road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street also lists the town buildings along it in `toRemove` (seen on build 40408), and a track bulldoze lists its signals in `edgeObjectsToRemove` (build 40420); a street's branch or a track stub ending on a street also removes the junction node and its two street edges and adds one edge joining their far ends, carried as a `BuildRoad` only when every removal pairs with a join or is the known stub (seen on build 40420) |
+| road or track bulldoze | removed nodes and segments, nothing added; on TPF3 a town street also lists the town buildings along it in `toRemove` (seen on build 40408), and a track bulldoze lists its signals in `edgeObjectsToRemove` (build 40420), a street bulldoze its stops (2026-10-19); a street's branch or a track stub ending on a street also removes the junction node and its two street edges and adds one edge joining their far ends, carried as a `BuildRoad` only when every removal pairs with a join or is the known stub (seen on build 40420) |
 | tree or asset bulldoze (TPF3) | the asset group in `toRemove`, and `toAdd` one construction of no file, its desc `autoRemovable`: the group rebuilt without the assets removed, thin instances then full ones (`CreateProposalAddAsset`, decompiled; the shape seen on build 40408); nothing added when the last assets of a group go |
 | terraform | no nodes or segments; a `Grid<{height, base}>` of 4 m cells |
 | paint | no nodes or segments; the material index grid and its mask |
@@ -155,7 +155,8 @@ Rules that came out of the replay:
   edge with objects and no one-for-one replacement (a split or a reroute)
   makes the whole command skip on every instance, with a log line; on TF3
   the one exception is a track cut between its signals, whose signals the
-  links keep by name (`kept`, "The action schema").
+  links keep by name (`kept`, "The action schema"), and a street cut beside
+  its stops, the same way.
 - **Prefer what the originator's proposal did over re-deriving it.** Whenever
   a receiver reconstructs a decision from geometry (is this vertex on that
   road? is this node a crossing?) it eventually decides differently from the
@@ -621,7 +622,21 @@ every game finds the same tracks, refuses the removal if any of them
 carries a stop or another company's signal, and removes the tracks with
 exactly the signals on them, listed in the proposal's
 `edgeObjectsToRemove` (an edge removed with objects left on it crashed
-TPF2's games). Signals and waypoints go the same way, with
+TPF2's games). A street bulldozed with stops on it goes the same way
+(build 40420, 2026-10-19: "2 Stops Will Be Removed" over a two-sided
+stop): the proposal's `edgeObjectsToRemove` exactly the stops on its
+removed streets, each a `STOP_LEFT` or `STOP_RIGHT` listed once, with no
+construction but the town buildings along them; every game removes the
+streets with the stops it finds on them, each one the acting company may
+touch, and refuses a signal there. A two-sided stop's two stand on one
+edge, so they go together. Behind `acceptance.lua`'s `bulldozeStops`,
+which the capture and every game's replay ask; with it off, the replay
+refuses a stop on a street as before. Off until the owner takes it or an
+ordinary-start run, after the same staged room (a street with a stop and
+one with a two-sided stop, removed in both games). Every
+game removes the stops it finds, not ones the originator named: a stop
+placed on that street by the same company in the moment between the
+click and the room's order would go too, as a track's signal does. Signals and waypoints go the same way, with
 the settings the signal tool builds them with (its
 `EdgeObjectBuilder.params`, which every game sets on the signal it builds:
 a mod's settings, Auto Signals' spacing among them). Signals a mod's script
@@ -849,7 +864,33 @@ positions, the originator's decisions included:
   stood, the same way (`geom.runsThrough`); anything else is refused as a
   build with a stop or signal. Captured only behind `acceptance.lua`'s
   `refitSignals`, on since a two-player game showed every game keeps the
-  signal where it stood (run-1017-refit2, build 40420);
+  signal where it stood (run-1017-refit2, build 40420).
+  A street's stops go the same way (build 40420, 2026-10-19: a street
+  started beside a junction near stops). The street tool keeps a stop
+  under its own entity on the piece that goes on from its old street, or
+  replaces it on the edge whose node it removes with a record of category
+  0, its side (`left`) and the old stop's name and no model, on the piece
+  that runs where it stood. The room carries both as that stop's `kept`
+  (its removal a street's): the capture asks a stop of either side on a
+  street (`STOP_LEFT`/`STOP_RIGHT`, read from its `EDGE_OBJECT` `param`
+  and construction), the new stop on the same side as the old one (which
+  also tells a two-sided stop's two apart), on a piece of street, and the
+  same geometry as a signal's. Every game finds it by its construction
+  within 0.25 m of that place; both stops of a two-sided stop share both,
+  and two stops facing each other nearly do, so a link's entries of one
+  removal and construction within 0.5 m of each other are found together,
+  as many stops near them as entries, one a side. Each goes onto
+  the link on its side as the room's removal runs, flipped where this
+  game's edge runs the other way. No new edge may take two stops on one
+  side (a fatal assert in the game's lane creation, above), whatever brought
+  them there. The log says each kept stop's station group before and
+  after the build. Behind `acceptance.lua`'s `keptStops`, which
+  `acceptance.check` asks of any `kept` entry whose removal is a street's,
+  on sending and on applying; off until the owner takes it or an
+  ordinary-start run, after a staged two-game room on build 40420
+  (run-1019-221901, Japan_2: four street builds beside junctions, one the
+  tool's put-back of a two-sided stop, every kept stop in its station
+  group in both games and moved 0.00 m, every rolling world check equal);
 - `removals`: existing edges the build removes, of either network, by their
   ends: an upgrade's, a span the build passes under, the stretch the tool
   rebuilds around a new junction or crossing. A split parent is no removal;
