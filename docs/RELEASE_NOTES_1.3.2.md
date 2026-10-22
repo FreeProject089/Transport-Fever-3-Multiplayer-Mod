@@ -5,6 +5,7 @@ multiplayer rooms. The selected Windows Steam game build is **40420**. Players
 and servers must update together: this release uses protocol **23** (v1.3.1
 used 19), bridge **29**, and room-log format **10**. Older clients are refused
 with an update message; format-8 and format-9 room starts remain readable.
+The Lua bridge contract is **16**.
 
 ## Changes since v1.3.1
 

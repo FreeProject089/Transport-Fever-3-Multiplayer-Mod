@@ -570,7 +570,8 @@ and ping, host new rooms on the closest, and resolve a typed invite only
 after every listed server confirms exactly one credential match. The
 servers know nothing of each other. This is a deployment guide: this code
 change has not configured or deployed regional servers or changed the
-live relay. Regional clients and servers must all run protocol 19 together.
+live relay. Regional clients and servers must all run the same protocol
+version together.
 
 For each further server:
 
@@ -597,7 +598,7 @@ For each further server:
    a list that does not read.
 4. **Release**: only packages built with the variable know the server.
    Launchers of earlier releases keep playing on the default server alone.
-   Every listed server must be upgraded to the same protocol-19 release
+   Every listed server must be upgraded to the same protocol release
    before publishing that regional client package.
 
 A server that is down is passed over for hosting. A typed invite waits up
