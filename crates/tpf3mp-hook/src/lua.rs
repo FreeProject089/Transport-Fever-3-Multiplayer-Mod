@@ -122,7 +122,10 @@
 //!   preview's proposal (`api.engine.util.proposal.makeProposalData`), which
 //!   the hook draws in that member's renderer, and `drawn` disarms: `true`,
 //!   or `false` and why, or `nil` when the game evaluated nothing. `undraw`
-//!   clears the member's renderer. Optional in the contract.
+//!   clears the member's renderer. `drawcost()` says what the last draw
+//!   cost, in milliseconds: the game's evaluation, filling the renderer and
+//!   composing the terrain, or nothing when the game evaluated nothing.
+//!   Optional in the contract.
 //! - `version`: [`VERSION`].
 //!
 //! Everything reaches Lua through [`LuaApi`]: in the game, the C API
@@ -890,6 +893,7 @@ pub unsafe fn register(api: &LuaApi, l: State) {
                 (b"previews", native_previews),
                 (b"draw", native_draw),
                 (b"drawn", native_drawn),
+                (b"drawcost", native_drawcost),
                 (b"undraw", native_undraw),
             ] {
                 if api.touserdata.is_none() && matches!(name, b"laneRows" | b"junctionConfig") {
@@ -1588,6 +1592,28 @@ unsafe extern "C-unwind" fn native_drawn(l: State) -> c_int {
         Some(outcome) => unsafe { push_outcome(api, l, outcome) },
         None => 0,
     }
+}
+
+/// `drawcost()`: what the last armed draw cost, in milliseconds: the
+/// game's evaluation, the fill and the terrain ([`crate::drawing::cost`]);
+/// nothing when the game evaluated nothing for it.
+unsafe extern "C-unwind" fn native_drawcost(l: State) -> c_int {
+    let Some(api) = API.get() else {
+        return 0;
+    };
+    let Some(cost) = crate::drawing::cost() else {
+        return 0;
+    };
+    #[allow(clippy::cast_precision_loss)]
+    let ms = |us: u64| us as f64 / 1000.0;
+    // SAFETY: Lua calls this with its own state; a C function's call has
+    // room for its results.
+    unsafe {
+        (api.pushnumber)(l, ms(cost.evaluate_us));
+        (api.pushnumber)(l, ms(cost.fill_us));
+        (api.pushnumber)(l, ms(cost.terrain_us));
+    }
+    3
 }
 
 /// `undraw(from)`: member `from`'s tool shows nothing now.
@@ -4614,6 +4640,11 @@ my_timetables";
             lua.run("return tpf3mp_native.drawn()"),
             Ok(String::new()),
             "nothing armed"
+        );
+        assert_eq!(
+            lua.run("return tpf3mp_native.drawcost()"),
+            Ok(String::new()),
+            "nothing drawn, no cost"
         );
         assert_eq!(
             lua.run(&format!("return tpf3mp_native.undraw('{member}')")),

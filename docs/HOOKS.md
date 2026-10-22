@@ -1258,7 +1258,15 @@ and every 10 s while any arrive:
 
 ```
 mod: build previews in the last 10.0 s: made 25 in 1396.0 ms (longest 158.0) [BuildRoad: nodes Street 1x 133.0 ms (4945)], drawn 25 in 405.0 ms (longest 29.0), retried 0 in 0.0 ms (longest 0.0)
+mod: build previews in the last 10.0 s: made 12 in 46.0 ms (longest 7.0) [BuildTrack], drawn 12 in 651.0 ms (longest 164.0) [evaluate 99.5 ms, fill 3.1, terrain 0.1, rest 61.3, verdict 0.0], retried 0 in 0.0 ms (longest 0.0)
 ```
+
+The longest draw's parts, where the hook says them
+(`tpf3mp_native.drawcost()`, "Build previews" below): `evaluate` the
+game's `CreateProposalData`, `fill` the member's renderer filled from it,
+`terrain` the view terrain composed again, `rest` what else
+`makeProposalData` spent (its conversions between Lua and the game), and
+`verdict` reading what the game said of it.
 
 ### The room's world
 
@@ -3872,6 +3880,27 @@ and `native/src/preview_plugin.cpp` in tpf2-multiplayer).
   BuildTrack preview, as this game sees it: critical, errors Construction
   Not Possible"; the entities it collides with by kind, edge, node,
   construction or town building, and their ids).
+- **Paced by their cost.** Drawing a long track's preview takes the
+  watching game 60 to 170 ms, a frame it stutters (Japan_2, build 40420:
+  the game's evaluation 13 to 100 ms, filling the renderer 3 to 57 ms,
+  `makeProposalData`'s conversions between Lua and the game 15 to 86 ms,
+  the terrain nothing), and the builder's tool changes it up to five
+  times a second while it drags: drawn as it came, 23 to 31 a 10 s,
+  up to a fifth of the watcher's time. So
+  `tpf3mp/previews.lua` draws a member's next preview no sooner than
+  `PACE` (9) times what making and drawing their last one cost here, and
+  at most `MAX_WAIT` (2 s) after it, so the previews take at most about a
+  tenth of the watcher's time; one member's at most a frame. A preview
+  that comes while its member waits replaces the one waiting, so the
+  latest always shows; a short street's, a few milliseconds, still shows
+  as often as it comes, and a preview gone goes at once. One the hook
+  could not draw (all 16 renderers busy) is tried again paced the same
+  way, in a frame that draws nothing new, and never while its member has
+  sent a newer one. The log's
+  "build previews in the last 10 s" line says the previews made and drawn
+  and, for the longest draw, its parts: the game's evaluation, filling
+  the renderer and composing the terrain (`tpf3mp_native.drawcost()`),
+  the rest of `makeProposalData` and reading the verdict.
 - **Their terrain**, composed as TpF2 Multiplayer composed it. A preview's
   cuts and embankments are terrain heights its renderer uploads into the
   one view terrain every renderer shares: `EndHeightMod` (`0x7bbae0`)

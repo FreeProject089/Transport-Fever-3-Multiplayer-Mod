@@ -474,6 +474,17 @@ function Link:drawPreview(from, proposal, context, evaluate)
 	return true, err
 end
 
+-- In the GUI: what the last drawPreview cost in the hook, in milliseconds:
+-- the game's evaluation, filling the member's renderer and composing the
+-- terrain; nil from a hook that does not say (`drawcost` is optional) or
+-- when the game evaluated nothing.
+function Link:drawCost()
+	if type(self.native.drawcost) ~= "function" then return nil end
+	local ok, evaluate, fill, terrain = pcall(self.native.drawcost)
+	if not ok or type(evaluate) ~= "number" then return nil end
+	return evaluate, tonumber(fill) or 0, tonumber(terrain) or 0
+end
+
 -- In the GUI: member `from`'s preview goes.
 function Link:undrawPreview(from)
 	if type(self.native.undraw) ~= "function" then return end
