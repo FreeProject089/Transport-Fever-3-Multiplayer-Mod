@@ -600,11 +600,19 @@ mod tests {
 
     #[test]
     fn a_commands_line_names_its_path_kind_and_entities() {
+        // The selected bundle's call sites: they move with every build.
+        let site = |label: &str| {
+            PATHS
+                .iter()
+                .find_map(|(at, name)| (*name == label).then_some(*at))
+                .unwrap_or_else(|| panic!("the bundle names the {label} path"))
+        };
+        let (queue, script_site) = (site("queue"), site("script"));
         let entry = Entry {
             rsp: 0x1000,
             when: When::After(12_760),
             update: Some(113_600),
-            caller: Some(0x11eb96),
+            caller: Some(queue),
             kind: Some(23),
             entities: Some((2, vec![325_514, 220_468])),
             ids: Some(400_000),
@@ -617,7 +625,9 @@ mod tests {
                 Some(400_002),
                 &[325_514]
             ),
-            "apply: after 12760 update 113600 from +0x11eb96 (queue) kind 23 result 1 entities 2 [325514,220468] -> 1 [325514] entity-ids 400000->400002 watched"
+            format!(
+                "apply: after 12760 update 113600 from +{queue:#x} (queue) kind 23 result 1 entities 2 [325514,220468] -> 1 [325514] entity-ids 400000->400002 watched"
+            )
         );
         let other = Entry {
             when: When::Step(12_761),
@@ -636,13 +646,14 @@ mod tests {
         );
         assert!(!line.ends_with("watched"), "{line}");
         let script = Entry {
-            caller: Some(0x1204bf),
+            caller: Some(script_site),
             when: When::Unknown,
             ..entry
         };
         assert!(
-            apply_line(&script, None, None, None, &[])
-                .starts_with("apply: step - update 113600 from +0x1204bf (script) ")
+            apply_line(&script, None, None, None, &[]).starts_with(&format!(
+                "apply: step - update 113600 from +{script_site:#x} (script) "
+            ))
         );
     }
 

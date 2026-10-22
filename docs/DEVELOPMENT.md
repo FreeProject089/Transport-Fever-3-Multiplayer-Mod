@@ -227,6 +227,13 @@ labelled `tpf3mp-40420-validation` to avoid taking unrelated queued release
 checks. The `dev`, `acceptance` and `main` jobs continue to require the normal
 `tpf3mp-game-builds` runner.
 
+Build 40423 (Steam build ID 25962684, the update of 2026-10-22) has its own
+variable: `TPF3MP_GAME_ARCHIVE_40423` names its complete private archive on
+the same runner, and is checked whenever `native-build.txt` selects
+`tf3_build40423_steam_windows`. The 40408 and 40420 variables stay, so the
+commits released on those builds remain verifiable. Without the variable a
+40423-selected commit fails verification and nothing is packaged.
+
 Set up the runner and repository variable in each repository before merging
 these release-workflow changes there. A runner registered to a fork and the
 fork's variables do not configure upstream. Without the variable the workflow
@@ -449,11 +456,11 @@ tpf3mp-launcher --server 127.0.0.1:29470 --name bob --auto-join --invite-file in
 tpf3mp-launcher --server 127.0.0.1:29470 --name cat --auto-join --invite-file invite.txt --auto-play
 ```
 
-With Transport Fever 3 itself (build 40420), two games run on one PC like
+With Transport Fever 3 itself (build 40423), two games run on one PC like
 this:
 
 ```sh
-tpf3mp-rig --players 2 --stagger 75 --wait-for-games --no-snapshots --server local     --game "<Steam>/steamapps/common/Transport Fever 3/TransportFever3.exe" --game-build 40420
+tpf3mp-rig --players 2 --stagger 75 --wait-for-games --no-snapshots --server local     --game "<Steam>/steamapps/common/Transport Fever 3/TransportFever3.exe" --game-build 40423
 ```
 
 - `--stagger 75` starts each game 75 s after the one before: two started at

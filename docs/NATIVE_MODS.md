@@ -409,7 +409,9 @@ package with one keeps the game out of rooms.
 
 **Big Maps as a plugin.** `crates/tpf3mp-bigmap-plugin` is Big Maps
 (`feat/bigmaps-40420`, the hook's `bigmap` module there) moved out of the
-hook into a package for build 40420: its code asks the hook for the hooks
+hook into a package for build 40420, and ported to build 40423
+(`src/build40423.rs`; a package is pinned to one build, so 40423 needs its
+own package version): its code asks the hook for the hooks
 its package declares (`manifest::hooks`) instead of patching the game, and
 reads its switches from the package's settings (`street_raster`,
 `placement`, `emission_every`, `emission_cell`, `memory_gate`) instead of
@@ -427,10 +429,10 @@ reads its switches from the package's settings (`street_raster`,
 | emission cells | `bigmap::grid_shift_*`, `bigmap::grid_factor`, in `bigmap::create_grid` | `rewrite`, `find` |
 | New Game page, density levels | Lua for the game's Lua states, from its game mod `tpf3mp_bigmap_1` | |
 
-`cargo test -p tpf3mp-bigmap-plugin --test game_40420`, with
-`TPF3MP_TF3_BUILD40420_EXE` naming the game's executable, finds every hook
+`cargo test -p tpf3mp-bigmap-plugin --test game_40423`, with
+`TPF3MP_TF3_BUILD40423_EXE` naming the game's executable, finds every hook
 in it with the hook's own `plugins::locate`, arranges them against every
-target the hook's 40420 profile patches, and runs the plugin's entry with
+target the hook's 40423 profile patches, and runs the plugin's entry with
 a host that answers from the executable's bytes, every switch on: every
 check the plugin makes in the game passes there. `cargo build --release -p
 tpf3mp-bigmap-plugin` builds the DLL; `cargo run -p tpf3mp-bigmap-plugin
