@@ -5,7 +5,7 @@
 -- `print` one global table, so the mod prints before it looks for it:
 --
 --   tpf3mp_native = {
---     version = 15,                 -- bridge.VERSION; anything else is refused
+--     version = 16,                 -- bridge.VERSION; anything else is refused
 --     command = function(action, password), -- the player acted: an action
 --                                   -- table, for the room to order, and a
 --                                   -- company's password for joining or
@@ -40,9 +40,13 @@
 --                                   -- actions (true) or is done (false)
 --     terrain = function(t),        -- optional; while the room's actions run:
 --                                   -- arms the next build sent with the
---                                   -- terraform grid t -> true | nil, why;
---                                   -- terrain() disarms -> whether a build
---                                   -- was filled | nil (none armed)
+--                                   -- terraform grid t, the paint t, or
+--                                   -- (since version 16) { groups = n }:
+--                                   -- the n asset groups it adds get the
+--                                   -- tool's empty terrain alignment list
+--                                   -- -> true | nil, why; terrain()
+--                                   -- disarms -> whether a build was
+--                                   -- filled | nil (none armed)
 --     applied = function(i, ok, entity, why), -- in a game script's postUpdate:
 --                                   -- what became of the batch's action i
 --     results = function(),         -- in the GUI: what became of the player's
@@ -142,7 +146,7 @@ local bridge = {}
 -- 4: the GUI saves and loads the room's world (`poll`, `saved`, `world`);
 -- 3: the room's actions are taken by the game script (`take`); 2 called the
 -- GUI's handlers; 1 passed bytes the mod encoded itself.
-bridge.VERSION = 15
+bridge.VERSION = 16
 bridge.GLOBAL = "tpf3mp_native"
 
 local Link = {}

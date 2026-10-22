@@ -530,7 +530,7 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          dump = nil, dumped = {} }
 tpf3mp_native = {
     copy = function(text) HOOK.copied = text return true end,
-    version = 15,
+    version = 16,
     note = function(key, value)
         HOOK.notes = HOOK.notes or {}
         if value == nil then return HOOK.notes[key] end
@@ -888,7 +888,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 15; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 16; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -981,7 +981,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 15, command = print, log = print })
+             why({ version = 16, command = print, log = print })
              return out",
         )
         .eval()
@@ -1184,7 +1184,7 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 15 }
+             local native = { version = 16 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
                                   'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
                                   'status', 'chat', 'say', 'takeReplay', 'replayed', 'scanned' }) do
@@ -9916,6 +9916,31 @@ function TOOL(removed, group)
         proposal = { addedNodes = {}, addedSegments = {}, removedNodes = {}, removedSegments = {},
             edgeObjectsToAdd = {} } }
 end
+-- The hook's `terrain`, armed with how many asset groups the next build
+-- adds: as the build is sent, it gives each the tool's empty terrain
+-- alignment list (ALIGNED says the counts), unless NO_ALIGN (a hook that
+-- would not, or a build of another count); terrain() says whether it did.
+ALIGNED = {}
+tpf3mp_native.terrain = function(t)
+    if t == nil then
+        local armed, filled = HOOK.alignArmed, HOOK.alignFilled
+        HOOK.alignArmed, HOOK.alignFilled = nil, nil
+        if armed == nil then return nil end
+        return filled == true
+    end
+    if type(t.groups) ~= 'number' then return nil, 'not asset groups' end
+    HOOK.alignArmed = t.groups
+    return true
+end
+local sendAligned = api.cmd.sendCommand
+api.cmd.sendCommand = function(command, ...)
+    local p = type(command) == 'table' and command.proposal
+    if HOOK.alignArmed and not NO_ALIGN and type(p) == 'table' and #(p.toAdd or {}) == HOOK.alignArmed then
+        HOOK.alignFilled = true
+        ALIGNED[#ALIGNED + 1] = HOOK.alignArmed
+    end
+    return sendAligned(command, ...)
+end
 "#;
 
 /// Trees bulldozed through the room, behind TPF3MP_TREE_BULLDOZE=1: the
@@ -10377,6 +10402,75 @@ fn rocks_and_whole_asset_groups_bulldozed_go_in_every_game() {
              local _, why = CAPTURE.bulldoze(p) return why"
         ),
         "the tool moves the full instance ::/assets/rocks/boulder.mdl (element 11: 3, not 2)"
+    );
+}
+
+/// Every asset group the game script builds (a brush stroke's, a tree
+/// bulldoze's rebuild) goes with the hook armed to give it the tool's empty
+/// terrain alignment list: Lua cannot, and without one the game levels the
+/// ground in a rectangle around every tree (room run 2026-10-19: a square
+/// of changed ground around each tree planted or kept, which single player
+/// does not make). The hook is armed with how many groups the build adds;
+/// a build of none (every tree of a group bulldozed) arms nothing. A hook
+/// that gave none, or one that cannot, fails the action in every game.
+#[test]
+fn asset_groups_built_in_lua_get_the_tools_empty_terrain_alignment_list() {
+    let (lua, _script) = engine();
+    lua.load(FAKE_NETWORK).exec().unwrap();
+    lua.load(FAKE_TOWN).exec().unwrap();
+    lua.load(FAKE_TREES).exec().unwrap();
+    let eval = |code: &str| -> String {
+        lua.load(code).eval::<String>().unwrap_or_else(|error| {
+            panic!(
+                "{code}: {error}\n{:?}",
+                lua.load("return HOOK.logged").eval::<Vec<String>>()
+            )
+        })
+    };
+    lua.load(
+        "A = string.rep('a', 64) \
+         local fir = '::/assets/trees/fir.mdl' \
+         local function at(x, y) \
+             return { basis = { 0.6, 0.8, 0, -0.8, 0.6, 0, 0, 0, 1.25 }, origin = { x = x, y = y, z = 3 } } \
+         end \
+         STROKE = { PlantAssets = { models = { fir }, \
+             removed = { { first = { model = fir, at = { x = 400, y = 20, z = 3 } }, count = 2 } }, \
+             groups = { { { model = 0, transform = at(400, 20) }, { model = 0, transform = at(404, 20) }, \
+                 { model = 0, transform = at(402, 23) } }, { { model = 0, transform = at(410, 30) } } } } } \
+         local function take(first, count, x, y) \
+             return { Bulldoze = { Assets = { first = { model = fir, at = first }, count = count, \
+                 removed = { { model = fir, at = { x = x, y = y, z = 3 } } }, mirrored = false, owned = false } } } \
+         end \
+         KEEP = take({ x = 10, y = 20, z = 3 }, 4, 14, 21) \
+         WHOLE = take({ x = 800, y = 70, z = 3 }, 1, 800, 70) \
+         function APPLY(action) \
+             SENT = {} HOOK.applied = {} HOOK.logged = {} ALIGNED = {} \
+             HOOK.batch = { action } HOOK.origins = { A } UPDATE({}, STATE, 0.2) \
+             local a = HOOK.applied[1] \
+             return table.concat({ tostring(a.ok) .. (a.why and (':' .. a.why) or ''), #SENT, \
+                 table.concat(ALIGNED, ',') }, '|') \
+         end",
+    )
+    .exec()
+    .unwrap();
+    // The stroke's two groups: the hook armed with two, and gave them it.
+    assert_eq!(eval("return APPLY(STROKE)"), "true|1|2");
+    // A tree bulldozed out of the group of four: its rebuild, one group.
+    assert_eq!(eval("return APPLY(KEEP)"), "true|1|1");
+    // The last tree of a group: nothing built, nothing armed.
+    assert_eq!(eval("return APPLY(WHOLE)"), "true|1|");
+    // A hook that gave the groups no list: the stroke fails.
+    assert_eq!(
+        eval("NO_ALIGN = true local r = APPLY(STROKE) NO_ALIGN = false return r"),
+        "false:the hook gave the asset groups no terrain alignment list|1|"
+    );
+    // A hook that cannot: the stroke fails before anything is sent.
+    assert_eq!(
+        eval(
+            "local keep = tpf3mp_native.terrain tpf3mp_native.terrain = nil \
+             local r = APPLY(STROKE) tpf3mp_native.terrain = keep return r"
+        ),
+        "false:the hook would not take the asset groups: this hook cannot apply a terraform|0|"
     );
 }
 
