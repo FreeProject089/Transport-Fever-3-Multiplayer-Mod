@@ -1826,12 +1826,22 @@ fn native_change_consent_action(change: &Change) -> String {
     }
 }
 
-fn cached_server_for_offline_install(server: Option<&str>, proposed: bool) -> Option<String> {
-    if proposed {
-        None
-    } else {
-        server.map(str::to_owned)
-    }
+fn cached_server_for_offline_install(
+    data: &Path,
+    server: Option<&str>,
+    change: &crate::native_mods::Change,
+) -> Option<String> {
+    // Only a server whose kept index lists the mod is its source; another
+    // mod comes from the shipped registry or the project's index.
+    let crate::native_mods::Change::Install(id) = change else {
+        return None;
+    };
+    server
+        .filter(|server| {
+            crate::native_mods::server_index(data, server)
+                .is_some_and(|index| !index.versions(id).is_empty())
+        })
+        .map(str::to_owned)
 }
 
 /// One change the player makes in the native mods panel, then the panel
@@ -1863,7 +1873,7 @@ async fn native_change(
     let install = matches!(&change, Change::Install(_) | Change::InstallProposed(_));
     let proposed = matches!(&change, Change::InstallProposed(_));
     let mut action_server = if install && connected.is_none() && session.is_none() {
-        cached_server_for_offline_install(server.as_deref(), proposed)
+        cached_server_for_offline_install(&data, server.as_deref(), &change)
     } else {
         None
     };
@@ -3903,15 +3913,43 @@ mod tests {
 
     #[test]
     fn offline_installs_keep_cached_server_indexes_but_not_unreviewed_proposals() {
+        use crate::native_mods::Change;
+        let dir = tempfile::tempdir().unwrap();
+        let server = "eu.example.org:29470";
+        let index = tpf3mp_nativemods::index::Index {
+            format: 1,
+            serial: 1,
+            packages: vec![
+                crate::native_mods::tests::native_package("listed", "1.0.0", &"0".repeat(64)).0,
+            ],
+            listings: Default::default(),
+        };
+        let json = serde_json::to_vec(&index).unwrap();
+        crate::native_mods::accept_server_index(dir.path(), server, 1, &json, false).unwrap();
+        let install = |id: &str| Change::Install(id.into());
+
         assert_eq!(
-            cached_server_for_offline_install(Some("eu.example.org:29470"), false).as_deref(),
-            Some("eu.example.org:29470")
+            cached_server_for_offline_install(dir.path(), Some(server), &install("listed"))
+                .as_deref(),
+            Some(server)
         );
+        // A mod the server does not list comes from another source.
         assert_eq!(
-            cached_server_for_offline_install(Some("eu.example.org:29470"), true),
+            cached_server_for_offline_install(dir.path(), Some(server), &install("other")),
             None
         );
-        assert_eq!(cached_server_for_offline_install(None, false), None);
+        assert_eq!(
+            cached_server_for_offline_install(
+                dir.path(),
+                Some(server),
+                &Change::InstallProposed("listed".into())
+            ),
+            None
+        );
+        assert_eq!(
+            cached_server_for_offline_install(dir.path(), None, &install("listed")),
+            None
+        );
     }
 
     fn local_config(worlds_dir: &Path) -> LauncherConfig {

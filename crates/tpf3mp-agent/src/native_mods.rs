@@ -1392,7 +1392,7 @@ pub fn match_room(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::fs;
 
     use super::*;
@@ -1596,7 +1596,11 @@ mod tests {
         }
     }
 
-    fn native_package(id: &str, version: &str, build: &str) -> (Package, (String, Vec<u8>)) {
+    pub(crate) fn native_package(
+        id: &str,
+        version: &str,
+        build: &str,
+    ) -> (Package, (String, Vec<u8>)) {
         let bytes = format!("{id} {version}").into_bytes();
         let url = format!("https://example.invalid/{id}/{version}/data.txt");
         let package = Package {
