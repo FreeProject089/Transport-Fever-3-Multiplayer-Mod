@@ -1589,3 +1589,28 @@ scenario support this one exception; they do not complete the broader
 junction acceptance.
 
 Touches: PLAN.md, Part 3, the junction item; `strict_junctions` remains off.
+
+### D30 amendment (2026-10-19, *proposed*): the switch at a track crossing with no settings yet
+
+*Proposed, for the owner (Juliansgith) to approve or refuse. Not in force
+until approved; D30 as approved still refuses this case ("a new
+configuration is refused").*
+
+In a two-game launcher run on 2026-10-19 (dev 02829e36, build 40420) the
+double slip switch went at an older crossing that already had junction
+settings, but was refused at every crossing of two tracks the room had
+just built: such a node has no configuration yet, and the junction window
+puts a new one there (with no lane connections).
+
+Proposed: at a node with no configuration yet that has track and no
+street, the gate compares the new configuration against the settings that
+node has without one: no lane connections, crosswalks, light or phases,
+the preference Auto, the switch off. So the switch turned on goes there,
+with the observed side effect Auto to No, and nothing else. Every other
+new configuration stays refused, and so does any node with no
+configuration where a street joins (the game makes a street junction's
+default lanes itself, so an empty list need not mean them). Capture and
+replay each ask against their own game's node, as under D30.
+
+Touches: D30 (one more case for its exception); PLAN.md, Part 3, the
+junction item; `strict_junctions` remains off.

@@ -1934,6 +1934,126 @@ fn the_junction_windows_double_slip_switch_goes_through_the_room_before_the_junc
     ));
 }
 
+/// For `narrow_game`'s setup: the junction has no settings yet, as a
+/// crossing of two tracks just built, and `EDIT` starts from what the
+/// window puts there: no lanes, crosswalks, light or phases, Auto.
+const FRESH_NODE: &str = r#"
+    CONFIGS[1+OFFSET] = nil
+    function EDIT(f)
+        local e = {laneConnections={}, crosswalks={}, trafficLightPreference=0,
+            trafficLightConfig={trafficLightType=-1, states={}},
+            doubleSlipSwitch=false, userModifiedTrafficLightStates=false}
+        f(e)
+        PROPOSAL.proposal.nodeConfigsToAdd = {{entity=1+OFFSET, comp=e}}
+        return C.junction(PROPOSAL)
+    end
+"#;
+
+#[test]
+fn the_double_slip_switch_goes_at_a_track_crossing_with_no_settings_yet() {
+    // Seen in a two-game room on 2026-10-19 (build 40420): at a crossing
+    // the room had just built, the window's switch was refused with "a
+    // junction with no settings yet (lanes ->0)".
+    for (edit, check) in [
+        (
+            "c.doubleSlipSwitch=true",
+            "cfg.doubleSlipSwitch and #cfg.laneConnections==0 and cfg.trafficLightPreference==0",
+        ),
+        (
+            "c.doubleSlipSwitch=true c.trafficLightPreference=2",
+            "cfg.doubleSlipSwitch and cfg.trafficLightPreference==2",
+        ),
+    ] {
+        assert!(narrow_round_trip(false, FRESH_NODE, edit, check), "{edit}");
+    }
+    // Anything but the switch on, as it stands, stays refused there, and
+    // at a node a street joins nothing goes.
+    let slip = "c.doubleSlipSwitch=true";
+    for (street_node, edit, expected) in [
+        (true, slip.to_string(), "where a street joins"),
+        (
+            false,
+            "c.trafficLightPreference=2".to_string(),
+            "no double slip switch change",
+        ),
+        (
+            false,
+            format!("{slip} c.trafficLightPreference=1"),
+            "traffic lights",
+        ),
+        (
+            false,
+            format!("{slip} c.trafficLightConfig.trafficLightType=40"),
+            "traffic lights",
+        ),
+        (
+            false,
+            format!("{slip} c.userModifiedTrafficLightStates=true"),
+            "traffic lights",
+        ),
+        (false, format!("{slip} c.crosswalks={{101}}"), "crosswalks"),
+        (
+            false,
+            format!(
+                "{slip} c.trafficLightConfig.states={{{{lockedLanes={{}},duration=10,minDuration=5,canSkip=false}}}}"
+            ),
+            "phases",
+        ),
+        (
+            false,
+            format!(
+                "{slip} c.laneConnections={{{{segment0=101,lane0=1,segment1=103,lane1=0,withRoad=false,withTram=true}}}}"
+            ),
+            "lane connections",
+        ),
+    ] {
+        let lua = narrow_game(0, false, street_node);
+        lua.load(FRESH_NODE).exec().unwrap();
+        let (ok, why): (bool, String) = lua
+            .load(format!(
+                "local ok, why = pcall(EDIT, function(c) {edit} end) return ok, tostring(why)"
+            ))
+            .eval()
+            .unwrap();
+        assert!(
+            !ok && why.contains("strict_junctions") && why.contains(expected),
+            "{edit}: {why}"
+        );
+        // The log names what the window put there.
+        assert!(why.contains("new preference"), "{edit}: {why}");
+    }
+    // A replica whose node has settings already compares against those:
+    // the switch on alone is no edit of a node that has it on.
+    let source = narrow_game(0, false, false);
+    source.load(FRESH_NODE).exec().unwrap();
+    let captured: mlua::Value = source
+        .load("return EDIT(function(c) c.doubleSlipSwitch=true end)")
+        .eval()
+        .unwrap();
+    let action = tpf3mp_proto::lua::action_from_lua(&common::tree(&captured)).unwrap();
+    let replica = narrow_game(5000, false, false);
+    replica
+        .load("CONFIGS[1+OFFSET].doubleSlipSwitch=true")
+        .exec()
+        .unwrap();
+    replica
+        .globals()
+        .set(
+            "ACTION",
+            lua_value(
+                &replica,
+                &tpf3mp_proto::lua::action_to_lua(&action).unwrap(),
+            ),
+        )
+        .unwrap();
+    let (ok, why): (bool, String) = replica
+        .load("local ok, why = A.run(ACTION) return ok == true, tostring(why)")
+        .eval()
+        .unwrap();
+    assert!(!ok && why.contains("strict_junctions"), "{why}");
+    assert_eq!(replica.load("return #SENT").eval::<usize>().unwrap(), 0);
+}
+
 #[test]
 fn every_other_junction_edit_stays_refused_before_the_junction_acceptance() {
     use tpf3mp_proto::lua::{action_from_lua, action_to_lua};

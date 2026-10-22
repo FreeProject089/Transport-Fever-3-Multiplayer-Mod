@@ -999,12 +999,20 @@ lane connections, crosswalks, light, phases (compared in whole
 milliseconds, as the wire carries them) and the custom-phase mark stay
 exactly as they are. The one side effect seen with the switch, the
 preference from Auto to No, may come with it, and only at a node no
-street joins, where a light has nothing to stop. A reset, a node with no
-configuration yet and an edit that leaves the switch as it is are
-refused. The crossing tool's tram lanes stay refused until the tool is
-seen in the game. The refusal names what it saw, after the
-`strict_junctions` reason, with the old and new light settings and the
-lanes' count. Road and track builds carry their junction settings as
+street joins, where a light has nothing to stop. A node with no
+configuration yet, as a crossing of two tracks the room has just built
+has, compares as the settings it then has: no lane connections,
+crosswalks, light or phases, the preference Auto, the switch off. So the
+switch turned on goes there too, with nothing else (2026-10-19, build
+40420: the window put a configuration with no lane connections at such a
+crossing, and the room refused it before this). This holds only at a node
+no street joins: at a street node the game makes the default lanes
+itself, and an empty list need not mean them. A reset and an edit that
+leaves the switch as it is are refused. The crossing tool's tram lanes
+stay refused until the tool is seen in the game. The refusal names what
+it saw, after the `strict_junctions` reason, with the old and new light
+settings and the lanes' count, and at a node with no configuration yet
+the new preference, light, crosswalks, phases and switch. Road and track builds carry their junction settings as
 before, unchecked by this; the log's `handed the player's build` and
 `building` lines name each node's settings they carry (`+j<node>{lanes
 N tram M}`) and take out (`-j<node>`).
@@ -1012,7 +1020,16 @@ N tram M}`) and take out (`-j<node>`).
 Seen in two games on the local server on 2026-10-15 (Steam Windows
 40420): a double slip switch turned on at a track crossing in one game
 was carried as `EditJunctions` and applied in both, with matching
-checkpoints. Tests cover native
+checkpoints. Seen again on 2026-10-19 (same build, two games, local
+server): a track laid across an existing straight track, away from that
+track's nodes, made a crossing node with no configuration (the build's
+`+j` named only the split track's ends). The switch turned on there in
+one game and switched three more times from both games (the last one
+turning it off from the other game) went as `EditJunctions` four times,
+applied in both, and both games showed the same crossing; the rolling
+world checks of both games agreed over all 49 windows. A crossing laid through an
+existing node instead gets its configuration from the build (`+j` at the
+crossing) and takes the path for a configured node. Tests cover native
 memory decoding, portable round trips into replicas with different IDs,
 curved-edge preservation, refusal cases and checkpoint differences. This
 is adapter evidence, not a completed real-game playtest. Follow the
