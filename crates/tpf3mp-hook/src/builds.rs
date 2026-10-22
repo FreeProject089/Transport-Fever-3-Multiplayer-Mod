@@ -232,6 +232,7 @@ unsafe extern "C" fn apply_detour(context: usize, payload: usize, r8: usize, r9:
     if REPLAYING.load(Ordering::Acquire)
         && let Err(why) = crate::terrain::inject(&mut crate::terrain::GameHeap, payload)
     {
+        crate::lua::replay_failed(&format!("terrain carrier injection failed: {why}"));
         crate::log::line(&format!("terraform: the room's carrier was refused: {why}"));
         return 0;
     }
@@ -239,6 +240,7 @@ unsafe extern "C" fn apply_detour(context: usize, payload: usize, r8: usize, r9:
     if REPLAYING.load(Ordering::Acquire)
         && let Err(why) = crate::crossings::inject_game(payload)
     {
+        crate::lua::replay_failed(&format!("crossing carrier injection failed: {why}"));
         crate::log::line(&format!("crossing: the room's carrier was refused: {why}"));
         return 0;
     }

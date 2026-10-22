@@ -282,6 +282,10 @@ struct Replay {
     applied: Vec<bool>,
     taken: bool,
     previous_step: Option<u64>,
+    /// A native build-carrier injection failed before the game could apply
+    /// the action. The Lua command callback may report that as an ordinary
+    /// refusal, but the local world is no longer safe to release.
+    failure: Option<String>,
     result: Option<Result<(), String>>,
 }
 
@@ -507,6 +511,7 @@ pub fn request_replay(step: u64, actions: &[Ordered]) -> Result<(), String> {
         applied: vec![false; actions.len()],
         taken: false,
         previous_step: None,
+        failure: None,
         result: None,
     });
     s.request = Some(Request::Replay(token));
@@ -518,6 +523,18 @@ pub fn take_replay_result() -> Option<Result<(), String>> {
     let result = s.replay.as_mut()?.result.take()?;
     s.replay = None;
     Some(result)
+}
+
+/// Records a native replay failure which the game may otherwise report as
+/// an ordinary refused command. The step gate consumes it when the replay
+/// completion arrives and holds this world's simulation.
+pub fn replay_failed(why: &str) {
+    let mut s = shared();
+    if let Some(replay) = s.replay.as_mut().filter(|replay| replay.result.is_none())
+        && replay.failure.is_none()
+    {
+        replay.failure = Some(why.chars().take(MAX_LOG_LINE).collect());
+    }
 }
 
 /// On the simulation thread, after it held or closed the old world.
@@ -1356,7 +1373,9 @@ unsafe extern "C-unwind" fn native_replayed(l: State) -> c_int {
         .as_mut()
         .filter(|r| Some(&r.token) == token.as_ref() && r.result.is_none())
     {
-        let result = if !ok {
+        let result = if let Some(why) = r.failure.take() {
+            Err(why)
+        } else if !ok {
             Err(why.unwrap_or_else(|| "the replay wake or game script failed".into()))
         } else if !r.taken || r.applied.iter().any(|reported| !reported) {
             Err("the game script did not report every ordered action".into())
@@ -3691,7 +3710,11 @@ pub(crate) mod tests {
             tpf3mp_native.applied(2, false, nil, 'collision') tpf3mp_native.replayed(TOKEN, true)",
         )
         .unwrap();
-        assert_eq!(take_replay_result(), Some(Ok(())));
+        assert_eq!(
+            take_replay_result(),
+            Some(Ok(())),
+            "a reported command refusal is a completed replay"
+        );
         assert_eq!(crate::seeds::current_step(), previous);
         assert_eq!(
             lua.run("local r=tpf3mp_native.results() return #r,r[1].ticket,r[1].entity"),
@@ -3699,6 +3722,34 @@ pub(crate) mod tests {
         );
         lua.run("tpf3mp_native.replayed(TOKEN, true)").unwrap();
         assert_eq!(take_replay_result(), None);
+    }
+
+    #[test]
+    fn a_native_carrier_injection_failure_fails_replay_completion() {
+        let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
+        reset();
+        lua51();
+        let lua = Lua::new();
+        lua.register();
+        request_replay(7, &[ordered(depot_build(), None)]).unwrap();
+        lua.run("TOKEN=tpf3mp_native.poll().replay tpf3mp_native.takeReplay(TOKEN)")
+            .unwrap();
+
+        // apply_detour can refuse the native carrier after the Lua command
+        // was sent. The game reports that through applied(false), but the
+        // native failure must still make replay_result fail closed.
+        replay_failed("terrain carrier injection failed: allocator returned nothing");
+        lua.run(
+            "tpf3mp_native.applied(1, false, nil, 'the game refused it') \
+             tpf3mp_native.replayed(TOKEN, true)",
+        )
+        .unwrap();
+        assert_eq!(
+            take_replay_result(),
+            Some(Err(
+                "terrain carrier injection failed: allocator returned nothing".into()
+            ))
+        );
     }
 
     #[test]
