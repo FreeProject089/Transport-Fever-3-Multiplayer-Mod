@@ -1187,6 +1187,80 @@ fn a_long_bridge_window_rebuild_carries_only_the_junction_settings_it_changes() 
     assert_eq!(at, [1_300_000], "the node set to No");
 }
 
+/// A long road bridge's type changed in its window still carried the
+/// settings of 28 of its 94 nodes (2026-10-19, build 40420): each listed
+/// its two crosswalks the other way round, every other setting the same.
+/// The game keeps crosswalks in a hash set of edge ids, so the new edges
+/// list them in another order. They compare as a set, unless the node has
+/// light phases, which name a crosswalk by its place in that order.
+#[test]
+fn a_bridge_window_rebuild_compares_crosswalks_as_a_set() {
+    // Every inner node has a crosswalk over each of its two pieces, the
+    // proposal's listed the other way round.
+    let walks = |more: &str| {
+        long_bridge(&format!(
+            "local function walks(c, i, edge) \
+                 if i > 0 and i < N then c.crosswalks = {{ edge(i - 1), edge(i) }} end \
+                 return c end \
+             local function phase(c, at) \
+                 c.trafficLightConfig.states = {{ {{ lockedLanes = {{ at }}, duration = 20, \
+                     minDuration = 5, canSkip = false }} }} \
+                 return c end \
+             for i = 1, N - 1 do \
+                 local c = walks(byNode[1000 + i], i, new) \
+                 c.crosswalks = {{ c.crosswalks[2], c.crosswalks[1] }} \
+             end \
+             local getComponent = api.engine.getComponent \
+             local function oldConfig(i) return walks(config(i, old), i, old) end \
+             {more} \
+             api.engine.getComponent = function(id, kind) \
+                 local i = id - 1000 \
+                 if kind == 6 and i >= 0 and i <= N then return oldConfig(i) end \
+                 return getComponent(id, kind) end"
+        ))
+    };
+    let junctions_at = |street: &str| -> Vec<i32> {
+        let action = decode(window_build(street, true).unwrap());
+        let Action::BuildTrack(track) = &action else {
+            panic!("{action:?}")
+        };
+        track
+            .polyline
+            .junctions
+            .iter()
+            .map(|change| change.node.at.x)
+            .collect()
+    };
+    assert_eq!(junctions_at(&walks("")), [0; 0]);
+
+    // A node with a phase locking its first crosswalk (lane 1, after its
+    // one turn), before and after: the phase now locks the other one, so
+    // it goes. One whose crosswalk goes, goes too.
+    let at = junctions_at(&walks(
+        "phase(byNode[1040], 1) \
+         byNode[1060].crosswalks = { byNode[1060].crosswalks[1] } \
+         local plain = oldConfig \
+         oldConfig = function(i) \
+             local c = plain(i) \
+             if i == 40 then phase(c, 1) end \
+             return c end",
+    ));
+    assert_eq!(at, [1_400_000, 1_600_000]);
+
+    // The same phase locking the same crosswalk in both: nothing changes.
+    let at = junctions_at(&walks(
+        "local c = byNode[1040] \
+         c.crosswalks = { c.crosswalks[2], c.crosswalks[1] } \
+         phase(c, 1) \
+         local plain = oldConfig \
+         oldConfig = function(i) \
+             local c = plain(i) \
+             if i == 40 then phase(c, 1) end \
+             return c end",
+    ));
+    assert_eq!(at, [0; 0]);
+}
+
 /// The track tool's proposal for a track started from the middle of the
 /// track 30-31, as build 40420 makes it: the new node -1 cuts 30-31 in two,
 /// the signal 556 three quarters of the way north going with the northern

@@ -200,6 +200,12 @@ end
 -- switch, no phases set by hand) is none: the bridge window gives it to
 -- every node of a track the room built, which has no configuration
 -- (build 40420, 2026-10-19), and a node without one is the same to the game.
+-- Crosswalks are a set in the game (docs/HOOKS.md, a hash set of edge ids),
+-- listed in an order of their ids: the bridge window's new edges list a
+-- node's two crosswalks the other way round at about a third of a road
+-- bridge's nodes (28 of 94 in a room, build 40420, 2026-10-19), every other
+-- setting the same. So they compare as a set, unless the node has phases,
+-- which name its crosswalks by their place in that order.
 local function configWords(config)
 	if config == nil then return "none" end
 	if #config.connections == 0 and #config.crosswalks == 0 and #config.phases == 0 and config.light == nil
@@ -218,7 +224,10 @@ local function configWords(config)
 		out[#out+1] = edgeKey(t.incoming) .. ":" .. t.lane_in .. ">" .. edgeKey(t.outgoing) .. ":" .. t.lane_out
 			.. ":" .. tostring(t.road) .. ":" .. tostring(t.tram)
 	end
-	for _, e in ipairs(config.crosswalks) do out[#out+1] = "walk " .. edgeKey(e) end
+	local walks = {}
+	for _, e in ipairs(config.crosswalks) do walks[#walks+1] = "walk " .. edgeKey(e) end
+	if #config.phases == 0 then table.sort(walks) end
+	for _, walk in ipairs(walks) do out[#out+1] = walk end
 	for _, p in ipairs(config.phases) do
 		out[#out+1] = "phase " .. ms(p.duration) .. "/" .. ms(p.minimum) .. "/" .. tostring(p.skip)
 			.. ":" .. table.concat(p.locked, ",")

@@ -2940,11 +2940,16 @@ construction's window its edits:
     carries only those that differ from the node's settings now (by the
     ends of the edges they name; the game's empty settings, which the
     window gives every node of a track the room built, count as none, as
-    such a node has), as every game keeps a node's settings
+    such a node has; a node's crosswalks as a set, unless it has light
+    phases, since the game keeps them in a hash set of edge ids and
+    lists them in an order of those ids, which the new edges change), as
+    every game keeps a node's settings
     across the edges it rebuilds at it (`junctions.capture`
     `changedOnly`, `junctions.into` `preserve`). A long track bridge
     (2026-10-19, build 40420) named 128 nodes and was refused before it
     was sent, "BuildTrack.polyline.junctions: invalid length 128"; a
+    93-piece road bridge then still carried 28 nodes, each only with its
+    two crosswalks the other way round; a
     rebuild that does change more than 64 nodes' settings still is.
     With `acceptance.lua`'s `bridges` off it is
     refused, saying it awaits two-player game acceptance: it travels as an
