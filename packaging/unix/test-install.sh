@@ -155,8 +155,12 @@ says_when_steam_has_no_mods_folder() {
 
 refuses_while_the_game_runs() {
   setup running
-  cp "$(command -v sleep)" "$GAME/Running"
-  "$GAME/Running" 30 &
+  # A program running from the game's folder. bash, not sleep: uutils'
+  # coreutils (Ubuntu's since 25.10) are one program that picks its tool
+  # by its own name and refuses "Running". The loop keeps bash itself
+  # running instead of exec'ing a last command.
+  cp "$(command -v bash)" "$GAME/Running"
+  "$GAME/Running" -c 'while :; do sleep 0.1; done' &
   local game=$!
   sleep 0.5
   install
