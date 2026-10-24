@@ -345,8 +345,8 @@ game with the hook in it as the launcher does.
 ### Reviewing the native data for a game update
 
 The compiled Windows native data is grouped with its signature profile in
-`profiles/tf3_build40423_steam_windows/` (the 40408 and 40420 bundles remain
-for historical verification): `hooks.toml` records the executable
+`profiles/tf3_build40425_steam_windows/` (the 40408, 40420 and 40423 bundles
+remain for historical verification): `hooks.toml` records the executable
 SHA-256, size and PE timestamp; `native.rs` records the game/Steam build and
 exports each subsystem's data file. Those files hold splice bytes, frame and
 field offsets, structure layouts and GUI register/site descriptions. The
@@ -361,10 +361,13 @@ Bootstrap checks its complete executable identity before
 installing the menu or step gate. A TOML profile for another executable is
 insufficient: it cannot enable that build with the previous build's native
 layouts. Custom profiles for the supported executable keep their priority.
-This selects Windows Steam build 40423 (Steam build ID 25962684, the update
-of 2026-10-22; [the update's note](../investigation/UPDATE_40423_2026-10-22.md)).
-The released main branch keeps 40420 until the normal acceptance and
-promotion gates are passed; this does not approve Preview or another
+This selects Windows Steam build 40425 (Steam build ID 26129055, the update
+of 2026-10-24; [the update's note](../investigation/UPDATE_40425_2026-10-24.md)):
+40423's bundle with only the identity changed, since 40425's code is 40423's
+at the same addresses but for its version data
+([40423's note](../investigation/UPDATE_40423_2026-10-22.md) has the port
+from 40420). The released main branch keeps 40423 until the normal
+acceptance and promotion gates are passed; this does not approve Preview or another
 platform.
 
 A static signature candidate for Steam Preview 40418 is in

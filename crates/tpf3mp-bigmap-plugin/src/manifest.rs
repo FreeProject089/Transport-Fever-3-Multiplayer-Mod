@@ -1,5 +1,5 @@
 //! Big Maps' package: what its `tpf3mp-native.json` says (docs/NATIVE_MODS.md,
-//! "Plugins"): the hooks its plugin uses on build 40423, each found by the
+//! "Plugins"): the hooks its plugin uses on build 40425, each found by the
 //! signature Big Maps' hook profile used (`profiles/tf3_build40420_steam_windows/hooks.toml`
 //! on `feat/bigmaps-40420`) and checked against the bytes read there; its
 //! settings and their defaults; its plugin and its game mod's files.
@@ -15,7 +15,7 @@ use tpf3mp_nativemods::{
     signed::sha256_hex,
 };
 
-use crate::build40423::*;
+use crate::build40425::*;
 
 /// The package's id.
 pub const ID: &str = "bigmap";
@@ -63,7 +63,7 @@ fn hook(target: &str, kind: HookKind, signature: &str, offset: i64, expected: &[
     }
 }
 
-/// The hooks Big Maps' plugin uses on build 40423.
+/// The hooks Big Maps' plugin uses on build 40425.
 pub fn hooks() -> Vec<HookDecl> {
     let splice = |target: &str, signature: &str, offset: i64, stolen: &[u8]| HookDecl {
         steal: Some(stolen.len() as u8),

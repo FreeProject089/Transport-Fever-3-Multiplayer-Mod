@@ -63,11 +63,12 @@ use crate::lobby;
 /// through to the original, where the detour answers them.
 ///
 /// The executables whose game `manager_window.tl` the copy was made from:
-/// 40420, and 40423, whose file is byte-for-byte 40420's (SHA-256
-/// `9608c068…` in both, 2026-10-22).
-const MANAGER_WINDOW_BUILD_SHA256: [&str; 2] = [
+/// 40420, and 40423 and 40425, whose file is byte-for-byte 40420's (SHA-256
+/// `9608c068…` in all three, 2026-10-22 and 2026-10-24).
+const MANAGER_WINDOW_BUILD_SHA256: [&str; 3] = [
     "74861ac43b041aebc5179154345b3cf1ec83154c8e6cc58e0d9e02ff5fa602e4",
     "e6c67da04bcdaaa61cef88db8e521e8763278811b788a329d2ee9758a658177e",
+    "e9a6190f9ca8f7f34a46dfafac0f3b897e41ea6dc6498d6f5871aed6b9ca74cd",
 ];
 
 pub fn manager_window_supported(profile: &Profile) -> bool {
@@ -953,6 +954,10 @@ mod tests {
     #[test]
     fn the_line_manager_copy_is_pinned_to_the_verified_executables() {
         let current = Profile::from_toml(include_str!(
+            "../../../profiles/tf3_build40425_steam_windows/hooks.toml"
+        ))
+        .unwrap();
+        let verified_40423 = Profile::from_toml(include_str!(
             "../../../profiles/tf3_build40423_steam_windows/hooks.toml"
         ))
         .unwrap();
@@ -965,6 +970,7 @@ mod tests {
         ))
         .unwrap();
         assert!(manager_window_supported(&current));
+        assert!(manager_window_supported(&verified_40423));
         assert!(manager_window_supported(&verified));
         assert!(!manager_window_supported(&previous));
     }
