@@ -10,24 +10,29 @@ try {
   $old = New-Item -ItemType Directory -Path (Join-Path $testRoot 'old') -Force
   $updated = New-Item -ItemType Directory -Path (Join-Path $testRoot 'updated') -Force
   $b40423 = New-Item -ItemType Directory -Path (Join-Path $testRoot '40423') -Force
+  $b40425 = New-Item -ItemType Directory -Path (Join-Path $testRoot '40425') -Force
 
-  $chosen = & $picker -SelectedBuild tf3_build40408_steam_windows -ReleaseArchive $old.FullName -UpdatedArchive $updated.FullName -Archive40423 $b40423.FullName
+  $chosen = & $picker -SelectedBuild tf3_build40408_steam_windows -ReleaseArchive $old.FullName -UpdatedArchive $updated.FullName -Archive40423 $b40423.FullName -Archive40425 $b40425.FullName
   if ($chosen -ne $old.FullName) { throw '40408 must use its own archive' }
-  $chosen = & $picker -SelectedBuild tf3_build40420_steam_windows -ReleaseArchive $old.FullName -UpdatedArchive $updated.FullName -Archive40423 $b40423.FullName
+  $chosen = & $picker -SelectedBuild tf3_build40420_steam_windows -ReleaseArchive $old.FullName -UpdatedArchive $updated.FullName -Archive40423 $b40423.FullName -Archive40425 $b40425.FullName
   if ($chosen -ne $updated.FullName) { throw '40420 must use its own archive' }
-  $chosen = & $picker -SelectedBuild tf3_build40423_steam_windows -ReleaseArchive $old.FullName -UpdatedArchive $updated.FullName -Archive40423 $b40423.FullName
+  $chosen = & $picker -SelectedBuild tf3_build40423_steam_windows -ReleaseArchive $old.FullName -UpdatedArchive $updated.FullName -Archive40423 $b40423.FullName -Archive40425 $b40425.FullName
   if ($chosen -ne $b40423.FullName) { throw '40423 must use its own archive' }
+  $chosen = & $picker -SelectedBuild tf3_build40425_steam_windows -ReleaseArchive $old.FullName -UpdatedArchive $updated.FullName -Archive40423 $b40423.FullName -Archive40425 $b40425.FullName
+  if ($chosen -ne $b40425.FullName) { throw '40425 must use its own archive' }
 
   foreach ($scenario in @(
-    @{ Build = 'tf3_build40420_steam_windows'; New = ''; New40423 = $b40423.FullName },
-    @{ Build = 'tf3_build99999_steam_windows'; New = $updated.FullName; New40423 = $b40423.FullName },
-    @{ Build = 'tf3_build40420_steam_windows'; New = (Join-Path $testRoot 'missing'); New40423 = $b40423.FullName },
-    @{ Build = 'tf3_build40423_steam_windows'; New = $updated.FullName; New40423 = '' },
-    @{ Build = 'tf3_build40423_steam_windows'; New = $updated.FullName; New40423 = (Join-Path $testRoot 'missing') }
+    @{ Build = 'tf3_build40420_steam_windows'; New = ''; New40423 = $b40423.FullName; New40425 = $b40425.FullName },
+    @{ Build = 'tf3_build99999_steam_windows'; New = $updated.FullName; New40423 = $b40423.FullName; New40425 = $b40425.FullName },
+    @{ Build = 'tf3_build40420_steam_windows'; New = (Join-Path $testRoot 'missing'); New40423 = $b40423.FullName; New40425 = $b40425.FullName },
+    @{ Build = 'tf3_build40423_steam_windows'; New = $updated.FullName; New40423 = ''; New40425 = $b40425.FullName },
+    @{ Build = 'tf3_build40423_steam_windows'; New = $updated.FullName; New40423 = (Join-Path $testRoot 'missing'); New40425 = $b40425.FullName },
+    @{ Build = 'tf3_build40425_steam_windows'; New = $updated.FullName; New40423 = $b40423.FullName; New40425 = '' },
+    @{ Build = 'tf3_build40425_steam_windows'; New = $updated.FullName; New40423 = $b40423.FullName; New40425 = (Join-Path $testRoot 'missing') }
   )) {
     $refused = $false
     try {
-      & $picker -SelectedBuild $scenario.Build -ReleaseArchive $old.FullName -UpdatedArchive $scenario.New -Archive40423 $scenario.New40423 | Out-Null
+      & $picker -SelectedBuild $scenario.Build -ReleaseArchive $old.FullName -UpdatedArchive $scenario.New -Archive40423 $scenario.New40423 -Archive40425 $scenario.New40425 | Out-Null
     } catch {
       $refused = $true
     }

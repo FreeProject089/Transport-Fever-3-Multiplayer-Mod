@@ -234,6 +234,11 @@ the same runner, and is checked whenever `native-build.txt` selects
 commits released on those builds remain verifiable. Without the variable a
 40423-selected commit fails verification and nothing is packaged.
 
+Build 40425 (Steam build ID 26129055, the update of 2026-10-24) likewise has
+`TPF3MP_GAME_ARCHIVE_40425`, checked whenever `native-build.txt` selects
+`tf3_build40425_steam_windows`; the 40423 variable stays for the commits
+released on 40423. Without it a 40425-selected commit fails verification.
+
 Set up the runner and repository variable in each repository before merging
 these release-workflow changes there. A runner registered to a fork and the
 fork's variables do not configure upstream. Without the variable the workflow
@@ -456,11 +461,11 @@ tpf3mp-launcher --server 127.0.0.1:29470 --name bob --auto-join --invite-file in
 tpf3mp-launcher --server 127.0.0.1:29470 --name cat --auto-join --invite-file invite.txt --auto-play
 ```
 
-With Transport Fever 3 itself (build 40423), two games run on one PC like
+With Transport Fever 3 itself (build 40425), two games run on one PC like
 this:
 
 ```sh
-tpf3mp-rig --players 2 --stagger 75 --wait-for-games --no-snapshots --server local     --game "<Steam>/steamapps/common/Transport Fever 3/TransportFever3.exe" --game-build 40423
+tpf3mp-rig --players 2 --stagger 75 --wait-for-games --no-snapshots --server local     --game "<Steam>/steamapps/common/Transport Fever 3/TransportFever3.exe" --game-build 40425
 ```
 
 - `--stagger 75` starts each game 75 s after the one before: two started at

@@ -1,6 +1,7 @@
-//! Steam Windows build 40423's data for Big Maps' patches (ported from
-//! 40420's on 2026-10-22: every site re-read in the 40423 executable,
-//! investigation/UPDATE_40423_2026-10-22.md), first made on Big Maps'
+//! Steam Windows build 40425's data for Big Maps' patches: 40423's (ported
+//! from 40420's on 2026-10-22, investigation/UPDATE_40423_2026-10-22.md)
+//! with only the build changed, since 40425's code is 40423's at the same
+//! addresses (investigation/UPDATE_40425_2026-10-24.md); first made on Big Maps'
 //! own branch (`profiles/tf3_build40420_steam_windows/bigmap.rs` and
 //! `simswitch.rs` on `feat/bigmaps-40420`;
 //! investigation/TF3_BIGMAPS_256KM_2026-10-05.md and
@@ -11,7 +12,7 @@
 //! call, [`ROOT_NEXT_OFFSET`] bytes past the site.
 
 /// The game build these are read on: its executable's SHA-256.
-pub const BUILD: &str = "e6c67da04bcdaaa61cef88db8e521e8763278811b788a329d2ee9758a658177e";
+pub const BUILD: &str = "e9a6190f9ca8f7f34a46dfafac0f3b897e41ea6dc6498d6f5871aed6b9ca74cd";
 
 /// `OctreeSystem::Resize(octree, depth, half)`: stores the root box and
 /// the depth, nothing else.
