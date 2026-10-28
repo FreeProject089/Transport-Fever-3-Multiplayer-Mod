@@ -102,6 +102,11 @@ host/guest and foreground/background differences. Keep periodic saves and
 slow calls in the reported results. Shorter simulation calls alone do not
 prove smoother rendering or lower CPU usage.
 
+`-ReadyBudgets '0,1'` compares the optional measured presentation floor on the
+second player with it disabled on the first. It also requires one value per
+player and affects only those child games. Use equal batch periods/caps for
+this comparison so the floor is the only policy difference.
+
 For an ordinary main-menu start, use `room.ps1 -ManualRoom -Run <name>`.
 It installs the mod and starts the local server, agents and games with the
 same isolation checks, then prints their PIDs. It does **not** connect players,

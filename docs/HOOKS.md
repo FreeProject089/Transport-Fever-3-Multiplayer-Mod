@@ -954,6 +954,22 @@ ordered steps and replay acknowledgements. Shorter calls can increase native
 copy/readiness overhead; they are not accepted smoothness improvements.
 See `investigation/PERFORMANCE_EXPERIMENTS_2026-10-28.md` for comparisons.
 
+`TPF3MP_HOOK_READY_BUDGET=1` adds an experimental recovery deadline floor.
+Each exposed buffer carries worker start/end times on the shared monotonic
+clock, published with its simulation pointer and room epoch. From the prior
+successful Sync to worker completion, the main thread measures preparation
+plus work, keeping 16 samples separately for each normal batch count. After
+four samples it uses the upper quartile plus 16.667 ms of presentation margin.
+The floor cannot lengthen a normal batch beyond its duration at room pace.
+Emergency catch-up batches keep the original compressed interval; the first
+model showed that stretching those made recovery worse. Zero-update buffers
+break the measurement pair; pauses, world/epoch or pace changes clear training.
+Missing or inconsistent timestamps are never training samples. No simulation
+steps, ordered actions, world memory or native ownership are changed by this
+floor. `budget_us` in interval traces identifies it. Default is off; the extra
+worker clock reads are enabled only with this experiment. The actual long
+industry/save stalls remain visible and remain in diagnostics.
+
 ### The Lua side
 
 The mod runs in two kinds of Lua state: the game's GUI state, started by a

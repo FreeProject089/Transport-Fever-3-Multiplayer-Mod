@@ -248,6 +248,8 @@ impl BatchInfo {
             backlog: self.backlog,
             steady: self.steady,
             waiting: self.waiting,
+            started_us: 0,
+            finished_us: 0,
         }
     }
 }
@@ -277,6 +279,9 @@ pub struct Record {
     pub steady: bool,
     /// No step was released for the batch: the room waits.
     pub waiting: bool,
+    /// Worker timing on steptrace's common monotonic clock, never log time.
+    pub started_us: u64,
+    pub finished_us: u64,
 }
 
 impl Slot {
@@ -292,6 +297,8 @@ impl Slot {
             backlog: AtomicU32::new(0),
             steady: AtomicBool::new(false),
             waiting: AtomicBool::new(false),
+            started_us: AtomicU64::new(0),
+            finished_us: AtomicU64::new(0),
         }
     }
 }
@@ -309,6 +316,8 @@ struct Slot {
     backlog: AtomicU32,
     steady: AtomicBool,
     waiting: AtomicBool,
+    started_us: AtomicU64,
+    finished_us: AtomicU64,
 }
 
 /// Two published batches, one per `GameSim` (the game double-buffers its
@@ -364,6 +373,9 @@ impl Slots {
         slot.backlog.store(record.backlog, Ordering::Relaxed);
         slot.steady.store(record.steady, Ordering::Relaxed);
         slot.waiting.store(record.waiting, Ordering::Relaxed);
+        slot.started_us.store(record.started_us, Ordering::Relaxed);
+        slot.finished_us
+            .store(record.finished_us, Ordering::Relaxed);
         slot.seq.store(begin + 1, Ordering::Release);
     }
 
@@ -392,6 +404,8 @@ impl Slots {
             backlog: slot.backlog.load(Ordering::Relaxed),
             steady: slot.steady.load(Ordering::Relaxed),
             waiting: slot.waiting.load(Ordering::Relaxed),
+            started_us: slot.started_us.load(Ordering::Relaxed),
+            finished_us: slot.finished_us.load(Ordering::Relaxed),
         };
         std::sync::atomic::fence(Ordering::Acquire);
         let after = slot.seq.load(Ordering::Relaxed);
@@ -440,6 +454,7 @@ pub enum Fault {
 #[derive(Debug, Default)]
 pub struct Interval {
     trim: Trim,
+    ready_budget: crate::ready_budget::ReadyBudget,
     /// The last interval written, µs.
     last: Option<u32>,
     /// The `m_data` and world whose field was found writable.
@@ -455,6 +470,7 @@ impl Interval {
                 value: 1.0,
                 recovery_floor: TRIM_DEEP,
             },
+            ready_budget: crate::ready_budget::ReadyBudget::new(),
             last: None,
             writable_for: None,
             delivery: None,
@@ -512,10 +528,12 @@ impl Interval {
         }
         let Some(record) = record else {
             self.trim.reset();
+            self.ready_budget.reset();
             return Ok(Err(Skip::NoRecord));
         };
         if !record.eligible || record.step_us == 0 {
             self.trim.reset();
+            self.ready_budget.reset();
             return Ok(Err(Skip::NotEligible));
         }
         if record.count > 0 && record.steady {
@@ -545,6 +563,11 @@ pub static SLOTS: Slots = Slots::new();
 
 /// Off for the process: the knob, a profile without the layout, or a fault.
 static OFF: AtomicBool = AtomicBool::new(true);
+static BUDGET_ON: AtomicBool = AtomicBool::new(false);
+
+pub fn budget_enabled() -> bool {
+    BUDGET_ON.load(Ordering::Relaxed)
+}
 /// The wrapper's state (only the main thread, in the wrapper, takes it).
 static STATE: std::sync::Mutex<Interval> = std::sync::Mutex::new(Interval::new());
 /// The game's layout, set once when the interval is armed.
@@ -562,6 +585,13 @@ static FALSE_SYNCS: AtomicU64 = AtomicU64::new(0);
 /// writes, until a fault.
 pub fn arm(layout: Layout) {
     let _ = LAYOUT.set(layout);
+    if crate::steptrace::wanted(std::env::var(crate::ready_budget::ENV).ok().as_deref())
+        && let Ok(mut state) = STATE.lock()
+    {
+        state.ready_budget.enable();
+        BUDGET_ON.store(true, Ordering::Relaxed);
+        say("measured presentation budget enabled (experiment): recovery deadlines respect native preparation/worker costs, capped at room pace".into());
+    }
     OFF.store(false, Ordering::Release);
 }
 
@@ -687,7 +717,7 @@ pub fn sync_in(
             "the game's state is not what it should be ({fault:?})"
         )),
         Ok(Err(skip)) => Done::Skipped(skip),
-        Ok(Ok(us)) => {
+        Ok(Ok(mut us)) => {
             let Some(at) = field(layout.gui_frame_time) else {
                 return Done::Off("guiFrameTime's address overflows".into());
             };
@@ -695,6 +725,7 @@ pub fn sync_in(
             // The world may have changed since the record was read (a hold
             // on the simulation thread): never time another world's batch.
             if record.is_none_or(|record| record.epoch != epoch) {
+                state.ready_budget.reset();
                 return Done::Skipped(Skip::NoRecord);
             }
             if state.writable_for != Some((m_data, epoch)) {
@@ -703,6 +734,25 @@ pub fn sync_in(
                 }
                 state.writable_for = Some((m_data, epoch));
             }
+            if let Some(record) = record {
+                us = state
+                    .ready_budget
+                    .after_swap(
+                        crate::ready_budget::Key {
+                            world: m_data,
+                            epoch,
+                            step_us: record.step_us,
+                            nominal: record.nominal,
+                        },
+                        crate::steptrace::clock_us(Instant::now()),
+                        record.count,
+                        record.started_us,
+                        record.finished_us,
+                        us,
+                    )
+                    .clamp(MIN_US, MAX_US);
+            }
+            state.last = Some(us);
             write_i32(at, us);
             match record {
                 Some(record) => Done::Wrote(us, record),
@@ -754,13 +804,14 @@ pub fn after_sync(cgame: usize, ok: bool) {
                     )
                 });
                 say(format!(
-                    "interval: n={} us={us} trim={:.2} backlog={} epoch={} clock_ms={:.3}{}",
+                    "interval: n={} us={us} trim={:.2} backlog={} epoch={} clock_ms={:.3}{} budget_us={}",
                     record.count,
                     state.trim(),
                     record.backlog,
                     record.epoch,
                     crate::steptrace::clock_ms(now),
                     timing,
+                    state.ready_budget.last_floor_us,
                 ));
             }
         }
@@ -988,6 +1039,8 @@ mod tests {
             backlog: 2,
             steady: true,
             waiting: false,
+            started_us: 0,
+            finished_us: 0,
         }
     }
 
@@ -995,11 +1048,19 @@ mod tests {
     fn a_sync_reads_the_batch_of_the_simulation_it_exposed_never_the_next() {
         let slots = Slots::new();
         let epoch = slots.next_epoch();
-        slots.publish(&record(0x1000, epoch, 3));
+        let mut first = record(0x1000, epoch, 3);
+        first.started_us = 123_000;
+        first.finished_us = 218_000;
+        slots.publish(&first);
         // The next batch, on the other simulation, finishes before the
         // wrapper reads: it lands in the other slot.
         slots.publish(&record(0x2000, epoch, 5));
         assert_eq!(slots.read(0x1000).unwrap().count, 3);
+        assert_eq!(
+            slots.read(0x1000),
+            Some(first),
+            "worker timing belongs to this buffer too"
+        );
         assert_eq!(slots.read(0x2000).unwrap().count, 5);
         // The same simulation's next batch replaces its own slot only.
         slots.publish(&record(0x1000, epoch, 4));
@@ -1252,6 +1313,8 @@ mod native {
             backlog: 2,
             steady: true,
             waiting: false,
+            started_us: 0,
+            finished_us: 0,
         });
     }
 
@@ -1529,6 +1592,8 @@ mod coupled {
                     backlog: backlog as u32,
                     steady,
                     waiting: count == 0 && released < next,
+                    started_us: 0,
+                    finished_us: 0,
                 });
             }
             total = total.min(last_sync + gft - 1);

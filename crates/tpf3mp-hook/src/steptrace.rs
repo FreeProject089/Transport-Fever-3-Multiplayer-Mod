@@ -42,6 +42,16 @@ pub fn clock_ms(now: Instant) -> f64 {
         .as_secs_f64()
         * 1000.0
 }
+
+/// Integer version for the presentation-budget experiment, including when
+/// tracing is off. It never uses buffered wall-clock log timestamps.
+pub fn clock_us(now: Instant) -> u64 {
+    u64::try_from(
+        now.saturating_duration_since(*CLOCK.get_or_init(Instant::now))
+            .as_micros(),
+    )
+    .unwrap_or(u64::MAX)
+}
 static STATE: Mutex<State> = Mutex::new(State {
     first: None,
     last: None,

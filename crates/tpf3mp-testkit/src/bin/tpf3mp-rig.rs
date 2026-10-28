@@ -93,6 +93,10 @@ struct Args {
     #[arg(long, value_delimiter = ',', value_parser = ["4", "8", "16"])]
     batch_limits: Vec<String>,
 
+    /// Opt-in measured presentation budget per real-game player (0 or 1).
+    #[arg(long, value_delimiter = ',', value_parser = ["0", "1"])]
+    ready_budgets: Vec<String>,
+
     /// With a real game: the hook library to load into it; without, the
     /// one next to this program.
     #[arg(long)]
@@ -842,6 +846,11 @@ fn performance_env(args: &Args) -> Result<Vec<Vec<(String, String)>>> {
             "TPF3MP_HOOK_MAX_BATCH_UPDATES",
             &args.batch_limits,
         ),
+        (
+            "--ready-budgets",
+            "TPF3MP_HOOK_READY_BUDGET",
+            &args.ready_budgets,
+        ),
     ] {
         if values.is_empty() {
             continue;
@@ -971,6 +980,8 @@ mod tests {
             "200,100",
             "--batch-limits",
             "16,4",
+            "--ready-budgets",
+            "0,1",
         ])
         .unwrap();
         let env = performance_env(&args).unwrap();
@@ -978,14 +989,16 @@ mod tests {
             env[0],
             [
                 ("TPF3MP_HOOK_BATCH_MS".into(), "200".into()),
-                ("TPF3MP_HOOK_MAX_BATCH_UPDATES".into(), "16".into())
+                ("TPF3MP_HOOK_MAX_BATCH_UPDATES".into(), "16".into()),
+                ("TPF3MP_HOOK_READY_BUDGET".into(), "0".into())
             ]
         );
         assert_eq!(
             env[1],
             [
                 ("TPF3MP_HOOK_BATCH_MS".into(), "100".into()),
-                ("TPF3MP_HOOK_MAX_BATCH_UPDATES".into(), "4".into())
+                ("TPF3MP_HOOK_MAX_BATCH_UPDATES".into(), "4".into()),
+                ("TPF3MP_HOOK_READY_BUDGET".into(), "1".into())
             ]
         );
         let mut args = args;
@@ -995,6 +1008,8 @@ mod tests {
         args.game = "fake".into();
         assert!(performance_env(&args).is_err());
         args.batch_periods.clear();
+        assert!(performance_env(&args).is_err());
+        args.ready_budgets.clear();
         assert_eq!(performance_env(&args).unwrap(), vec![vec![], vec![]]);
         assert!(
             Args::try_parse_from(["rig", "--server", "local", "--batch-periods", "0,100"]).is_err()

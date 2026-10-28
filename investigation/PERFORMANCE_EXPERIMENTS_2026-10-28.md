@@ -1,5 +1,76 @@
 # Follow-up performance experiments
 
+## Experiment G: measure the minimum useful recovery interval
+
+Branch `codex/experiment-measured-presentation-budget-20261028`, based on F.
+The intended outcome is fewer secondary motion holds after a slow native
+operation, without losing room speed, changing ordered actions, or masking
+world mismatches. The original industry/save stall is still a failure of
+continuous motion; this experiment does not claim to eliminate it.
+
+`TPF3MP_HOOK_READY_BUDGET=1` learns preparation-plus-worker duration from
+the actual exposed buffer, using the prior successful Sync and that buffer's
+monotonic worker timestamps. It keeps 16 samples for each normal batch count,
+uses p75 plus 16.667 ms after four samples, and floors the requested interval
+at that budget, capped at the batch's duration at room pace. World, epoch and
+pace changes clear history. Emergency batches and zero updates break the
+measurement pair; emergency batches retain their existing compressed interval.
+Default remains off. No world/protocol/ownership changes are made.
+
+The first closed-loop model failed: applying this floor to emergency batches
+increased secondary misses from 43 to 93, backlog from 4 to 15, and reduced
+rate from 19.986 to 19.912 updates/s. Excluding emergency batches fixes that
+specific feedback problem: 14 misses, backlog 4, 19.986 updates/s. This is a
+240 s model with 35 ms/update plus 20 ms preparation, 60 Hz quantization and
+1.3 s extra work at the same every-1000-step boundaries. Its secondary-miss
+metric excludes each original expensive operation, not the recovery after it.
+The real-game result must include those original stalls as well.
+
+Acceptance: ordinary menu start on Bubu, equal 250 ms/max-16 policies with
+only the floor differing, foreground swapped between windows, all outliers
+retained, matching rolling/allocator/tick probes, and no loss of simulation
+rate. An accepted candidate additionally needs actions, pause/resume, rejoin
+and actual vehicle-motion evidence; worker-duration improvement is not enough.
+Before the run: 593 hook tests passed (7 ignored), five rig tests passed,
+focused all-target clippy and release hook/rig builds passed.
+
+### G result: no sufficiently controlled smoothness win
+
+`paired-ready-budget-bubu`: P1 32984 floor off, P2 42156 floor on, rig
+34076, private local room KPZ5U7. Same ordinary Bubu start and saved camera,
+250 ms/cap 16 on both, fast saves, normal recovery. No builds or video
+recording ran inside the measured windows. The floor was active on P2 and
+learned roughly 217-221 ms for five updates during the first window.
+
+| Window / foreground | Peer / floor | Worker median / p95 / p99 / max ms | Delivery late p95 / p99 / max ms | Late >50 / >100 / >500 ms |
+|---|---|---|---|---|
+| steps 1001-4000 / P1 | P1 / off | 155.8 / 195.3 / 472.3 / 1625.3 | 30.841 / 268.071 / 1393.573 | 17 / 7 / 3 |
+| same | P2 / on | 171.2 / 226.9 / 577.5 / 1750.6 | 43.709 / 383.511 / 1535.153 | 24 / 13 / 3 |
+| steps 4501-7500 / P2 | P1 / off | 171.0 / 228.9 / 551.6 / 1731.0 | 56.837 / 420.505 / 1467.016 | 35 / 21 / 5 |
+| same | P2 / on | 158.0 / 196.5 / 432.4 / 1442.1 | 29.503 / 270.287 / 1215.582 | 15 / 10 / 4 |
+
+The foreground effect again dominates; comparing different windows as if
+they contained identical work would be misleading. Rates were 19.893/19.842
+and 19.841/19.842 updates/s. These finite windows contain the original slow
+operations and their recovery, with no long-term backlog growth demonstrated.
+The timing floor alone is not accepted as a default or as smoother motion.
+No new body-video or rejoin acceptance is claimed for this unaccepted policy.
+
+The host paused through Space and resumed at 2x; both logs confirm those
+speed changes. Two scripted guest rename attempts produced no corresponding
+handed/applied action in either log, so they do not pass action acceptance.
+The test did not capture the input field after typing and cannot distinguish
+missed UI input from a product fault. Earlier F did verify those actions;
+that result is not substituted for G. The new pace rebuilt the floor with three-update
+samples (~137-140 ms), rather than retaining the five-update budget.
+All 177 rolling and 178 allocator/tick common samples match through 8850;
+no periodic sample is missing. Both games quit normally and the rig exited.
+
+The follow-on expensive calls include 16-update emergency batches taking
+472-577 ms, or longer. A future smaller-cap experiment must also preserve
+trim feedback during Far recovery: otherwise relaxing trim to 1 while
+capping the batch at nominal can leave the backlog permanently uncleared.
+
 ## Experiment F: more preparation time between buffer swaps
 
 Branch `codex/experiment-five-update-presentation-20261028`, based on the

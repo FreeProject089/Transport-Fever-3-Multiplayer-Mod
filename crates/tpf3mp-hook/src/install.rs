@@ -528,6 +528,8 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     let original: StepFn = unsafe { std::mem::transmute::<usize, StepFn>(original) };
     let started = crate::perf::start();
     let traced_at = crate::steptrace::enabled().then(Instant::now);
+    let budget_started =
+        crate::interval::budget_enabled().then(|| crate::steptrace::clock_us(Instant::now()));
     STEP_GAME_NANOS.store(0, Ordering::Relaxed);
     LAST_STEP.store(now_ms(), Ordering::Release);
     // The step's speed call sets it again for this call.
@@ -658,6 +660,10 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             _ => None,
         };
         let mut record = info.record(this, count);
+        if let Some(started) = budget_started {
+            record.started_us = started;
+            record.finished_us = crate::steptrace::clock_us(Instant::now());
+        }
         record.eligible &= room && result.is_ok() && ran == Some(count);
         if room && ran.is_some_and(|ran| ran != count) {
             crate::interval::note_mismatch(count, ran.unwrap_or(0));

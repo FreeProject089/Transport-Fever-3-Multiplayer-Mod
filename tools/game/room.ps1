@@ -29,6 +29,7 @@ param(
   [string]$CloseConsoleAt = "557,47",
   [ValidatePattern('^(50|100|200|250)(,(50|100|200|250))*$')][string]$BatchPeriods,
   [ValidatePattern('^(4|8|16)(,(4|8|16))*$')][string]$BatchLimits,
+  [ValidatePattern('^[01](,[01])*$')][string]$ReadyBudgets,
   [switch]$NoZoom,
   [switch]$ManualRoom,
   [switch]$NoInstall
@@ -71,6 +72,7 @@ $rigArgs = @("--players", "$Players", "--stagger", "$Stagger", "--wait-for-games
 if ($ManualRoom) { $rigArgs += '--manual-room' }
 if ($BatchPeriods) { $rigArgs += @('--batch-periods', $BatchPeriods) }
 if ($BatchLimits) { $rigArgs += @('--batch-limits', $BatchLimits) }
+if ($ReadyBudgets) { $rigArgs += @('--ready-budgets', $ReadyBudgets) }
 $proc = Start-Process -FilePath $rig -ArgumentList $rigArgs -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput "$runDir\rig.out" -RedirectStandardError "$runDir\rig.err"
 Set-Content "$runDir\rig.pid" $proc.Id
