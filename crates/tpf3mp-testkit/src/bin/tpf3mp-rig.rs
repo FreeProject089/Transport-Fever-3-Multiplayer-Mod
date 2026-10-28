@@ -84,6 +84,15 @@ struct Args {
     #[arg(long = "game-arg", allow_hyphen_values = true)]
     game_args: Vec<OsString>,
 
+    /// Experimental native batch period per player, in seat order. Supply
+    /// one value per player; omitted leaves the inherited hook setting alone.
+    #[arg(long, value_delimiter = ',', value_parser = ["50", "100", "200"])]
+    batch_periods: Vec<String>,
+
+    /// Experimental maximum updates per native batch, one per player.
+    #[arg(long, value_delimiter = ',', value_parser = ["4", "8", "16"])]
+    batch_limits: Vec<String>,
+
     /// With a real game: the hook library to load into it; without, the
     /// one next to this program.
     #[arg(long)]
@@ -633,6 +642,7 @@ struct GameCommand {
     hook: Option<PathBuf>,
     /// How long a real game waits, suspended, for its hook to be ready.
     ready_wait: Duration,
+    performance_env: Vec<Vec<(String, String)>>,
 }
 
 /// A real game started with the hook, ended when dropped: the rig stops
@@ -649,6 +659,7 @@ impl Drop for RealGame {
 
 impl GameCommand {
     fn new(args: &Args) -> Result<Self> {
+        let performance_env = performance_env(args)?;
         let fake = args.game == "fake";
         let program = if fake {
             let me = std::env::current_exe().context("finding this program")?;
@@ -700,6 +711,7 @@ impl GameCommand {
             profiles,
             hook,
             ready_wait: Duration::from_secs(args.hook_ready_wait),
+            performance_env,
         })
     }
 
@@ -710,7 +722,7 @@ impl GameCommand {
             copy_profiles(profiles, &player.dir.join("profiles"))?;
         }
         if let Some(hook) = &self.hook {
-            return self.launch(player, hook);
+            return self.launch(player, hook, index);
         }
         // The fake game, told its link, seed and steps on its command line.
         let mut command = Command::new(&self.program);
@@ -759,11 +771,22 @@ impl GameCommand {
 
     /// Starts a real game as the launcher does, with the hook in it; the
     /// task ends with the game, and ends the game when dropped.
-    fn launch(&self, player: &Seat, hook: &Path) -> Result<JoinHandle<Result<GameEnd>>> {
+    fn launch(
+        &self,
+        player: &Seat,
+        hook: &Path,
+        index: usize,
+    ) -> Result<JoinHandle<Result<GameEnd>>> {
         let dir = player
             .dir
             .to_str()
             .context("the player's folder is not valid Unicode")?;
+        let mut env = vec![
+            (LINK_ENV.to_owned(), player.link.clone()),
+            (DATA_DIR_ENV.to_owned(), dir.to_owned()),
+            (LAUNCHER_PID_ENV.to_owned(), std::process::id().to_string()),
+        ];
+        env.extend(self.performance_env[index].iter().cloned());
         let started = tpf3mp_launch::start(&tpf3mp_launch::Launch {
             exe: self.program.clone(),
             args: self
@@ -772,11 +795,7 @@ impl GameCommand {
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect(),
             hook: hook.to_owned(),
-            env: vec![
-                (LINK_ENV.to_owned(), player.link.clone()),
-                (DATA_DIR_ENV.to_owned(), dir.to_owned()),
-                (LAUNCHER_PID_ENV.to_owned(), std::process::id().to_string()),
-            ],
+            env,
             ready_wait: self.ready_wait,
         })
         .with_context(|| format!("starting {}", self.program.display()))?;
@@ -806,6 +825,38 @@ impl GameCommand {
             })
         }))
     }
+}
+
+/// Explicit child environments, never changes to this process's global
+/// environment: staggered launches must not inherit another seat's variant.
+fn performance_env(args: &Args) -> Result<Vec<Vec<(String, String)>>> {
+    let mut seats = vec![Vec::new(); usize::from(args.players)];
+    for (flag, key, values) in [
+        (
+            "--batch-periods",
+            "TPF3MP_HOOK_BATCH_MS",
+            &args.batch_periods,
+        ),
+        (
+            "--batch-limits",
+            "TPF3MP_HOOK_MAX_BATCH_UPDATES",
+            &args.batch_limits,
+        ),
+    ] {
+        if values.is_empty() {
+            continue;
+        }
+        if args.game == "fake" {
+            bail!("{flag} requires a real game");
+        }
+        if values.len() != seats.len() {
+            bail!("{flag} needs exactly one value per player");
+        }
+        for (seat, value) in seats.iter_mut().zip(values) {
+            seat.push((key.to_owned(), value.clone()));
+        }
+    }
+    Ok(seats)
 }
 
 /// Prints a game's output under its player's name, and collects its lane
@@ -906,6 +957,48 @@ mod tests {
     #[test]
     fn the_command_line_is_consistent() {
         Args::command().debug_assert();
+    }
+
+    #[test]
+    fn performance_variants_are_per_seat_and_require_complete_real_game_settings() {
+        let args = Args::try_parse_from([
+            "rig",
+            "--server",
+            "local",
+            "--game",
+            "real.exe",
+            "--batch-periods",
+            "200,100",
+            "--batch-limits",
+            "16,4",
+        ])
+        .unwrap();
+        let env = performance_env(&args).unwrap();
+        assert_eq!(
+            env[0],
+            [
+                ("TPF3MP_HOOK_BATCH_MS".into(), "200".into()),
+                ("TPF3MP_HOOK_MAX_BATCH_UPDATES".into(), "16".into())
+            ]
+        );
+        assert_eq!(
+            env[1],
+            [
+                ("TPF3MP_HOOK_BATCH_MS".into(), "100".into()),
+                ("TPF3MP_HOOK_MAX_BATCH_UPDATES".into(), "4".into())
+            ]
+        );
+        let mut args = args;
+        args.batch_limits.pop();
+        assert!(performance_env(&args).is_err());
+        args.batch_limits.clear();
+        args.game = "fake".into();
+        assert!(performance_env(&args).is_err());
+        args.batch_periods.clear();
+        assert_eq!(performance_env(&args).unwrap(), vec![vec![], vec![]]);
+        assert!(
+            Args::try_parse_from(["rig", "--server", "local", "--batch-periods", "0,100"]).is_err()
+        );
     }
 
     #[tokio::test]

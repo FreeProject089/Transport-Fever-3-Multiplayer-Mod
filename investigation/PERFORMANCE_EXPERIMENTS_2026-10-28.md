@@ -80,3 +80,38 @@ sample used 7.47/7.45 cores, working sets 5.86/5.92 GiB. These differ from
 the earlier day's measurements; compare the follow-up candidates here, not
 those earlier CPU figures. Raw evidence and analysis script are under
 `D:\TPF3MP-cargo\performance-followup-20261028`.
+
+## Experiment C: bounded catch-up batches
+
+Branch `codex/experiment-catchup-budget-20261028`, based on the preceding
+experiments. `TPF3MP_HOOK_MAX_BATCH_UPDATES=4|8|16` caps each released batch;
+unset remains 16, invalid values log refusal and keep 16. It limits existing
+gate batches, including command drains, rather than consuming steps and then
+discarding any. Checkpoint/action/save/load boundaries and replay ack remain.
+
+At the baseline's ~33-35 ms/update, 16 updates imply ~0.53-0.56 s of work.
+Four would imply ~0.13-0.14 s, before batch overhead and slow native operations.
+This is a capacity estimate, not a measured gain. A 20-update/s room needs
+<50 ms/update including overhead; the candidate must still clear backlog,
+including rejoin, or shorter individual calls are not an acceptable result.
+Single expensive operations remain indivisible. Test independently of B's
+compression and compare A's 100 ms/16 limit before 100 ms/4 limit.
+
+## 100 ms observation and comparison limitations
+
+`batch100-bubu`, same fixture, 100 ms batches, original 16-update cap,
+normal compression. Shared queue/rolling/ticks all match through 18550,
+with no missing overlapping observations. Both games quit cleanly.
+Steps 4301-9000: P1 median/p95/p99/max 63.6/87.4/330.6/1478.8 ms;
+P2 70.2/106.4/570.2/1998.5 ms. Positive gaps max 6495.6/7673.3 ms.
+8/11 replay-zero calls and two save-zero calls per peer. The periodic room
+save ran at epochs 1793203745-3751; this did not fall in the baseline's
+selected window. Throughput ~19.14/19.17 updates/s including that save.
+
+**Not a controlled CPU or worst-gap comparison:** the baseline's incorrect
+console-close coordinate also swallowed its host zoom. Its guest and both
+100 ms games did zoom. CPU was 7.94/7.41 cores and is retained only as a
+run observation. Do not infer CPU regression/improvement from these runs.
+The corrected paired/crossover runs retain the fixture camera (`-NoZoom`),
+use the same room, and swap variants across seats. Raw first-run evidence
+is retained, not replaced by the improved methodology.

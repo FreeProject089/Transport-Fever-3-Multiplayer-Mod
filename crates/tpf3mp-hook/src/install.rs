@@ -859,6 +859,16 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
     let even = crate::cadence::wanted(std::env::var(crate::cadence::ENV).ok().as_deref());
     driver.set_even_steps(even);
+    match crate::step::batch_limit(std::env::var(crate::step::BATCH_LIMIT_ENV).ok().as_deref()) {
+        Ok(limit) => {
+            driver.set_batch_limit(limit);
+            log_line(&format!(
+                "batch limit: {limit} updates ({}; experiment)",
+                crate::step::BATCH_LIMIT_ENV
+            ));
+        }
+        Err(why) => log_line(&format!("batch limit: keeping 16 updates: {why}")),
+    }
     log_line(&if even {
         format!(
             "even steps: each call of the game's step runs the room's pace over the game's call period, keeping {} released step(s) in reserve ({}=0 runs all released, as before)",

@@ -77,6 +77,18 @@ use crate::lanedump::{self, DumpOrder, LaneDumps};
 /// itself runs up to 64 in a call (its debug steps).
 pub const MAX_STEPS_PER_CALL: u32 = 16;
 
+/// Experimental cap on catch-up/command drains. No extra steps are released.
+pub const BATCH_LIMIT_ENV: &str = "TPF3MP_HOOK_MAX_BATCH_UPDATES";
+
+pub fn batch_limit(value: Option<&str>) -> Result<u32, String> {
+    match value.map(str::trim) {
+        None | Some("16") => Ok(MAX_STEPS_PER_CALL),
+        Some("4") => Ok(4),
+        Some("8") => Ok(8),
+        Some(value) => Err(format!("{BATCH_LIMIT_ENV}={value:?}: expected 4, 8 or 16")),
+    }
+}
+
 /// How many updates one call of the game's step runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Updates {
@@ -614,6 +626,7 @@ pub struct StepDriver<G> {
     handed_at: Option<Instant>,
     /// The batch interval times each call ([`crate::interval`]).
     batch_interval: bool,
+    max_batch_updates: u32,
     /// The driver ran the room's game after the last call: leaving it (an
     /// end, the menu, playing alone) starts a new epoch for the interval.
     was_running: bool,
@@ -653,6 +666,7 @@ impl<G: RoomGate> StepDriver<G> {
             cadence: Cadence::new(false),
             handed_at: None,
             batch_interval: false,
+            max_batch_updates: MAX_STEPS_PER_CALL,
             was_running: false,
             choice: None,
             log: Vec::new(),
@@ -687,6 +701,10 @@ impl<G: RoomGate> StepDriver<G> {
     /// must be armed before this affects scheduling.
     pub fn set_batch_period(&mut self, period: Duration) {
         self.cadence.set_batch_period(period);
+    }
+
+    pub fn set_batch_limit(&mut self, limit: u32) {
+        self.max_batch_updates = limit.clamp(1, MAX_STEPS_PER_CALL);
     }
 
     /// For the batch interval, after a call: whether its batch may be timed,
@@ -1237,7 +1255,7 @@ impl<G: RoomGate> StepDriver<G> {
                             self.cadence.speed(*speed);
                         }
                     }
-                    return match self.gate.batch(&mut self.game, MAX_STEPS_PER_CALL) {
+                    return match self.gate.batch(&mut self.game, self.max_batch_updates) {
                         Ok(cap) => {
                             let interval = self.checkpoint_interval.max(1);
                             let to_checkpoint = (interval - first % interval) % interval + 1;
@@ -2673,6 +2691,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn smaller_catchup_caps_drain_every_step_and_keep_checkpoint_boundaries() {
+        for limit in [4, 8] {
+            let mut script = Script::default();
+            script.begin.push_back(Some(begin_every(7)));
+            script.gates.extend((0..40).map(|_| StepGate::Run));
+            let (mut d, mut calls) = driver(script);
+            d.set_batch_limit(limit);
+            while d.gate.ran < 40 {
+                let before = d.gate.ran;
+                let got = call(&mut d, &mut calls);
+                let Updates::Exactly(n) = got else {
+                    panic!("unexpected own speed")
+                };
+                assert!(n > 0 && n <= limit, "{got:?}");
+                assert_eq!(d.gate.ran, before + u64::from(n));
+                assert!(before / 7 == (d.gate.ran - 1) / 7, "crossed checkpoint");
+            }
+            assert_eq!(call(&mut d, &mut calls), PAUSED);
+            assert_eq!(d.gate.ran, 40);
+        }
+    }
+
+    #[test]
+    fn catchup_limit_is_opt_in_and_cannot_remove_the_global_bound() {
+        assert_eq!(batch_limit(None).unwrap(), MAX_STEPS_PER_CALL);
+        for n in [4, 8, 16] {
+            assert_eq!(batch_limit(Some(&n.to_string())).unwrap(), n);
+        }
+        for invalid in ["", "0", "1", "17", "100000", "-4"] {
+            assert!(batch_limit(Some(invalid)).is_err());
+        }
+    }
+
+    #[test]
     fn a_room_far_ahead_is_caught_up_a_bounded_number_of_steps_a_call() {
         let mut script = Script::default();
         script.begin.push_back(Some(begin()));
@@ -3692,6 +3744,39 @@ mod even_steps_over_a_real_link {
         assert!(state.lock().unwrap().replay_requests.is_empty());
         assert_eq!(step(&mut driver).0, Updates::Exactly(1));
         assert_eq!(state.lock().unwrap().replay_requests[0].0, 4);
+    }
+
+    #[test]
+    fn capped_command_drain_finishes_prior_steps_before_replay_and_waits_for_ack() {
+        let (mut driver, agent) = playing("capped-drain", 50, 1, 400);
+        driver.set_batch_limit(4);
+        let control = FakeControl::default();
+        let state = control.state.clone();
+        state.lock().unwrap().replay_wait = true;
+        driver.control = Box::new(control);
+        release(&agent, 1, 9);
+        say(
+            &agent,
+            &ToHook::Apply(super::tests::command_event(
+                1,
+                10,
+                &crate::lua::tests::depot_build(),
+            )),
+        );
+        release(&agent, 10, 15);
+        for expected in [4, 4] {
+            assert_eq!(step(&mut driver).0, Updates::Exactly(expected));
+            assert!(state.lock().unwrap().replay_requests.is_empty());
+        }
+        assert_eq!(step(&mut driver).0, Updates::Exactly(1));
+        assert_eq!(state.lock().unwrap().replay_requests[0].0, 10);
+        assert_eq!(driver.next_step(), Some(10));
+        assert_eq!(step(&mut driver).0, Updates::Exactly(0));
+        assert_eq!(driver.why(), "replaying");
+        state.lock().unwrap().replay_answer = Some(Ok(()));
+        assert_eq!(step(&mut driver).0, Updates::Exactly(4));
+        assert_eq!(driver.next_step(), Some(14));
+        assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
     }
 
     #[test]

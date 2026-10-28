@@ -27,6 +27,9 @@ param(
   [int]$MenuSettle = 5,
   [int]$GuestWait = 150,
   [string]$CloseConsoleAt = "557,47",
+  [ValidatePattern('^(50|100|200)(,(50|100|200))*$')][string]$BatchPeriods,
+  [ValidatePattern('^(4|8|16)(,(4|8|16))*$')][string]$BatchLimits,
+  [switch]$NoZoom,
   [switch]$ManualRoom,
   [switch]$NoInstall
 )
@@ -66,6 +69,8 @@ New-Item -ItemType Directory -Force $runDir | Out-Null
 $rigArgs = @("--players", "$Players", "--stagger", "$Stagger", "--wait-for-games", "--server", "local",
   "--game", "`"$GameExe`"", "--data-root", "`"$runDir`"", "--game-build", $GameBuild)
 if ($ManualRoom) { $rigArgs += '--manual-room' }
+if ($BatchPeriods) { $rigArgs += @('--batch-periods', $BatchPeriods) }
+if ($BatchLimits) { $rigArgs += @('--batch-limits', $BatchLimits) }
 $proc = Start-Process -FilePath $rig -ArgumentList $rigArgs -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput "$runDir\rig.out" -RedirectStandardError "$runDir\rig.err"
 Set-Content "$runDir\rig.pid" $proc.Id
@@ -173,7 +178,7 @@ foreach ($gp in $pids) {
   try {
     # The console the fixture's load left open.
     if ($consoled -contains $gp) { & $g click $c[0] $c[1] -GamePid $gp | Out-Null; Start-Sleep -Seconds 1 }
-    & $g scroll 650 380 -Clicks 6 -GamePid $gp | Out-Null; Start-Sleep -Seconds 1
+    if (-not $NoZoom) { & $g scroll 650 380 -Clicks 6 -GamePid $gp | Out-Null; Start-Sleep -Seconds 1 }
   } catch { "could not reach game $gp`: $_" }
 }
 for ($i = 0; $i -lt $pids.Count; $i++) {
