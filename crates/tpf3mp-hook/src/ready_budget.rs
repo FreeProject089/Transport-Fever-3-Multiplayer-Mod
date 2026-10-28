@@ -1,6 +1,6 @@
 //! Optional presentation floor learned from native preparation + worker time.
 //! A recovery deadline shorter than that work creates another visible hold.
-//! This never runs simulation, predicts positions, or delays an ordered action.
+//! This changes presentation timing, never simulation values or action order.
 
 pub const ENV: &str = "TPF3MP_HOOK_READY_BUDGET";
 const SAMPLES: usize = 16;
@@ -134,27 +134,34 @@ mod tests {
     fn measured_floor_clears_backlog_without_repeated_over_capacity_deadlines() {
         // Same ordered native workload for both policies. Include expensive
         // operations at the same simulation steps, not at different wall times.
-        let run = |enabled| {
+        let run = |enabled, cap, bounded_feedback, frame_us, speed, initial| {
             let mut budget = ReadyBudget::new();
             if enabled {
                 budget.enable();
             }
             let mut cadence = crate::cadence::Cadence::new(true);
             cadence.begin(5);
-            cadence.speed(tpf3mp_proto::Speed(400));
+            cadence.speed(tpf3mp_proto::Speed(speed));
             cadence.set_fixed(true);
             cadence.set_batch_period(Duration::from_millis(250));
+            let nominal = cadence.fixed_nominal();
+            let step_us = cadence.step_us();
+            let sample_key = Key {
+                nominal,
+                step_us,
+                ..key()
+            };
             let mut trim = crate::interval::Trim::default();
             let start = Instant::now();
             let (mut now, mut interval, mut next) = (0_u64, 250_000_u32, 1_u64);
             let (mut misses, mut backlog) = (0, 0);
             while now < 240_000_000 {
-                let released = now / 50_000 + 6;
+                let released = now / u64::from(step_us) + initial;
                 let cp = (50 - next % 50) % 50 + 1;
                 let choice = cadence.choose(
                     next,
                     released,
-                    cp.min(16) as u32,
+                    cp.min(cap) as u32,
                     cp,
                     false,
                     false,
@@ -167,21 +174,30 @@ mod tests {
                 let service =
                     u64::from(choice.steps) * 35_000 + 20_000 + if slow { 1_300_000 } else { 0 };
                 let old_now = now;
-                now += service.max(u64::from(interval)).div_ceil(16_667) * 16_667;
+                now += service.max(u64::from(interval)).div_ceil(frame_us) * frame_us;
                 if old_now > 5_000_000 && !slow && service > u64::from(interval) + 50_000 {
                     misses += 1;
                 }
                 next = end;
                 backlog = released + 1 - next;
-                if choice.pick == crate::cadence::Pick::Nominal {
-                    trim.update(backlog, 5);
+                if if bounded_feedback {
+                    choice.steady_interval(nominal, cap as u32)
+                } else {
+                    choice.pick == crate::cadence::Pick::Nominal
+                } {
+                    trim.update(backlog, nominal);
                 } else {
                     trim.relax();
                 }
-                let requested =
-                    crate::interval::interval_us(choice.steps, 5, 50_000, trim.value(), false);
+                let requested = crate::interval::interval_us(
+                    choice.steps,
+                    nominal,
+                    step_us,
+                    trim.value(),
+                    false,
+                );
                 interval = budget.after_swap(
-                    key(),
+                    sample_key,
                     now,
                     choice.steps,
                     old_now + 20_000,
@@ -195,8 +211,48 @@ mod tests {
                 (next - 1) as f64 / (now as f64 / 1_000_000.0),
             )
         };
-        let baseline = run(false);
-        let candidate = run(true);
+        let baseline = run(false, 16, false, 16_667, 400, 6);
+        let candidate = run(true, 16, false, 16_667, 400, 6);
+        let capped_only = run(true, 5, false, 16_667, 400, 6);
+        let bounded = run(true, 5, true, 16_667, 400, 6);
+        let lower_fps = run(true, 5, true, 33_333, 400, 6);
+        // A rejoin can still be far behind after its last ordered event.
+        let twice = run(true, 5, true, 16_667, 200, 200);
+        eprintln!("bounded at 2x {twice:?}");
+        assert!(
+            twice.1 <= 20 && twice.2 >= 9.95,
+            "2x did not recover: {twice:?}"
+        );
+        for speed in [100, 300, 400] {
+            let replay = run(true, 5, true, 16_667, speed, 200);
+            let room_rate = f64::from(speed) / 20.0;
+            assert!(
+                replay.1 <= 20 && replay.2 >= room_rate * 0.995,
+                "{speed}% did not repay its initial history: {replay:?}"
+            );
+        }
+        eprintln!("bounded at 30 Hz {lower_fps:?}");
+        assert!(
+            lower_fps.1 <= 20 && lower_fps.2 >= 19.9,
+            "30 Hz did not recover: {lower_fps:?}"
+        );
+        eprintln!("capped only {capped_only:?}; bounded feedback {bounded:?}");
+        assert!(
+            capped_only.1 > 20,
+            "must reproduce uncleared capped backlog: {capped_only:?}"
+        );
+        assert!(
+            bounded.0 < candidate.0,
+            "secondary misses did not improve: {bounded:?}"
+        );
+        assert!(
+            bounded.1 <= 20,
+            "bounded recovery did not clear: {bounded:?}"
+        );
+        assert!(
+            bounded.2 >= 19.9,
+            "bounded recovery lost room speed: {bounded:?}"
+        );
         assert!(
             baseline.0 > 0,
             "must reproduce repeated misses: {baseline:?}"

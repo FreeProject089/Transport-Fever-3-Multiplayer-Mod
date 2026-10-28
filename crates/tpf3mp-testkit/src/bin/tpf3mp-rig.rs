@@ -90,7 +90,7 @@ struct Args {
     batch_periods: Vec<String>,
 
     /// Experimental maximum updates per native batch, one per player.
-    #[arg(long, value_delimiter = ',', value_parser = ["4", "8", "16"])]
+    #[arg(long, value_delimiter = ',', value_parser = ["4", "5", "8", "16"])]
     batch_limits: Vec<String>,
 
     /// Opt-in measured presentation budget per real-game player (0 or 1).

@@ -176,6 +176,19 @@ pub struct Choice {
 }
 
 impl Choice {
+    /// When an opt-in cap leaves Far recovery uncompressed, keep timing
+    /// feedback: relaxing to room pace would never repay the backlog. At
+    /// 2x, for example, a cap of five is fully shown despite nominal three.
+    /// Drains for actions, pauses and short checkpoint tails still relax.
+    pub fn steady_interval(&self, fixed_nominal: u32, batch_limit: u32) -> bool {
+        matches!(self.pick, Pick::Nominal | Pick::Repay)
+            || (self.pick == Pick::Far
+                && batch_limit < crate::step::MAX_STEPS_PER_CALL
+                && fixed_nominal > 0
+                && self.steps == batch_limit
+                && crate::interval::shown(self.steps, fixed_nominal) == self.steps)
+    }
+
     /// The step trace's note.
     pub fn note(&self) -> String {
         format!(
@@ -517,6 +530,42 @@ fn toward_checkpoint(nominal: u64, to_checkpoint: u64, behind: bool) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capped_far_feedback_does_not_time_drains_or_checkpoint_tails_as_steady() {
+        let far = Choice {
+            steps: 5,
+            pick: Pick::Far,
+            available: 35,
+            cap: 5,
+            nominal: 5,
+        };
+        assert!(far.steady_interval(5, 5));
+        assert!(far.steady_interval(3, 5), "2x must also clear its backlog");
+        assert!(Choice { steps: 4, ..far }.steady_interval(5, 4));
+        assert!(
+            !far.steady_interval(1, 5),
+            "compressed recovery already accelerates"
+        );
+        assert!(!far.steady_interval(5, 16));
+        for nominal in 1..=16 {
+            assert!(
+                !Choice { steps: 16, ..far }.steady_interval(nominal, 16),
+                "the default cap must retain its timing even in faster-step rooms"
+            );
+        }
+        assert!(!Choice { steps: 2, ..far }.steady_interval(5, 5));
+        for pick in [
+            Pick::Barrier,
+            Pick::Command,
+            Pick::Paused,
+            Pick::Stale,
+            Pick::Reserve,
+            Pick::Underrun,
+        ] {
+            assert!(!Choice { pick, ..far }.steady_interval(5, 5));
+        }
+    }
 
     /// A room releasing on its own grid and a game calling on a jittered
     /// clock, run through a [`Cadence`]: the counts each call ran.

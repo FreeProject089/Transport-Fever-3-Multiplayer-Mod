@@ -943,8 +943,11 @@ Diagnostic lines can be dropped on contention as above.
 
 Experimental scheduling controls (defaults preserve the existing policy):
 `TPF3MP_HOOK_BATCH_MS=50|100|200|250` selects the steady target (default 200),
-and `TPF3MP_HOOK_MAX_BATCH_UPDATES=4|8|16` bounds each gate batch (default
-16). `TPF3MP_HOOK_BATCH_RECOVERY=1` allows short batches to repay backlog
+and `TPF3MP_HOOK_MAX_BATCH_UPDATES=4|5|8|16` bounds ordinary catch-up batches
+(default 16). Drains toward ordered events, pending player commands or pause
+retain the existing 16-update bound and checkpoint/event cuts, so a small cap
+does not slow history replay or action application.
+`TPF3MP_HOOK_BATCH_RECOVERY=1` allows short batches to repay backlog
 earlier, up to twice nominal under sustained pressure, still bounded by
 the gate cap and checkpoint. Controlled repayment is presented for its
 actual count. This opt-in short recovery keeps trim at or above 0.8 rather than 0.5:
@@ -969,6 +972,19 @@ steps, ordered actions, world memory or native ownership are changed by this
 floor. `budget_us` in interval traces identifies it. Default is off; the extra
 worker clock reads are enabled only with this experiment. The actual long
 industry/save stalls remain visible and remain in diagnostics.
+
+For a capped experiment, `250` ms with cap `5` keeps even emergency 4x
+catch-up batches at their ordinary count. With an opt-in cap below 16, when
+a full capped Far batch is shown without compression, the interval continues
+using backlog feedback;
+relaxing trim toward 1 there would leave an uncleared queue. This also covers
+five updates at 2x, where nominal is three but all five are shown. Drains for
+actions, pause/stale boundaries and smaller checkpoint tails still relax.
+For counts up to nominal, the measured floor bounds recovery's demand on
+native worker capacity.
+Ordered drains can still make a longer native call: this experiment does not
+change that trade-off or claim smooth rendering during replay. It is an
+experiment, not a changed default or a smoothness claim.
 
 ### The Lua side
 

@@ -1,5 +1,220 @@
 # Follow-up performance experiments
 
+## Experiment H: nominal-sized catch-up with capacity feedback
+
+Branch `codex/experiment-bounded-catchup-20261028`, based on G. Add an
+opt-in five-update cap. Full capped Far batches shown without compression
+now preserve backlog feedback, including five updates at 4x and 2x. Ordinary
+16-update default batches and action/pause/stale/checkpoint-tail timing
+retain their previous rules. Ordered drains retain the normal cap of 16
+after the live rejoin test below exposed a regression. This combines 250 ms batches, a five-update
+maximum and G's measured floor; none becomes the default.
+
+Outcome/checklist: reduce secondary delivery stalls and recovery velocity
+bursts, retain room speed and action order, keep world probes equal. Compare
+against the existing default (200 ms/cap 16/no floor), with both foreground
+positions and the same ordinary Bubu start. This is a combined candidate,
+not an isolated claim about one knob. Include long native calls in results.
+Verify ordinary input visibly and in both logs, then pause/resume and rejoin
+before accepting a candidate. Rendered-motion evidence is still necessary
+for a smoothness claim. A small unconditional cap can increase action/rejoin
+latency; the revised candidate excludes ordered drains from that cap.
+
+The 240 s closed-loop model uses the actual cadence/trim/floor policy with
+35 ms/update, 20 ms preparation and 1.3 s extra work every 1000 updates.
+Capping alone leaves 101 queued updates and averages 19.583/s. With bounded
+feedback it ends at four queued updates, 19.986/s, and zero secondary
+service misses >50 ms (original expensive operations counted separately).
+At 30 Hz presentation it ends at five queued updates, 19.984/s and zero
+secondary misses. These fixed-cost feasibility results do not prove native
+frame pacing or erase the original long stall. The model retains the
+failing capped-only policy as a regression witness.
+
+### H first live result and the rejoin regression it exposed
+
+`paired-bounded-catchup-bubu`: local private room 2978AP, P1 44192 at
+200 ms/cap 16/floor off, P2 30296 at 250 ms/cap 5/floor on, rig 47040.
+Ordinary main-menu Bubu start, same saved camera, 4x, fast saving. No builds,
+recordings or screenshots ran inside either measured window. All outliers
+remain; the second window includes a periodic save.
+
+| Window / foreground | Peer | Worker median / p95 / p99 / max ms | Active delivery late p95 / p99 / max ms | Active late >50 / >100 / >500 ms |
+|---|---|---|---|---|
+| 1001-4000 / P1 | P1 baseline | 118.8 / 150.1 / 480.9 / 1573.9 | 39.252 / 302.654 / 1429.748 | 27 / 14 / 3 |
+| same | P2 candidate | 164.7 / 204.6 / 240.6 / 1762.2 | 44.052 / 124.086 / 1555.186 | 25 / 10 / 3 |
+| 7001-10000 / P2 | P1 baseline | 137.8 / 184.6 / 347.4 / 1526.2 | 103.386 / 210.033 / 1414.232 | 127 / 39 / 3 |
+| same | P2 candidate | 161.6 / 195.4 / 223.7 / 1495.8 | 24.389 / 56.352 / 1281.768 | 8 / 3 / 1 |
+
+"Active" means the previous exposed buffer had positive updates; this keeps
+long native calls but separates zero-update save/lifecycle intervals. Across
+**all** delivery intervals, p99/max were 332.051/1429.748 versus
+124.086/1555.186 ms in the first window, and 444.017/4550.565 versus
+80.900/4366.220 ms in the second. All-interval >100 ms counts were 16/10
+and 45/6. The save interruption remains a roughly 4.4-4.6 second gap.
+
+Rates were 19.861/19.794 and 19.342/19.357 updates/s respectively. These
+finite windows include the original stalls and save; they are not a claim
+of exact sustained 20/s. Candidate queued work returned to two or three
+updates after recovery. Five-update recovery calls were about 148-166 ms
+around steps 1351-1381, rather than the baseline's long 16-update batches.
+The first window's candidate queue peaked at 43 versus 35 baseline. This
+trade-off, foreground/host effects and the lack of a reversed-policy run
+prevent treating the percentages as an isolated causal estimate.
+
+The guest renamed the shared company to `Bounded test` while paused, then
+restored `Seppoon Transport` at 2x; input screenshots and both games' applied
+logs confirm both actions. No construction-action acceptance is claimed.
+After the speed change the learned budget reset to three-update samples.
+All 294 rolling and 295 allocator/tick samples matched through step 14700.
+
+Returning to the main menu, leaving and rejoining loaded the common save at
+8618 into both games. This exposed an unacceptable drain slowdown: P2 kept
+running five updates per 500 ms while a historical event waited, versus P1's
+16-update drains. At one observation the host was at 10500 and guest 9450.
+The first attempt was stopped normally before replay completed, not marked
+passed. All 34 common rolling/allocator/tick samples in that new load matched
+through 10300, with no missing periodic sample. The rig's final lane-summary
+warning is not substituted for this explicit probe comparison.
+
+The revised implementation restores the existing 16-update bound whenever
+an ordered event, pending player command or pause needs draining; gate event
+and checkpoint cuts remain mandatory. The new real-link regression first
+failed with `Exactly(5)` instead of `Exactly(16)`. It now checks the 16/16/8
+drain, no early event, and restoration of the smaller cap afterward. The
+command-ack test retains its ordering and acknowledgement assertions while
+checking the restored fast drain. 595 hook tests pass (seven ignored), with
+focused all-target clippy and formatting clean. The first run's numbers
+describe the pre-revision binary; they are not final-code acceptance.
+
+No usable H vehicle-body trajectory was captured. This remains an opt-in experiment,
+not evidence of zero freezes or an accepted rendered-smoothness default.
+
+### H second check: ordered replay restored, residual 2x backlog caught
+
+`bounded-drain-rejoin-bubu`, private local W94ABU, P1 39172/P2 36552,
+rig 46532: ordinary original-Bubu menu start again. The revised binary
+kept five-update Far batches after the ordinary 4x long call (about
+148-152 ms around steps 1211-1221), then restored 16-update ordered history
+drains on rejoin at 2x. P1 continued while P2 replayed the initial snapshot.
+At steps 1101/1117 the guest ran 16 updates in about 479 ms. No automatic
+speed request came from the guest; the host's only requests were 4x and 2x.
+
+After the final ordered event, however, the guest stuck roughly 126 updates
+behind: steps 8376/8381/8386 ran five updates per roughly 500 ms. At 2x the
+nominal count is three and the presentation cap is five, so those five
+updates are uncompressed. The first feedback predicate incorrectly covered
+only exactly nominal batches. This live failure was reproduced in the model
+with 200 initially queued updates: after 240 s, 212 remained, at 9.927/s.
+
+The final predicate applies feedback to full capped Far batches whenever
+`shown(count, nominal) == count`. Compressed emergency batches and short
+checkpoint tails retain their rules. The same 2x model then ends with two
+queued updates, 10.809/s including repayment of the initial 200. Initial
+history also clears at 1x/3x/4x. The earlier 4x comparison results are
+unchanged. Neither assertions nor the room's rate were relaxed.
+
+The second run stopped normally after identifying that failure; completed
+rejoin is not claimed for it. All 179 rolling and 180 allocator/tick common
+samples matched through 8950, with no missing periodic sample (the initial
+replay sample at 16 is listed separately). A passive 12.04 s rail-bridge capture contained
+328 frames, with recorder overhead median 6.73/p95 9.82 ms. It began after
+the selected train left, so it provides no valid moving-body acceptance.
+
+### H final build: ordinary start, mixed timing result
+
+`bounded-all-speeds-rejoin-bubu`, private local UCV5P9, P1 39612/P2 39528,
+rig 45524. Hook SHA256
+`3F030336196118C1162BFF3D15152BB83D32AAA89362FDB5CF6545F55986A1FD`.
+Same ordinary Bubu start and policy assignment as H1. The host selected 4x
+near step 1000. No builds, screenshots or recordings ran within the main
+1501-3000 and 3501-5000 windows. P1 was foreground for the first, P2 for
+the second. The supplemental 1001-3000 window retains the initial long
+native operation just after the speed transition rather than hiding it.
+
+| Window / foreground | Peer | Worker median / p95 / p99 / max ms | Active delivery late p95 / p99 / max ms | Active late >50 / >100 / >500 ms |
+|---|---|---|---|---|
+| 1001-3000 / P1, including transition | P1 baseline | 121.3 / 145.8 / 187.1 / 1553.7 | 32.681 / 75.220 / 1392.113 | 10 / 5 / 1 |
+| same | P2 candidate | 165.9 / 203.0 / 252.5 / 1762.4 | 32.251 / 144.736 / 1548.990 | 8 / 4 / 1 |
+| 1501-3000 / P1, steady segment | P1 baseline | 121.3 / 139.1 / 162.4 / 201.7 | 24.117 / 41.374 / 52.332 | 1 / 0 / 0 |
+| same | P2 candidate | 166.1 / 198.3 / 218.2 / 252.5 | 24.787 / 40.388 / 50.340 | 1 / 0 / 0 |
+| 3501-5000 / P2 | P1 baseline | 137.6 / 215.4 / 683.8 / 1510.0 | 126.703 / 551.438 / 1356.348 | 48 / 22 / 5 |
+| same | P2 candidate | 156.5 / 233.3 / 922.5 / 1471.8 | 87.129 / 714.835 / 1249.130 | 19 / 13 / 4 |
+
+The supplemental window's all-delivery p99 was 94.604 versus 144.736 ms;
+its other maximum and the main windows' all-delivery p99/max equal the
+active values above. No outliers are removed. Rates for the three windows
+were 19.968/19.990, 19.979/20.042 and 19.736/19.809 updates/s respectively.
+Maximum queued counts were 38/41, 8/11 and 39/39. Both foreground roles
+were observed, but host/guest policies were not reversed across runs.
+
+This final result is mixed: the candidate has fewer medium/large late
+deliveries in the busy window, but worse p99 there and in the supplemental
+window. The quiet window is nearly equal. Larger batches also have longer
+normal worker calls. It is not an overall performance acceptance, and does
+not justify changing the default or claiming that vehicle pauses are gone.
+
+### H final rejoin and action acceptance
+
+The host selected 2x; the guest returned to the main menu, left, and joined
+the same invite through the normal UI. The host was not manually paused to
+help catch-up. The guest loaded the original step-1 snapshot again at
+1793223044 and ran the preserved 16-update ordered drains. After those,
+its residual backlog was 439 at 1793223505. Unlike the failed second run,
+five-update recovery shortened its interval from 475 ms towards 250 ms;
+by 1793223547 the last Far batches had available counts 27, 24, 22 and 18.
+Both peers reached step 11700 at 1793223563. The guest was back to ordinary
+three-update/300 ms calls with backlog one and stayed there until the test's
+host pause. This demonstrates that the reproduced 2x residual backlog clears.
+
+This was **not a fast hotjoin**: clicking Join to reaching the frontier took
+about nine minutes, replaying the original snapshot's history. A host save
+was requested after the guest had already selected that older snapshot.
+Snapshot freshness/replay latency remains a separate performance concern;
+this experiment repairs throughput, not snapshot selection or instant joining.
+
+The host paused, the guest renamed the shared company 0 from `Seppoon
+Transport` to `Recovered transport`, then restored the original name. Both
+applied logs confirm those actions at 1793223629 and 1793223672; screenshots
+show the entered text and resulting UI. The host resumed 2x and both stayed
+in play. The host's only speed requests were the four explicit inputs
+400, 200, 0, 200; the guest sent none. No construction test is claimed.
+
+`compare-last-load.py` separates actual loads rather than merging equal
+snapshot-next-step identifiers: P1 loaded once and P2 twice. Comparing only
+P2's replay against P1 gives 243 matching samples for each of rolling world,
+free-ID queue and tick/update counters through 12150, with no missing periodic
+sample. The older all-load comparator also passed. The rig's final legacy
+"did not report their lanes" summary is not treated as a successful check;
+the explicit recorded probe comparison is the evidence used here.
+
+Diff review found one additional scope edge: at unusually high room step
+rates, a default cap-16 Far batch can also be uncompressed. A new assertion
+failed on that case. The final guard restricts the new feedback to caps below
+16, preserving default behavior for every nominal count 1-16. The live DLL
+above predates only this guard and its test; all observed nominal/cap pairs
+(1/16, 2/16, 4/16 and 1/5, 3/5, 5/5) have identical decisions with the guard.
+That extra high-step-rate case is covered by the pure test, not claimed as
+another live-game run.
+
+Final source checks: 595 hook library tests passed, seven ignored; focused
+all-target hook/testkit clippy, rustfmt and a release hook build passed. The
+final compiled DLL SHA256 is
+`F856BE3896E73B33F6FD196FB187CA2BEF7444CD87E6075835A21C731AEE1AF8`.
+The full workspace and
+all-platform release checks were not rerun for this local experiment.
+
+Both games quit normally and the local rig exited. The original staging
+folder was restored and all 95 original file hashes and the file count
+verified. Experimental staging was preserved under the evidence root as
+`bounded-final-test-staging`. No production relay, new worktree or release
+was involved. The runtime experiment remains opt-in and local.
+
+Disk housekeeping: the three finished H run directories now live under
+`F:\TPF3MP-test-archives\performance-followup-20261028`, with junctions at
+their original D: paths. Every moved file was SHA256-verified (5243, 6475
+and 9009 files respectively). D: free space rose from 0.73 to 5.00 GiB;
+no evidence was discarded and no additional cache was put on C:.
+
 ## Experiment G: measure the minimum useful recovery interval
 
 Branch `codex/experiment-measured-presentation-budget-20261028`, based on F.
@@ -520,11 +735,15 @@ or production deployment was made.
 
 ## Decision and remaining work
 
-Keep the ordinary 200 ms/default batch policy. A-E remain reversible,
+Keep the ordinary 200 ms/default batch policy. A-H remain reversible,
 opt-in experiments on their named local branches. The 100 ms bounded
 candidate reduces native-call and severe delivery tails but still has more
-medium missed delivery deadlines than the paired baseline. The evidence
-does not establish smoother rendered vehicles or elimination of freezes.
+medium missed delivery deadlines than the paired baseline. H's combined
+250 ms/five-update/floor policy reduces some medium delivery tails, but the
+final comparison has worse p99 and is not an overall performance acceptance.
+Two rejoin regressions were exposed, corrected and the final rejoin/action
+scenario passed. The evidence does not establish smoother rendered vehicles
+or elimination of freezes.
 
 The explicit-speed fix has a demonstrated ordinary-start/rejoin outcome and
 is separately committed after E. The save-fast target port has successful
