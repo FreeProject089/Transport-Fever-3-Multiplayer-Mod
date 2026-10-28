@@ -1890,3 +1890,23 @@ signature = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 10 FE F
 offset = 0
 prologue = "48 89 5C 24 10 55 56 57 41 54 41 55 41 56 41 57"
 required = true
+
+# Faster saves, ported from silver2127's TPF2 Big Maps via the existing
+# 40408 implementation. Exact 40425 disassembly: PushCompressor 0x32deb0,
+# sole caller 0x32cba0 (save setup). Level is read from 0x37e4ad8, shared
+# with PushDecompressor 0x32e140. Patch only this load. The buffer signature
+# includes the compressor's stream constructor call, excluding decompression.
+# Both targets verified unique with tpfre, 2026-10-28. Opt-in remains required.
+[[target]]
+name = "save: PushCompressor level load"
+signature = "8B 05 ?? ?? ?? ?? 41 89 43 10 49 8D 43 88"
+offset = 0
+prologue = "8B 05 0E 6C 4B 03"
+required = false
+
+[[target]]
+name = "save: PushCompressor buffer size"
+signature = "4C 8B CB 41 B8 80 00 00 00 48 8D 54 24 30 48 8B C8 E8 E9 B5 FE FF"
+offset = 3
+prologue = "41 B8 80 00 00 00"
+required = false
