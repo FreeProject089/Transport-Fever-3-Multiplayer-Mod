@@ -683,6 +683,12 @@ impl<G: RoomGate> StepDriver<G> {
         self.cadence.set_fixed(on);
     }
 
+    /// Experimentally shorten steady batches; the verified interval hook
+    /// must be armed before this affects scheduling.
+    pub fn set_batch_period(&mut self, period: Duration) {
+        self.cadence.set_batch_period(period);
+    }
+
     /// For the batch interval, after a call: whether its batch may be timed,
     /// the room's time per step, the nominal count, the steps released and
     /// not run, and whether the count was the steady one.

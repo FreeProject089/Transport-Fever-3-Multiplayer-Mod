@@ -39,6 +39,19 @@ pub const ZERO_US: u32 = 50_000;
 /// update as its time step.
 pub const BASE: Duration = Duration::from_millis(200);
 
+/// Experimental steady batch duration. This changes grouping, never room
+/// steps, ordering or the native update duration. Unset retains 200 ms.
+pub const BATCH_MS_ENV: &str = "TPF3MP_HOOK_BATCH_MS";
+
+pub fn batch_period(value: Option<&str>) -> Result<Duration, String> {
+    match value.map(str::trim) {
+        None | Some("200") => Ok(BASE),
+        Some("100") => Ok(Duration::from_millis(100)),
+        Some("50") => Ok(Duration::from_millis(50)),
+        Some(value) => Err(format!("{BATCH_MS_ENV}={value:?}: expected 50, 100 or 200")),
+    }
+}
+
 /// The trim's bounds: throughput at most 25 % above or below the room's
 /// pace, far inside the server's pacing window.
 pub const TRIM_MIN: f64 = 0.8;
@@ -102,8 +115,8 @@ pub fn layout_for(profile: &str) -> Option<Layout> {
 
 /// The updates a call runs at the room's pace with the game's own 200 ms
 /// batch: 1, 2, 4 at 1x, 2x, 4x and 5 steps a second; at least 1.
-pub fn nominal(pace: f64) -> u32 {
-    let count = (pace * BASE.as_secs_f64()).round();
+pub fn nominal(pace: f64, period: Duration) -> u32 {
+    let count = (pace * period.as_secs_f64()).round();
     if count.is_finite() && count >= 1.0 {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let count = count.min(f64::from(crate::step::MAX_STEPS_PER_CALL)) as u32;
@@ -783,13 +796,13 @@ mod tests {
 
     #[test]
     fn the_nominal_count_is_the_rooms_pace_over_the_games_batch() {
-        assert_eq!(nominal(5.0), 1);
-        assert_eq!(nominal(10.0), 2);
-        assert_eq!(nominal(20.0), 4);
-        assert_eq!(nominal(7.0), 1);
-        assert_eq!(nominal(0.0), 1);
-        assert_eq!(nominal(f64::NAN), 1);
-        assert_eq!(nominal(1000.0), crate::step::MAX_STEPS_PER_CALL);
+        assert_eq!(nominal(5.0, BASE), 1);
+        assert_eq!(nominal(10.0, BASE), 2);
+        assert_eq!(nominal(20.0, BASE), 4);
+        assert_eq!(nominal(7.0, BASE), 1);
+        assert_eq!(nominal(0.0, BASE), 1);
+        assert_eq!(nominal(f64::NAN, BASE), 1);
+        assert_eq!(nominal(1000.0, BASE), crate::step::MAX_STEPS_PER_CALL);
     }
 
     #[test]
@@ -1273,15 +1286,37 @@ mod coupled {
         freeze_ms: i64,
         timed: bool,
     ) -> Run {
+        run_period(
+            speed,
+            seconds,
+            jitter_ms,
+            action_every,
+            freeze_ms,
+            timed,
+            BASE,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run_period(
+        speed: u16,
+        seconds: u64,
+        jitter_ms: f64,
+        action_every: u64,
+        freeze_ms: i64,
+        timed: bool,
+        period: Duration,
+    ) -> Run {
         let step_ms = 200.0 * 100.0 / f64::from(speed);
         let step_us = (step_ms * 1000.0) as u32;
         let mut cadence = Cadence::new(true);
         cadence.begin(5);
         cadence.speed(Speed(speed));
         cadence.set_fixed(true);
+        cadence.set_batch_period(period);
         let start = Instant::now();
         cadence.reset(0, start);
-        let nominal = super::nominal(5.0 * f64::from(speed) / 100.0);
+        let nominal = super::nominal(5.0 * f64::from(speed) / 100.0, period);
         let slots = Slots::new();
         let epoch = slots.next_epoch();
         let mut state = Interval::new();
@@ -1400,6 +1435,38 @@ mod coupled {
             .filter(|s| (**s - 1.0).abs() <= within)
             .count();
         even as f64 / run.speeds.len().max(1) as f64
+    }
+
+    #[test]
+    fn shorter_batches_keep_ordered_pace_with_jitter_actions_and_checkpoints() {
+        for ms in [50, 100] {
+            for speed in [100, 200, 400] {
+                let run = run_period(speed, 60, 8.0, 15, 1200, true, Duration::from_millis(ms));
+                assert!(
+                    run.end_backlog <= 8,
+                    "{ms} ms/{speed}%: {} behind",
+                    run.end_backlog
+                );
+                assert!(
+                    even_share(&run, 0.25) >= 0.75,
+                    "{ms} ms/{speed}%: uneven motion"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn experimental_batch_setting_is_bounded_and_default_is_unchanged() {
+        assert_eq!(batch_period(None).unwrap(), BASE);
+        for ms in [50, 100, 200] {
+            let period = batch_period(Some(&format!(" {ms} "))).unwrap();
+            assert_eq!(period.as_millis(), ms);
+            assert_eq!(nominal(20.0, period), (ms / 50) as u32);
+            assert_eq!(nominal(5.0, period), 1);
+        }
+        for invalid in ["", "0", "20", "49", "201", "NaN", "1e2"] {
+            assert!(batch_period(Some(invalid)).is_err());
+        }
     }
 
     #[test]

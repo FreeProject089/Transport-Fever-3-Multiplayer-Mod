@@ -904,6 +904,19 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
                     std::mem::forget(redirect);
                     crate::interval::arm(layout);
                     driver.set_batch_interval(true);
+                    match crate::interval::batch_period(
+                        std::env::var(crate::interval::BATCH_MS_ENV).ok().as_deref(),
+                    ) {
+                        Ok(period) => {
+                            driver.set_batch_period(period);
+                            log_line(&format!(
+                                "batch grouping: {} ms target ({}; one native update minimum)",
+                                period.as_millis(),
+                                crate::interval::BATCH_MS_ENV
+                            ));
+                        }
+                        Err(why) => log_line(&format!("batch grouping: keeping 200 ms: {why}")),
+                    }
                     format!(
                         "batch interval: each batch of the room's steps is shown over its updates times the room's time per step, set right after CGame::Sync ({}=0 turns it off)",
                         crate::interval::ENV

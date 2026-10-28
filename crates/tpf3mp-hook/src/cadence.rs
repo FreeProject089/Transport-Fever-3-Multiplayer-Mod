@@ -184,6 +184,8 @@ pub struct Cadence {
     /// The batch interval times each call ([`crate::interval`]): a fixed
     /// nominal count, no repaying with extra updates.
     fixed: bool,
+    /// Desired steady batch duration when the verified interval hook runs.
+    batch_period: Duration,
     steps_per_second: u16,
     /// The room's speed in percent; the last one before a pause while
     /// paused, which steps released before the pause still play at.
@@ -206,6 +208,7 @@ impl Cadence {
         Self {
             on,
             fixed: false,
+            batch_period: crate::interval::BASE,
             steps_per_second: 5,
             speed: Speed::NORMAL.0,
             paused: false,
@@ -257,7 +260,11 @@ impl Cadence {
 
     /// The nominal count with the batch interval.
     pub fn fixed_nominal(&self) -> u32 {
-        crate::interval::nominal(self.pace())
+        crate::interval::nominal(self.pace(), self.batch_period)
+    }
+
+    pub fn set_batch_period(&mut self, period: Duration) {
+        self.batch_period = period;
     }
 
     pub fn set_on(&mut self, on: bool) {
@@ -376,9 +383,9 @@ impl Cadence {
         let rate = self.pace() * self.period;
         let nominal = if self.fixed {
             // The batch interval times each call (crate::interval): the
-            // count is the pace over the game's own 200 ms batch, never a
+            // count is the pace over the selected batch duration, never a
             // measured period the interval itself sets.
-            f64::from(crate::interval::nominal(self.pace()))
+            f64::from(self.fixed_nominal())
         } else if (rate - rate.round()).abs() <= WHOLE_RATE {
             self.credit = 0.0;
             rate.round().max(0.0)
