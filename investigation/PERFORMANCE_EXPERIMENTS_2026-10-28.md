@@ -147,3 +147,108 @@ need 110 ms (18.18 updates/s); three need 145 ms (20.69 updates/s). This
 calculation motivates testing bounded extra work, not reducing checks or
 inventing steps. Presentation interval must still reflect actual count.
 No such recovery-policy change is implemented in the paired AB/BA binaries.
+
+## Paired BA: ordinary menu start, policies swapped
+
+`paired-ba-bubu`: P1 100 ms/max4, P2 200 ms/max16, P1 foreground, original
+compression. P1 created a private co-op room and selected bubujujuoct10;
+P2 joined PG2QCE through Join a friend, both readied, and P1 started the map.
+No console or fixture helper loaded it. Same stored camera on both peers.
+This loads the original save directly; AB first reserialized it for the room.
+Do not pool cross-run CPU samples as if startup/world allocation were identical.
+
+Steps 1001-8000, no builds/tests/clicks/video in the window:
+
+| Peer/policy | median/p95/p99/max call ms | gap p95/max ms | updates/s | p95 backlog |
+|---|---|---|---:|---:|
+| P1 100/4 | 65.6/93.3/131.0/1676.4 | 137.0/1714.9 | 19.879 | 18 |
+| P2 200/16 | 137.8/179.2/534.1/1855.7 | 240.5/1980.9 | 19.881 | 20 |
+
+Native elapsed/update 32.68/36.41 ms. 361.2-second CPU sample: 7.84/7.20
+cores; working sets 5.80/5.78 GiB. Eight/nine replay-zero calls. All shared
+rolling/allocator/tick observations match through 9950 with no missing
+samples or extra reload. Both games quit cleanly. Candidate call tails are
+lower in both seat assignments; that alone does not establish visual motion.
+
+## Experiment D: early bounded recovery and delivery timing
+
+Branch `codex/experiment-short-batch-recovery-20261028`. Off by default;
+`TPF3MP_HOOK_BATCH_RECOVERY=1` only affects experimental periods below 200 ms.
+Above reserve + band + two nominal batches, allow bounded half-nominal
+repayment (two becomes three); above four nominal batches of pressure,
+allow up to twice nominal. Both remain under the gate's cap and checkpoint
+cut. Presentation duration follows actual count. Nominal/repaid
+batches use the backlog trim; command/save/load/paused drains retain their
+existing paths. A service-overhead model must reproduce the old accumulated
+backlog and demonstrate capacity before the real run. No skipped updates.
+
+Step tracing now also records successful presentation-buffer delivery gap
+and lateness relative to the previous buffer's assigned interval, plus that
+buffer's update count. World changes, pauses and untimed buffers reset the
+measurement; zero-update buffers are explicitly labelled. This is wall-clock
+Sync delivery timing, **not GPU frame time or a vehicle body trajectory**.
+It observes existing verified hooks and changes no renderer state. Earlier
+AB/BA binaries did not include it and cannot retroactively supply this metric.
+
+D refinement: the first capacity model failed (27 steps still queued and 33
+far-behind calls): three updates merely break even after frame quantization
+and checkpoint cuts. The revised opt-in permits up to twice nominal under
+higher pressure, always under the configured maximum. Controlled recovery
+presents its full update count (four are not displayed as three). The model
+now stays within 16 queued steps, uses no far-behind batches, and sustains
+at least 19.9 updates/s under the specified synthetic service cost. This is
+model evidence only until measured in game.
+
+The new delivery and step traces share a monotonic `clock_ms`; buffered
+integer-UTC log timestamps cannot reliably align the renderer and worker.
+Delivery lateness is relative to the previous assigned interval and labels
+zero-update windows. No claim about rendered frame time is inferred from it.
+
+Validation encountered an existing parallel Windows test race: it released
+an address, then another allocator reused it between probe and read. The
+memory-read guard correctly returned the newly readable zero, rather than
+None. The test now decommits the pages while retaining their reservation,
+so it can assert unreadability without racing address reuse; production
+memory-reader code is unchanged. A new record test originally passed through
+on_step, which intentionally disables unarmed native hooks in unit tests;
+it now tests real-link selection and Sync metadata without arming global hooks.
+
+## D measured: smaller call tails, more medium delivery misses
+
+`paired-recovery-savefast-bubu`: P1 200/max16 baseline, P2 100/max4 with
+early repayment; fast saves enabled on both. Same fixture camera and P1
+foreground. Steps 1001-8000, no builds/tests/clicks/recording in the window:
+
+| Metric | P1 baseline | P2 candidate |
+|---|---:|---:|
+| Positive call median/p95/p99/max, ms | 122.7/154.2/481.9/1577.9 | 71.8/132.8/157.7/1704.9 |
+| Updates/s | 19.948 | 19.951 |
+| Available steps p95/max | 16/41 | 19/41 |
+| Positive-buffer delivery lateness p95/p99, ms | 40.898/339.721 | 58.473/98.630 |
+| Positive-buffer delivery late >50 ms | 64/1753 | 226/3164 |
+| Positive-buffer delivery late >100 ms | 31 | 30 |
+| Replay zero calls | 8 | 7 |
+
+CPU over 401.3 s: P1 7.52 cores, P2 7.28 cores. Candidate's severe tails
+are lower but medium missed deadlines are more frequent, both as a count
+and proportion. Do not accept this as smooth motion. Measured recovery
+samples assign 100 ms to four updates while the next delivery takes
+150-190 ms: the backlog controller's 0.5 trim creates an unrealistic
+deadline. The next experiment will keep the extra updates but bound that
+acceleration, checking capacity rather than assuming slower trim is free.
+
+After measurement, P2 placed a bus stop through the ordinary build UI.
+Both peers applied PlaceStop before step 9934 (116/107 ms in Lua).
+Every shared rolling/allocator/tick sample matches through 10300 with no
+missing sample or unexpected reload. Both games quit normally. This run
+has not demonstrated rejoin under the four-update cap yet.
+
+Fast compression produced a 166,393,427-byte starting snapshot that both
+games loaded and played identically. The initial save's observed native
+time was 3794 ms. Periodic saves were 4359/4552 ms and
+168,125,741/168,125,049 bytes. Earlier AB normal saves were 7244/7416 ms and
+157,874,553/157,873,857 bytes: about 39% less saving time for about 6.5%
+larger files. These periodic worlds are similar but not byte-identical
+(events 31 vs 32), so this is an observed run comparison, not a controlled
+compression-only speedup. Shared stdout writers also overwrite/interleave
+parts of startup output; retain the hook logs and recorded snapshot sizes.

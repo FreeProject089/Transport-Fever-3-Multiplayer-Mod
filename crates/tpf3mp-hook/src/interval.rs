@@ -21,7 +21,7 @@
 //! process: the game then paces itself, as without it.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Set to `0` (or `off`) in the game's environment, the hook never writes
 /// the batch interval.
@@ -256,7 +256,7 @@ pub struct Record {
     pub nominal: u32,
     /// Steps released and not run after the batch.
     pub backlog: u32,
-    /// The count was the steady one (crate::cadence's `Nominal`): only then
+    /// The count was steady or bounded repayment (crate::cadence): only then
     /// does the backlog say anything about the pace; before an action, the
     /// player's own command, a pause or a catch-up it is emptied or filled
     /// on purpose, and the trim only eases back towards 1.
@@ -430,6 +430,8 @@ pub struct Interval {
     last: Option<u32>,
     /// The `m_data` and world whose field was found writable.
     writable_for: Option<(usize, u64)>,
+    /// Optional wall-clock delivery diagnostic, not simulation/render state.
+    delivery: Option<(Instant, u64, u32, u32)>,
 }
 
 impl Interval {
@@ -438,11 +440,34 @@ impl Interval {
             trim: Trim { value: 1.0 },
             last: None,
             writable_for: None,
+            delivery: None,
         }
     }
 
     pub fn trim(&self) -> f64 {
         self.trim.value()
+    }
+
+    /// Successful buffer-swap spacing versus the previous buffer's assigned
+    /// presentation interval. Not GPU frame time or a vehicle-motion trace.
+    fn delivered(
+        &mut self,
+        now: Instant,
+        epoch: u64,
+        us: u32,
+        count: u32,
+    ) -> Option<(Duration, Duration, u32)> {
+        let (before, old_epoch, previous_us, previous_count) =
+            self.delivery.replace((now, epoch, us, count))?;
+        if old_epoch != epoch {
+            return None;
+        }
+        let gap = now.saturating_duration_since(before);
+        Some((
+            gap,
+            gap.saturating_sub(Duration::from_micros(u64::from(previous_us))),
+            previous_count,
+        ))
     }
 
     /// After a successful Sync, with what it read of the game: the interval
@@ -679,9 +704,11 @@ pub fn after_sync(cgame: usize, ok: bool) {
         Done::FalseSync => {}
         Done::Skipped(_) => {
             SKIPS.fetch_add(1, Ordering::Relaxed);
+            state.delivery = None;
         }
         Done::Off(why) => {
             OFF.store(true, Ordering::Release);
+            state.delivery = None;
             say(format!(
                 "batch interval: off for good, {why}; the game paces itself"
             ));
@@ -689,11 +716,23 @@ pub fn after_sync(cgame: usize, ok: bool) {
         Done::Wrote(us, record) => {
             WRITES.fetch_add(1, Ordering::Relaxed);
             if crate::steptrace::enabled() {
+                let now = Instant::now();
+                let delivery = state.delivered(now, record.epoch, us, record.count);
+                let timing = delivery.map_or_else(String::new, |(gap, late, previous_count)| {
+                    format!(
+                        " delivery_gap_ms={:.3} delivery_late_ms={:.3} previous_n={previous_count}",
+                        gap.as_secs_f64() * 1000.0,
+                        late.as_secs_f64() * 1000.0
+                    )
+                });
                 say(format!(
-                    "interval: n={} us={us} trim={:.2} backlog={}",
+                    "interval: n={} us={us} trim={:.2} backlog={} epoch={} clock_ms={:.3}{}",
                     record.count,
                     state.trim(),
                     record.backlog,
+                    record.epoch,
+                    crate::steptrace::clock_ms(now),
+                    timing,
                 ));
             }
         }
@@ -761,6 +800,36 @@ pub fn writable(_address: usize, _len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delivery_timing_uses_the_previous_interval_and_resets_between_worlds() {
+        let mut state = Interval::new();
+        let now = Instant::now();
+        assert!(state.delivered(now, 1, 100_000, 2).is_none());
+        assert_eq!(
+            state.delivered(now + Duration::from_millis(140), 1, 200_000, 4),
+            Some((Duration::from_millis(140), Duration::from_millis(40), 2))
+        );
+        assert_eq!(
+            state.delivered(now + Duration::from_millis(330), 1, 50_000, 0),
+            Some((Duration::from_millis(190), Duration::ZERO, 4))
+        );
+        assert_eq!(
+            state.delivered(now + Duration::from_millis(410), 1, 100_000, 2),
+            Some((Duration::from_millis(80), Duration::from_millis(30), 0))
+        );
+        assert!(
+            state
+                .delivered(now + Duration::from_secs(90), 2, 100_000, 2)
+                .is_none()
+        );
+        state.delivery = None;
+        assert!(
+            state
+                .delivered(now + Duration::from_secs(100), 2, 100_000, 2)
+                .is_none()
+        );
+    }
 
     #[test]
     fn only_verified_builds_have_a_layout() {

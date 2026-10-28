@@ -859,6 +859,17 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     driver.set_lane_dumps(crate::lanedump::LaneDumps::new(setting));
     let even = crate::cadence::wanted(std::env::var(crate::cadence::ENV).ok().as_deref());
     driver.set_even_steps(even);
+    let short_recovery = crate::cadence::short_recovery_wanted(
+        std::env::var(crate::cadence::SHORT_RECOVERY_ENV)
+            .ok()
+            .as_deref(),
+    );
+    driver.set_short_recovery(short_recovery);
+    if short_recovery {
+        log_line(
+            "short-batch recovery: bounded extra updates before far-behind catch-up (experiment)",
+        );
+    }
     match crate::step::batch_limit(std::env::var(crate::step::BATCH_LIMIT_ENV).ok().as_deref()) {
         Ok(limit) => {
             driver.set_batch_limit(limit);

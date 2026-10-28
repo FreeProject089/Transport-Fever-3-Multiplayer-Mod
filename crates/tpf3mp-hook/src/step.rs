@@ -707,6 +707,10 @@ impl<G: RoomGate> StepDriver<G> {
         self.max_batch_updates = limit.clamp(1, MAX_STEPS_PER_CALL);
     }
 
+    pub fn set_short_recovery(&mut self, enabled: bool) {
+        self.cadence.set_short_recovery(enabled);
+    }
+
     /// For the batch interval, after a call: whether its batch may be timed,
     /// the room's time per step, the nominal count, the steps released and
     /// not run, and whether the count was the steady one.
@@ -720,12 +724,21 @@ impl<G: RoomGate> StepDriver<G> {
                 && self.phase == Phase::Running
                 && !self.cadence.paused(),
             step_us: self.cadence.step_us(),
-            nominal: self.cadence.fixed_nominal(),
+            // Controlled repayment must be displayed for all its updates,
+            // unlike emergency catch-up whose presentation is capped. Do
+            // not introduce a speed pulse by showing four updates as three.
+            nominal: self
+                .choice
+                .filter(|choice| choice.pick == Pick::Repay)
+                .map_or_else(
+                    || self.cadence.fixed_nominal(),
+                    |choice| choice.steps.max(self.cadence.fixed_nominal()),
+                ),
             backlog: u32::try_from(released.saturating_add(1).saturating_sub(next))
                 .unwrap_or(u32::MAX),
             steady: self
                 .choice
-                .is_some_and(|choice| choice.pick == Pick::Nominal),
+                .is_some_and(|choice| matches!(choice.pick, Pick::Nominal | Pick::Repay)),
             waiting: self.why == "wait",
         }
     }
@@ -3777,6 +3790,26 @@ mod even_steps_over_a_real_link {
         assert_eq!(step(&mut driver).0, Updates::Exactly(4));
         assert_eq!(driver.next_step(), Some(14));
         assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
+    }
+
+    #[test]
+    fn controlled_short_recovery_presents_its_actual_update_count() {
+        let (mut driver, agent) = playing("short-recovery", 50, 1, 400);
+        driver.set_batch_interval(true);
+        driver.set_batch_period(Duration::from_millis(100));
+        driver.set_batch_limit(4);
+        driver.set_short_recovery(true);
+        release(&agent, 1, 14);
+        // Exercise selection and the record supplied to Sync without
+        // arming global native hooks in the parallel test process.
+        assert_eq!(driver.updates(), Updates::Exactly(4));
+        let info = driver.batch_info();
+        assert!(info.eligible && info.steady);
+        assert_eq!(info.nominal, 4);
+        assert_eq!(
+            crate::interval::interval_us(4, info.nominal, info.step_us, 1.0, false),
+            200_000
+        );
     }
 
     #[test]

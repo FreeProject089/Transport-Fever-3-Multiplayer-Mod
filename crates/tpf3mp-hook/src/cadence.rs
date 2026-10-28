@@ -31,6 +31,17 @@ use tpf3mp_proto::Speed;
 /// everything released, as before.
 pub const ENV: &str = "TPF3MP_HOOK_EVEN_STEPS";
 
+/// Opt-in recovery for short batches whose native copy/readiness overhead
+/// prevents the interval trim alone from keeping up. Default is unchanged.
+pub const SHORT_RECOVERY_ENV: &str = "TPF3MP_HOOK_BATCH_RECOVERY";
+
+pub fn short_recovery_wanted(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "on" | "true" | "yes")
+    )
+}
+
 /// Released steps kept back in the steady state: the slack that absorbs a
 /// release a little late against the game's call.
 pub const RESERVE: u64 = 1;
@@ -186,6 +197,7 @@ pub struct Cadence {
     fixed: bool,
     /// Desired steady batch duration when the verified interval hook runs.
     batch_period: Duration,
+    short_recovery: bool,
     steps_per_second: u16,
     /// The room's speed in percent; the last one before a pause while
     /// paused, which steps released before the pause still play at.
@@ -209,6 +221,7 @@ impl Cadence {
             on,
             fixed: false,
             batch_period: crate::interval::BASE,
+            short_recovery: false,
             steps_per_second: 5,
             speed: Speed::NORMAL.0,
             paused: false,
@@ -265,6 +278,10 @@ impl Cadence {
 
     pub fn set_batch_period(&mut self, period: Duration) {
         self.batch_period = period;
+    }
+
+    pub fn set_short_recovery(&mut self, enabled: bool) {
+        self.short_recovery = enabled;
     }
 
     pub fn set_on(&mut self, on: bool) {
@@ -436,14 +453,31 @@ impl Cadence {
             // band is fine, so a release a little early or late (+-1 a
             // call) changes nothing; above it, repay towards its middle.
             let left = available - nominal;
-            // With the batch interval, a repaid step would only be shown
-            // longer: the interval's trim repays instead.
-            if left <= RESERVE + BAND || planned || self.fixed {
+            // Normally the interval's trim repays instead. A short batch
+            // can nevertheless be throughput-limited by copy/readiness
+            // overhead: increasing its frequency cannot create capacity.
+            // The experiment amortizes that overhead over a few more
+            // updates before reaching Far. Actual count still drives the
+            // presentation interval, and the gate/checkpoint cap still wins.
+            let short_repay = self.fixed
+                && self.short_recovery
+                && self.batch_period < crate::interval::BASE
+                && left > RESERVE + BAND + 2 * base;
+            if left <= RESERVE + BAND || planned || (self.fixed && !short_repay) {
                 (nominal, Pick::Nominal)
             } else {
+                // Three updates can only break even once checkpoint cuts
+                // and frame quantization are included. If pressure grows,
+                // allow up to twice nominal (still under the caller cap),
+                // rather than accumulating 1.5 seconds before doing so.
+                let recovery_cap = if short_repay && left > RESERVE + BAND + 4 * base {
+                    base.max(1)
+                } else {
+                    (nominal / 2).max(1)
+                };
                 let repay = (left - RESERVE - BAND / 2)
                     .div_ceil(REPAY_DIVISOR)
-                    .min((nominal / 2).max(1));
+                    .min(recovery_cap);
                 (nominal + repay, Pick::Repay)
             }
         };
@@ -786,6 +820,113 @@ mod tests {
         cadence.call(t);
         let choice = cadence.choose(1, 40, 16, 50, false, false, t);
         assert_eq!((choice.steps, choice.pick), (16, Pick::Far));
+    }
+
+    fn short_candidate(recovery: bool) -> Cadence {
+        let mut cadence = Cadence::new(true);
+        cadence.begin(5);
+        cadence.speed(Speed(400));
+        cadence.set_fixed(true);
+        cadence.set_batch_period(Duration::from_millis(100));
+        cadence.set_short_recovery(recovery);
+        cadence
+    }
+
+    #[test]
+    fn short_recovery_is_explicit_and_leaves_ordinary_batches_and_boundaries_alone() {
+        for value in [None, Some("0"), Some("off"), Some(""), Some("typo")] {
+            assert!(!short_recovery_wanted(value));
+        }
+        assert!(short_recovery_wanted(Some(" 1 ")));
+        let now = Instant::now();
+        for enabled in [false, true] {
+            let mut c = short_candidate(enabled);
+            assert_eq!(c.choose(1, 5, 4, 50, false, false, now).steps, 2);
+            assert_eq!(c.choose(1, 9, 4, 50, false, false, now).steps, 2);
+            let recover = c.choose(1, 10, 4, 50, false, false, now);
+            assert_eq!(recover.steps, if enabled { 3 } else { 2 });
+            assert_eq!(
+                recover.pick,
+                if enabled { Pick::Repay } else { Pick::Nominal }
+            );
+            assert_eq!(
+                c.choose(1, 14, 4, 50, false, false, now).steps,
+                if enabled { 4 } else { 2 }
+            );
+            assert_eq!(c.choose(1, 10, 2, 2, false, false, now).steps, 2);
+            assert_eq!(c.choose(1, 10, 4, 50, true, false, now).pick, Pick::Barrier);
+            assert_eq!(c.choose(1, 10, 4, 50, false, true, now).pick, Pick::Command);
+            c.speed(Speed::PAUSED);
+            assert_eq!(c.choose(1, 10, 4, 50, false, false, now).pick, Pick::Paused);
+            c.speed(Speed(400));
+            c.set_batch_period(crate::interval::BASE);
+            assert_eq!(c.choose(1, 20, 16, 50, false, false, now).steps, 4);
+        }
+    }
+
+    #[test]
+    fn short_recovery_amortizes_service_overhead_without_waiting_for_far_backlog() {
+        // Capacity model, not a renderer simulation. Native work costs
+        // 35 ms/update plus 40 ms/call of copy/readiness overhead. A
+        // two-update batch cannot sustain 20 updates/s even at zero wait.
+        // Three alone only break even at checkpoint cuts; four under
+        // sustained pressure recover. Quantize to 60 Hz presentation frames.
+        let run = |recovery| {
+            let mut c = short_candidate(recovery);
+            let mut trim = crate::interval::Trim::default();
+            let start = Instant::now();
+            let mut ms = 0.0_f64;
+            let mut next = 1_u64;
+            let mut far_calls = 0;
+            let mut last_backlog = 0;
+            while ms < 240_000.0 {
+                let released = (ms / 50.0).floor() as u64 + 4;
+                let checkpoint = (50 - next % 50) % 50 + 1;
+                let cap = u32::try_from(checkpoint.min(4)).unwrap();
+                let choice = c.choose(
+                    next,
+                    released,
+                    cap,
+                    checkpoint,
+                    false,
+                    false,
+                    start + Duration::from_secs_f64(ms / 1000.0),
+                );
+                assert!(choice.steps > 0 && choice.steps <= cap);
+                next += u64::from(choice.steps);
+                assert!(next <= released + 1, "ran unreleased updates");
+                last_backlog = released + 1 - next;
+                far_calls += usize::from(choice.pick == Pick::Far);
+                let shown_nominal = if choice.pick == Pick::Repay {
+                    choice.steps.max(2)
+                } else {
+                    2
+                };
+                if matches!(choice.pick, Pick::Nominal | Pick::Repay) {
+                    trim.update(last_backlog, shown_nominal);
+                } else {
+                    trim.relax();
+                }
+                let interval = f64::from(crate::interval::interval_us(
+                    choice.steps,
+                    shown_nominal,
+                    50_000,
+                    trim.value(),
+                    false,
+                )) / 1000.0;
+                let service = 35.0 * f64::from(choice.steps) + 40.0;
+                ms += (service.max(interval) / (1000.0 / 60.0)).ceil() * (1000.0 / 60.0);
+            }
+            (last_backlog, far_calls, (next - 1) as f64 / (ms / 1000.0))
+        };
+        let before = run(false);
+        let after = run(true);
+        assert!(
+            before.0 >= 25 && before.1 > 0,
+            "model must reproduce the backlog: {before:?}"
+        );
+        assert!(after.0 <= 16 && after.1 == 0, "{after:?}");
+        assert!(after.2 >= 19.9, "did not sustain room rate: {after:?}");
     }
 
     #[test]

@@ -935,7 +935,25 @@ room's game, paused, or for a batch it cannot match, nothing is written:
 the game's own interval stands. `TPF3MP_HOOK_BATCH_INTERVAL=0` turns it off.
 `perf-step:` counts intervals written, Syncs skipped and Syncs that
 returned false; with the step trace on, each write logs `interval: n=..
-us=.. trim=.. backlog=..`.
+us=.. trim=.. backlog=..`. The trace also reports a shared monotonic
+`clock_ms` on worker calls and interval writes, plus `epoch`,
+`delivery_gap_ms`, `delivery_late_ms` and `previous_n`. Delivery is a
+successful Sync; lateness is its wall-clock spacing minus the **previous**
+buffer's assigned interval, clamped at zero. World changes and untimed
+buffers reset this measurement. Zero-update buffers remain labelled. This
+measures buffer supply, not GPU frame time or rendered vehicle movement.
+Diagnostic lines can be dropped on contention as above.
+
+Experimental scheduling controls (defaults preserve the existing policy):
+`TPF3MP_HOOK_BATCH_MS=50|100|200` selects the steady target (default 200),
+and `TPF3MP_HOOK_MAX_BATCH_UPDATES=4|8|16` bounds each gate batch (default
+16). `TPF3MP_HOOK_BATCH_RECOVERY=1` allows short batches to repay backlog
+earlier, up to twice nominal under sustained pressure, still bounded by
+the gate cap and checkpoint. Controlled repayment is presented for its
+actual count. These change grouping only, never the native update duration,
+ordered steps or replay acknowledgements. Shorter calls can increase native
+copy/readiness overhead; they are not accepted smoothness improvements.
+See `investigation/PERFORMANCE_EXPERIMENTS_2026-10-28.md` for comparisons.
 
 ### The Lua side
 
