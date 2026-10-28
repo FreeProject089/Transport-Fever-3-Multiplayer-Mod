@@ -314,3 +314,84 @@ The retained raw summaries are `bounded-summary.json`,
 `bounded-delivery.json`, and per-player `pre-rejoin-hook.log` in the local
 evidence directory; benchmark summaries were generated before step numbers
 repeated on rejoin.
+
+
+## Reload speed fix: explicit intent, contract 17
+
+Branch `codex/fix-reload-speed-intent-20261028` separates input from native
+state. The GUI decorates the existing helper's button and keyboard APIs;
+only those calls enter `chooseSpeed`. The worker uses the existing room
+speed request path, retaining server authority. Both host and guest display
+the accepted speed. A restored local value can no longer request anything.
+The Lua contract increments from 16 to 17; network/persistence are unchanged.
+
+The first real run `speed-intent-bubu` caught a lifecycle error: GetApi was
+called by useStepStateTimer's initializer, during render. The engine refused
+that with its explicit GetApi-onStep/onMount assertion. No world acceptance
+is claimed for that run. The wrapper was moved to onStep, and the Lua test
+now asserts that GetApi cannot be called during render. The failed run was
+returned to its main menu and quit normally, before repeating the test.
+
+
+`speed-intent-bubu-r2` uses an ordinary main-menu room creation, the Bubu
+save picker, Join a friend, and Start. It loads the mod via normal room
+selection. Initial host and guest UI load without an error; host shows the
+accepted 1x. Host click 4x, Space pause, and Space resume generate exactly
+those explicit requests. Guest Space while paused generates no request and
+both stay paused. Seven guest company renames (Pacing-1 through Pacing-6,
+then Seppoon Transport) appear in both logs in order. All shared checks
+match through step 4150 before rejoin. Further rejoin results follow below.
+
+
+Final R2 rejoin acceptance passed. The ordinary periodic save at event 38
+held native speed 4x; after its upload, the host explicitly selected 2x at
+UTC epoch 1793212071. P2 returned to the main menu, left and joined again.
+Both games loaded snapshot `d7d0e599...`, next step 9659. P2 resumed at
+1793212178 and P1 at 1793212192. A read-only, pcall-wrapped console query
+then returned native GAME_SPEED.speedup = 4 on the host, while screenshots
+showed both controls and the room footer at 2x. Neither player requested a
+speed during reload/catch-up. This directly verifies the previously failing
+case; it does not infer success from a unit-test count.
+
+The host then explicitly clicked 4x (1793212318), even though the restored
+native value was already 4, and Space-paused (1793212323). Both requests
+were sent and applied. The complete host request sequence was
+400, 0, 400, 200, 400, 0 percent; every one corresponds to test input. The
+guest sent none. All shared rolling/allocator/tick samples match through
+10700 in the original epoch and 11950 in the reloaded epoch; no periodic
+sample is missing. The unmatched first catch-up batch at 9674 is listed
+separately. There was no unexpected reload, divergence or UI error in R2.
+Both games quit normally and the local rig exited.
+
+Focused integration checks: 586 hook tests passed (7 ignored), 86 protocol
+library tests and all 275 Lua mod tests passed. The Lua suite was rerun
+after moving GetApi into onStep. Rustfmt, focused all-target clippy and
+release hook build passed. These are Windows checks, not cross-platform
+release acceptance. The broader workspace suite passed on the earlier base;
+it is not described as rerun for this final follow-up.
+
+Restoration: automatic approval review blocked deletion of three source
+files added by the test installation. Instead the complete test staging
+folder was preserved under the evidence root as `preserved-test-staging`,
+and the original backup restored. All 95 original files and the file count
+were verified. No test game/server remains running. No new worktree, release
+or production deployment was made.
+
+## Decision and remaining work
+
+Keep the ordinary 200 ms/default batch policy. A-E remain reversible,
+opt-in experiments on their named local branches. The 100 ms bounded
+candidate reduces native-call and severe delivery tails but still has more
+medium missed delivery deadlines than the paired baseline. The evidence
+does not establish smoother rendered vehicles or elimination of freezes.
+
+The explicit-speed fix has a demonstrated ordinary-start/rejoin outcome and
+is separately committed after E. The save-fast target port has successful
+save/reload/checkpoint evidence, with an observed time/size trade-off, but
+its periodic-save comparison used similar rather than identical worlds.
+
+Remaining large costs include synchronous saves and indivisible native
+industry work. A different presentation architecture must demonstrate actual
+vehicle trajectories/frame timing, correct transitions and action boundaries,
+not merely lower worker call timings. This pass does not declare those stalls
+fixed or promote the experimental scheduler as a default.

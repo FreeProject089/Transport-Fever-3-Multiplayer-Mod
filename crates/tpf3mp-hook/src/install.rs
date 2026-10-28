@@ -108,16 +108,12 @@ static BROKEN: AtomicBool = AtomicBool::new(false);
 static LOG: Mutex<Option<crate::Logger>> = Mutex::new(None);
 /// The game's own speed getter, reached through its detour's trampoline.
 static SPEED_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
-/// In the room's game: the speed row's value is recorded.
+/// Whether the driver follows the room's world.
 static IN_ROOM: AtomicBool = AtomicBool::new(false);
 /// While the game's step runs, the updates it must run (`OWN_SPEED` for the
 /// game's own speed): what the step's call of the speed getter answers.
 static UPDATES: AtomicU64 = AtomicU64::new(OWN_SPEED);
 const OWN_SPEED: u64 = u64::MAX;
-/// The game's own speed (the speed row) as the getter last read it in the
-/// room's game; `NO_SPEED` until then.
-static CHOSEN: AtomicU64 = AtomicU64::new(NO_SPEED);
-const NO_SPEED: u64 = u64::MAX;
 /// While the game's step runs: the `CGameTime` its speed call was made on,
 /// which the checkpoint line reads the counters through ([`crate::ticks`]);
 /// 0 otherwise.
@@ -400,8 +396,8 @@ fn auto_load_frame(room_world: bool) -> Option<String> {
 type SpeedFn = unsafe extern "C" fn(usize, usize, usize, usize) -> u64;
 
 /// The speed getter's detour: it only reads. In the room's game the speed
-/// row's value is the player's request to the room (the step detour passes
-/// it on). Every caller gets the game's own answer: the UI, the camera and
+/// row is handled by explicit GUI requests. Every caller gets the game's
+/// own answer: the UI, the camera and
 /// the particles read it too, and the game asserts when they are told a
 /// speed it is not running at.
 unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> u64 {
@@ -413,12 +409,7 @@ unsafe extern "C" fn speed_detour(this: usize, a: usize, b: usize, c: usize) -> 
     // which keeps the game's own ABI.
     let original: SpeedFn = unsafe { std::mem::transmute::<usize, SpeedFn>(original) };
     // SAFETY: the game's own getter, called as the game called it.
-    let own = unsafe { original(this, a, b, c) };
-    if IN_ROOM.load(Ordering::Acquire) {
-        // The getter returns an int: its low 32 bits.
-        CHOSEN.store(u64::from(own as u32), Ordering::Release);
-    }
-    own
+    unsafe { original(this, a, b, c) }
 }
 
 /// Where the step's own call of the speed getter goes: the number of
@@ -624,8 +615,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         crate::lobby::exchange(driver.as_mut());
         IN_ROOM.store(driver.in_room(), Ordering::Release);
         lua::set_in_room(driver.in_room());
-        let chosen = CHOSEN.load(Ordering::Acquire);
-        if chosen != NO_SPEED {
+        if let Some(chosen) = lua::take_chosen_speed() {
             driver.chosen_speed(chosen);
         }
         let mut lines = driver.take_log();
@@ -1333,7 +1323,6 @@ mod tests {
         UPDATES.store(OWN_SPEED, Ordering::Release);
         assert_eq!(speed(1, 2, 3, 4), 4, "outside a room, the game's own speed");
         assert_eq!(step_reads(1), 4, "for the step too");
-        assert_eq!(CHOSEN.load(Ordering::SeqCst), NO_SPEED);
         IN_ROOM.store(true, Ordering::Release);
         UPDATES.store(1, Ordering::Release);
         assert_eq!(step_reads(1), 1, "in the room's game, the driver's updates");
@@ -1342,27 +1331,16 @@ mod tests {
             4,
             "every other caller still reads the game's own speed"
         );
-        assert_eq!(
-            CHOSEN.load(Ordering::SeqCst),
-            4,
-            "the speed row's value is kept"
-        );
         SPEED.store(0, Ordering::SeqCst);
         assert_eq!(
             step_reads(1),
             1,
             "the game's own pause does not stop the room"
         );
-        assert_eq!(
-            CHOSEN.load(Ordering::SeqCst),
-            0,
-            "but it asks the room to pause"
-        );
         UPDATES.store(0, Ordering::Release);
         SPEED.store(4, Ordering::SeqCst);
         assert_eq!(step_reads(1), 0, "nor does its 4x run a withheld step");
         UPDATES.store(OWN_SPEED, Ordering::Release);
-        CHOSEN.store(NO_SPEED, Ordering::SeqCst);
         IN_ROOM.store(false, Ordering::Release);
         SPEED_ORIGINAL.store(0, Ordering::Release);
         // SAFETY: nothing runs fake_speed now.
@@ -1846,7 +1824,7 @@ mod tests {
         let results = unsafe { print_detour(state.state()) };
         assert_eq!(results, 0);
         assert_eq!(PRINTED.load(Ordering::SeqCst), 1, "the game's print ran");
-        assert_eq!(state.run("return tpf3mp_native.version"), Ok("16".into()));
+        assert_eq!(state.run("return tpf3mp_native.version"), Ok("17".into()));
         PRINT_ORIGINAL.store(0, Ordering::Release);
     }
 }

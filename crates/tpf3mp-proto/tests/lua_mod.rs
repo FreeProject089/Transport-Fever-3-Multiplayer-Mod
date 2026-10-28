@@ -529,8 +529,9 @@ HOOK = { logged = {}, commands = {}, batch = nil, request = nil, saved = {}, wor
          applied = {}, results = {}, status = nil, heard = {}, said = {}, built = {},
          dump = nil, dumped = {} }
 tpf3mp_native = {
+    chooseSpeed = function(speed) HOOK.speeds = HOOK.speeds or {} HOOK.speeds[#HOOK.speeds + 1] = speed return true end,
     copy = function(text) HOOK.copied = text return true end,
-    version = 16,
+    version = 17,
     note = function(key, value)
         HOOK.notes = HOOK.notes or {}
         if value == nil then return HOOK.notes[key] end
@@ -888,7 +889,7 @@ fn a_hook_of_another_version_is_not_used() {
     run_frames(&lua, 1);
     assert!(
         log(&lua).ends_with(
-            "[tpf3mp] the hook speaks bridge version 1, the mod 16; this is the plain game"
+            "[tpf3mp] the hook speaks bridge version 1, the mod 17; this is the plain game"
         ),
         "{}",
         log(&lua)
@@ -981,7 +982,7 @@ fn attach_refuses_a_partial_hook() {
              local function why(t) local _, r = BRIDGE.attach(t); out[#out + 1] = r end
              why(nil)
              why('hook')
-             why({ version = 16, command = print, log = print })
+             why({ version = 17, command = print, log = print })
              return out",
         )
         .eval()
@@ -1184,10 +1185,10 @@ fn the_guard_goes_on_once_and_a_hook_that_cannot_say_means_the_room() {
              out[#out + 1] = select(2, guard.install(nil, env))
              out[#out + 1] = select(2, guard.install({}, env))
              local bridge = ug_require('tpf3mp_1::/scripts/tpf3mp/bridge.lua')
-             local native = { version = 16 }
+             local native = { version = 17 }
              for _, n in ipairs({ 'command', 'take', 'log', 'poll', 'saved', 'world',
                                   'checkpoint', 'lanes', 'clicks', 'replaying', 'applied', 'results',
-                                  'status', 'chat', 'say', 'takeReplay', 'replayed', 'scanned' }) do
+                                  'status', 'chat', 'say', 'chooseSpeed', 'takeReplay', 'replayed', 'scanned' }) do
                  native[n] = function() end
              end
              native.room = function() error('gone') end

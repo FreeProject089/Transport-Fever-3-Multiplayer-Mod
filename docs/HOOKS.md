@@ -764,25 +764,22 @@ call of the speed getter, as TPF2MP's speed hook
   Nothing may send the debug step command during a room: its pending count
   would add updates to a call.
 - **The speed row follows the room.** The Lua replacement
-  `gui/tpf3mp/speed_control.script.lua` highlights the accepted speed for guests from
-  the hook's room status, including pause. Guests see disabled buttons
-  with "Host controls speed" help; their keyboard speed shortcuts are
-  disabled through both `game.tl`'s internal `game_react_globals` table
-  and the public module that copies its functions. It copies feature
-  flags instead of changing the game's table, preserving mission/mod
-  restrictions. Becoming host or leaving the room restores the stock
-  recipe and shortcuts, including the host's keyboard hints. Updating the display
-  never sends `makeGameSetSpeedCmd`: feeding the room's speed back into
-  the game's local value would be mistaken for a player's request.
-- **The host's speed row asks the room.** The getter's detour only reads: the
-  game's own speed, the speed row's value, every time the game asks
-  (`CGame::Sync` and the game UI ask every frame, paused or not). When it
-  changes in the room's game, the hook sends `ToAgent::Speed` and the agent
-  asks the room (`Request::SetSpeed`): the owner's choice sets the room's
-  speed for everyone, and anyone else's is refused, shown as a notice. The
-  value found on entering the room's game is not sent, so joining never
-  resets a room's speed. What the room says back (its speed, a refusal, the
-  end) goes to the hook's log.
+  `gui/tpf3mp/speed_control.script.lua` highlights the accepted room speed
+  for both host and guests, including pause. Guests see disabled buttons
+  and keyboard shortcuts. Hosts retain the stock recipe, mission/mod
+  restrictions and keyboard hints. The shared helper API's `getSpeed`
+  reads room status; `setSpeed`, `cycleSpeed` and `togglePause` submit
+  explicit choices, then retain the stock local command for native camera
+  and particle behavior. Outside a room the original API is used.
+- **Only explicit input asks for a speed.** Lua contract **17** adds
+  `chooseSpeed(0|1|2|4)`. The hook rejects unknown values, guests and loads,
+  coalesces pending input to the latest choice, and sends it through the
+  existing `ToAgent::Speed` / `Request::SetSpeed` path. The server still
+  authorizes the host. The worker ignores requests outside a loaded running
+  world; load/room lifecycle clears stale choices. No network protocol
+  change is needed. A native getter change alone never sends a request:
+  restoring a 4x snapshot into a 2x room must leave that room at 2x.
+  Merely refreshing the UI never writes the native speed or requests one.
 
 Measured in TF3 build 40408 on release day (the rig with one player,
 `app.startGame()` from the console, the game's speed set with

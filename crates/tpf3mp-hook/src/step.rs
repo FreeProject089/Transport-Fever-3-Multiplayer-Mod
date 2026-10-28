@@ -587,8 +587,6 @@ pub struct StepDriver<G> {
     loading: Option<Loading>,
     replaying: Option<Instant>,
     phase: Phase,
-    /// The speed row's last value in the room's game, once seen.
-    chosen: Option<u64>,
     /// Steps between checkpoints, from the room's `Begin`.
     checkpoint_interval: u64,
     /// The batch chosen last ends at a checkpoint step, this one.
@@ -649,7 +647,6 @@ impl<G: RoomGate> StepDriver<G> {
             loading: None,
             replaying: None,
             phase: Phase::BeforeBegin,
-            chosen: None,
             checkpoint_interval: u64::MAX,
             lanes_due: false,
             checkpoint_step: 0,
@@ -836,34 +833,24 @@ impl<G: RoomGate> StepDriver<G> {
         }
     }
 
-    /// The game's speed row says `speedup` (0 paused, 1 for 1x, ...). In the
-    /// room's game, a change the player makes there asks the room for that
-    /// speed; the value found on entering the room's game is taken as it is,
-    /// so joining never resets a room's speed.
+    /// An explicit speed-button or keyboard request, never a sampled native
+    /// value: restoring GAME_SPEED from a snapshot is not player intent.
     pub fn chosen_speed(&mut self, speedup: u64) {
-        if self.phase != Phase::Running {
-            self.chosen = None;
+        if self.phase != Phase::Running || self.loading.is_some() || self.at_menu {
             return;
         }
-        match self.chosen {
-            None => self.chosen = Some(speedup),
-            Some(before) if before == speedup => {}
-            Some(_) => {
-                self.chosen = Some(speedup);
-                let percent = u16::try_from(speedup.saturating_mul(100)).unwrap_or(u16::MAX);
-                let speed = Speed(percent.min(Speed::MAX.0));
-                match self.gate.request_speed(speed) {
-                    Ok(()) => self.log.push(format!(
-                        "the speed row asks the room for speed {}%",
-                        speed.0
-                    )),
-                    // A speed the room did not hear is not a reason to stop
-                    // following it: the room's speed simply stays.
-                    Err(error) => self
-                        .log
-                        .push(format!("asking the room for a speed failed: {error}")),
-                }
-            }
+        let speed = match speedup {
+            0 | 1 | 2 | 4 => Speed((speedup * 100) as u16),
+            _ => return,
+        };
+        match self.gate.request_speed(speed) {
+            Ok(()) => self.log.push(format!(
+                "the speed controls ask the room for speed {}%",
+                speed.0
+            )),
+            Err(error) => self
+                .log
+                .push(format!("asking the room for a speed failed: {error}")),
         }
     }
 
@@ -2794,30 +2781,33 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_change_in_the_speed_row_asks_the_room_and_joining_asks_nothing() {
+    fn only_explicit_speed_requests_in_a_loaded_room_are_sent() {
         let mut script = Script::default();
         script.begin.push_back(Some(begin()));
         let (mut d, mut calls) = driver(script);
         d.chosen_speed(4);
-        assert!(
-            d.gate.speeds.is_empty(),
-            "before the room's game, nothing is asked"
-        );
-        call(&mut d, &mut calls);
-        // Entering the room's game at 2x: taken as it is.
-        d.chosen_speed(2);
-        d.chosen_speed(2);
         assert!(d.gate.speeds.is_empty());
+        call(&mut d, &mut calls);
+        d.chosen_speed(2);
         d.chosen_speed(4);
         d.chosen_speed(0);
-        d.chosen_speed(0);
-        assert_eq!(d.gate.speeds, vec![Speed(400), Speed::PAUSED]);
-        d.chosen_speed(1000);
-        assert_eq!(
-            d.gate.speeds.last(),
-            Some(&Speed::MAX),
-            "capped at the room's fastest"
-        );
+        d.chosen_speed(3);
+        d.chosen_speed(u64::MAX);
+        assert_eq!(d.gate.speeds, vec![Speed(200), Speed(400), Speed::PAUSED]);
+        d.loading = Some(Loading {
+            next_step: 101,
+            since: Instant::now(),
+        });
+        d.chosen_speed(4);
+        d.loading = None;
+        d.world_loaded(101);
+        // Loading a snapshot is no request. A deliberate click afterward is.
+        assert_eq!(d.gate.speeds.len(), 3);
+        d.chosen_speed(4);
+        assert_eq!(d.gate.speeds.last(), Some(&Speed(400)));
+        d.on_menu();
+        d.chosen_speed(2);
+        assert_eq!(d.gate.speeds.len(), 4);
     }
 
     #[test]
