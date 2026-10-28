@@ -1,5 +1,75 @@
 # Follow-up performance experiments
 
+## Experiment F: more preparation time between buffer swaps
+
+Branch `codex/experiment-five-update-presentation-20261028`, based on the
+explicit speed-intent fix. Adds the opt-in `TPF3MP_HOOK_BATCH_MS=250`; the
+default remains 200. At 4x it groups five updates, reducing nominal native
+buffer swaps from five to four per second. Native update duration, replay
+acknowledgements, checkpoints and room speed stay unchanged. The cost is
+about 50 ms more nominal batching latency than the default at 4x. At 2x the
+integer grouping is three updates (300 ms); at 1x it remains one (200 ms).
+
+Acceptance: paired ordinary-start Bubu games, identical camera and speed,
+200 versus 250 ms, all world probes matching; compare actual recorded
+vehicle motion as well as worker/delivery timing. Include actions and
+pause/resume. Keep timing claims separate from camera/frame-rate claims.
+Do not promote the setting based only on a synthetic model.
+
+The initial capacity model uses 35 ms/update, 40 ms native preparation per
+batch and 60 Hz frame boundaries. Crucially, work must finish within the
+**previous** buffer's interval. Over 240 s, 200 ms misses that budget by
+more than one frame in 8.41% of measured batches; 250 ms has none. Rates
+remain 19.992 and 19.988 updates/s respectively. These are hypothetical
+service costs, not a prediction of live smoothness or the long native
+industry/save outliers. Focused hook tests: 587 passed, seven ignored;
+rig tests: five passed. Real-game results follow when measured.
+
+### F result: feasible, not an accepted smoothness improvement
+
+`paired-five-update-bubu`, P1 19092 (200 ms), P2 50532 (250 ms), local rig
+51048. Ordinary menu start, original Bubu save, 3840x2161 each, identical
+saved cameras, cap 16 and normal recovery on both, fast saving on both.
+P1 foreground first; P2 foreground second. No builds ran during measurement.
+
+| Window / foreground | Peer / setting | Worker median / p95 / p99 / max ms | Delivery late p95 / p99 / max ms | Late >50 / >100 ms |
+|---|---|---|---|---|
+| steps 1001-4000 / P1 | P1 / 200 | 120.2 / 148.6 / 450.5 / 1655.2 | 31.482 / 329.998 / 1478.430 | 21 / 13 |
+| same | P2 / 250 | 167.7 / 209.1 / 505.0 / 1891.1 | 68.963 / 320.571 / 1662.583 | 41 / 18 |
+| steps 6501-9500 / P2 | P1 / 200 | 132.6 / 164.2 / 250.8 / 1526.2 | 51.419 / 113.605 / 1417.676 | 43 / 11 |
+| same | P2 / 250 | 154.6 / 188.5 / 246.0 / 1491.3 | 31.639 / 89.630 / 1265.298 | 15 / 4 |
+
+Each window is about 150 s; all outliers remain. Both sustain ~19.90 and
+~19.98 updates/s respectively. Foreground/background effects dominate this
+paired comparison; neither a CPU win nor a rendered-smoothness win follows.
+The two windows have different world events and are not interchangeable.
+The CPU sample around the second phase includes a separate 12 s recorder
+window; do not report it as observer-free.
+
+The P2 foreground recording `motion-250-p2.mp4` contains 343 GPU-timestamped
+frames in 12.09 s. The unchanged recorder cost median 6.83 / p95 9.58 ms per
+frame. It visibly captures a locomotive remaining still for about one second,
+then moving and pausing again. Twelve continuously tracked body features over
+the first four seconds show the same halt; its 6.29 px p95 feature spread
+also includes changing orientation around the curve. This is evidence that
+freezes remain, not a clean steady-speed A/B result. GPU timestamp versus
+local QPC offsets were about -10 ms, so do not claim precise hook/video event
+alignment from the recorder's UTC anchor. The hook separately reports a
+1239.8 ms late delivery in this wall-clock period.
+
+Concrete next target: after a long native call, the deep trim makes five
+updates due in 125 ms even while preparation and work take ~175-215 ms.
+Thus recovery creates repeated misses after the original native stall.
+An experimental budget based on completed work can avoid demanding those
+impossible deadlines. A render-history buffer remains unimplemented.
+
+Pause via Space, guest rename while paused, host resume at 2x, and a second
+guest rename restoring the company name all applied in both games. The normal
+periodic save completed. All 271 rolling and 272 allocator/tick common samples
+match through step 13550, with no missing sample or unexpected resync/UI error.
+Both games quit normally. This setting is not accepted, and no rejoin trial
+was repeated for F. It stays opt-in; defaults are unchanged.
+
 Base: `9051dde6`, the measured industry-history/replay fixes. Experimental
 branch: `codex/experiment-short-batches-20261028`. Direct work, no subagents,
 existing checkout and D: build cache. Only owned games and local relay.

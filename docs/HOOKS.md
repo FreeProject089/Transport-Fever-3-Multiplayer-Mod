@@ -942,7 +942,7 @@ measures buffer supply, not GPU frame time or rendered vehicle movement.
 Diagnostic lines can be dropped on contention as above.
 
 Experimental scheduling controls (defaults preserve the existing policy):
-`TPF3MP_HOOK_BATCH_MS=50|100|200` selects the steady target (default 200),
+`TPF3MP_HOOK_BATCH_MS=50|100|200|250` selects the steady target (default 200),
 and `TPF3MP_HOOK_MAX_BATCH_UPDATES=4|8|16` bounds each gate batch (default
 16). `TPF3MP_HOOK_BATCH_RECOVERY=1` allows short batches to repay backlog
 earlier, up to twice nominal under sustained pressure, still bounded by

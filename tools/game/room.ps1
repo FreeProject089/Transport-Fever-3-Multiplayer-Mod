@@ -27,7 +27,7 @@ param(
   [int]$MenuSettle = 5,
   [int]$GuestWait = 150,
   [string]$CloseConsoleAt = "557,47",
-  [ValidatePattern('^(50|100|200)(,(50|100|200))*$')][string]$BatchPeriods,
+  [ValidatePattern('^(50|100|200|250)(,(50|100|200|250))*$')][string]$BatchPeriods,
   [ValidatePattern('^(4|8|16)(,(4|8|16))*$')][string]$BatchLimits,
   [switch]$NoZoom,
   [switch]$ManualRoom,

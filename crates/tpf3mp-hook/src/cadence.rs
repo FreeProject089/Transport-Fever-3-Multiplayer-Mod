@@ -933,6 +933,76 @@ mod tests {
     }
 
     #[test]
+    fn five_update_batches_have_capacity_without_shortening_the_native_step() {
+        // Feasibility model only: the next worker batch must finish within
+        // the PREVIOUS buffer's presentation interval. Include 40 ms of
+        // native copy/readiness work, 35 ms/update and 60 Hz frame boundaries.
+        // This does not stand in for captured vehicle motion in the game.
+        let run = |period_ms| {
+            let mut cadence = short_candidate(false);
+            cadence.set_batch_period(Duration::from_millis(period_ms));
+            let nominal = cadence.fixed_nominal();
+            let mut trim = crate::interval::Trim::default();
+            let start = Instant::now();
+            let (mut ms, mut previous_interval) = (0.0_f64, 200.0_f64);
+            let (mut next, mut missed, mut calls) = (1_u64, 0, 0);
+            let mut backlog = 0;
+            while ms < 240_000.0 {
+                let released = (ms / 50.0).floor() as u64 + 6;
+                let checkpoint = (50 - next % 50) % 50 + 1;
+                let cap = u32::try_from(checkpoint.min(16)).unwrap();
+                let choice = cadence.choose(
+                    next,
+                    released,
+                    cap,
+                    checkpoint,
+                    false,
+                    false,
+                    start + Duration::from_secs_f64(ms / 1000.0),
+                );
+                next += u64::from(choice.steps);
+                assert!(next <= released + 1, "never run unreleased updates");
+                assert!(u64::from(choice.steps) <= checkpoint);
+                backlog = released + 1 - next;
+                let service = 35.0 * f64::from(choice.steps) + 40.0;
+                if ms > 5_000.0 {
+                    calls += 1;
+                    missed += usize::from(service > previous_interval + 16.667);
+                }
+                ms += (service.max(previous_interval) / (1000.0 / 60.0)).ceil() * (1000.0 / 60.0);
+                if choice.pick == Pick::Nominal {
+                    trim.update(backlog, nominal);
+                } else {
+                    trim.relax();
+                }
+                previous_interval = f64::from(crate::interval::interval_us(
+                    choice.steps,
+                    nominal,
+                    50_000,
+                    trim.value(),
+                    false,
+                )) / 1000.0;
+            }
+            (
+                backlog,
+                missed as f64 / calls as f64,
+                (next - 1) as f64 / (ms / 1000.0),
+            )
+        };
+        let baseline = run(200);
+        let candidate = run(250);
+        assert!(candidate.0 <= 16, "backlog: {candidate:?}");
+        assert!(candidate.2 >= 19.9, "lost room speed: {candidate:?}");
+        assert!(
+            candidate.1 < baseline.1,
+            "no modeled benefit: {baseline:?} -> {candidate:?}"
+        );
+        eprintln!(
+            "200 ms: {baseline:?}; 250 ms: {candidate:?} (backlog, missed fraction, updates/s)"
+        );
+    }
+
+    #[test]
     fn the_checkpoint_cut_and_the_cap_always_hold() {
         let mut cadence = Cadence::new(true);
         cadence.begin(5);

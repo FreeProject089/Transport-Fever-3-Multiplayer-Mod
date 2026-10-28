@@ -86,7 +86,7 @@ struct Args {
 
     /// Experimental native batch period per player, in seat order. Supply
     /// one value per player; omitted leaves the inherited hook setting alone.
-    #[arg(long, value_delimiter = ',', value_parser = ["50", "100", "200"])]
+    #[arg(long, value_delimiter = ',', value_parser = ["50", "100", "200", "250"])]
     batch_periods: Vec<String>,
 
     /// Experimental maximum updates per native batch, one per player.

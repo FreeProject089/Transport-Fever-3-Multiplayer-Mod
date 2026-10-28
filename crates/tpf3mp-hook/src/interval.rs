@@ -48,7 +48,10 @@ pub fn batch_period(value: Option<&str>) -> Result<Duration, String> {
         None | Some("200") => Ok(BASE),
         Some("100") => Ok(Duration::from_millis(100)),
         Some("50") => Ok(Duration::from_millis(50)),
-        Some(value) => Err(format!("{BATCH_MS_ENV}={value:?}: expected 50, 100 or 200")),
+        Some("250") => Ok(Duration::from_millis(250)),
+        Some(value) => Err(format!(
+            "{BATCH_MS_ENV}={value:?}: expected 50, 100, 200 or 250"
+        )),
     }
 }
 
@@ -1556,7 +1559,7 @@ mod coupled {
 
     #[test]
     fn shorter_batches_keep_ordered_pace_with_jitter_actions_and_checkpoints() {
-        for ms in [50, 100] {
+        for ms in [50, 100, 250] {
             for speed in [100, 200, 400] {
                 let run = run_period(speed, 60, 8.0, 15, 1200, true, Duration::from_millis(ms));
                 assert!(
@@ -1575,7 +1578,7 @@ mod coupled {
     #[test]
     fn experimental_batch_setting_is_bounded_and_default_is_unchanged() {
         assert_eq!(batch_period(None).unwrap(), BASE);
-        for ms in [50, 100, 200] {
+        for ms in [50, 100, 200, 250] {
             let period = batch_period(Some(&format!(" {ms} "))).unwrap();
             assert_eq!(period.as_millis(), ms);
             assert_eq!(nominal(20.0, period), (ms / 50) as u32);
