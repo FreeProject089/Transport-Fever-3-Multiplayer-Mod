@@ -252,3 +252,65 @@ larger files. These periodic worlds are similar but not byte-identical
 (events 31 vs 32), so this is an observed run comparison, not a controlled
 compression-only speedup. Shared stdout writers also overwrite/interleave
 parts of startup output; retain the hook logs and recorded snapshot sizes.
+
+## Experiment E: bound acceleration during short recovery
+
+Branch `codex/experiment-bounded-presentation-20261028`, based on D's
+`21edafef`. For opt-in short-batch recovery only, keep trim >=0.8 rather
+than permitting 0.5 under deep backlog. Four recovered updates at 4x are
+then shown for at least 160 ms instead of 100 ms. Ordinary 200 ms policy
+and recovery-disabled short batches retain their original trim. Pause/load
+reset the trim value, preserving the configured bound.
+
+The same capacity model still passes with this bound: it sustains >=19.9
+updates/s, ends with <=16 queued steps and never falls into Far. At the
+model's 35 ms/update +40 ms/call, four updates take 180 ms before frame
+quantization, so the new 160 ms floor still leaves recovery capacity.
+This is not a service-time predictor and does not eliminate an indivisible
+industry/save stall. Compare actual buffer-delivery lateness and backlog
+before deciding whether the trade-off improved.
+
+
+## E measured: bounded acceleration helps, but does not remove stalls
+
+`paired-bounded-savefast-bubu`, same P1 baseline/P2 candidate assignment,
+fixture/camera and foreground as D, fast saves on both. Steps 1001-8000:
+
+| Metric | P1 baseline | P2 bounded recovery |
+|---|---:|---:|
+| Positive call median/p95/p99/max, ms | 123.7/153.6/404.3/1586.8 | 72.6/134.5/162.4/1671.5 |
+| Updates/s | 19.933 | 19.930 |
+| Available steps p95/max | 14/38 | 20/43 |
+| Positive-buffer lateness p95/p99, ms | 39.097/333.204 | 51.180/89.034 |
+| Deliveries late >50 ms | 59/1771 | 169/3125 |
+| Deliveries late >100 ms | 27 | 22 |
+| Deliveries late >500 ms | 7 | 7 |
+| Replay zero calls | 10 | 7 |
+
+Over 401.4 s, CPU was 7.50/7.35 cores and resident memory 5.85/5.88 GiB.
+Compared with D, the candidate's >50 ms misses fell from 226 to 169
+(about 25%), but still exceeded the paired baseline. This single repeat
+supports further experimentation, not a guarantee of smoother rendered
+motion. The slow native calls and seven >500 ms deliveries remain.
+
+After the measurement, explicit host pause and 2x resume propagated. P2
+returned to the main menu, left and rejoined through the ordinary UI. Both
+peers loaded snapshot 8328 and caught up; all common rolling/allocator/tick
+samples matched through 21800 (plus the original epoch through 10150).
+The one unmatched initial batch at 8343 is not a periodic checkpoint.
+Both games quit cleanly; no unexpected resync was found.
+
+However, this rejoin exposed a real lifecycle defect: the snapshot held
+4x while the room had been set to 2x. At UTC epochs 1793209575 and
+1793209584, the guest and host automatically requested 400% after loading.
+The server rejected the guest request but eventually accepted the host's.
+No speed button was clicked then. Native getter changes caused by restoring
+a save must not be treated as player intent. Rejoin speed acceptance is
+therefore failed pending a fix; this is not a pacing success.
+
+Validation before this run: 586 hook tests passed, seven ignored; focused
+clippy and release hook build passed. E remains opt-in on its own branch.
+The retained raw summaries are `bounded-summary.json`,
+`bounded-delivery.json`, and per-player `pre-rejoin-hook.log` in the local
+evidence directory; benchmark summaries were generated before step numbers
+repeated on rejoin.

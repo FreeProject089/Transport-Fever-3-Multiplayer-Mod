@@ -874,6 +874,9 @@ mod tests {
         let run = |recovery| {
             let mut c = short_candidate(recovery);
             let mut trim = crate::interval::Trim::default();
+            if recovery {
+                trim.bound_recovery();
+            }
             let start = Instant::now();
             let mut ms = 0.0_f64;
             let mut next = 1_u64;

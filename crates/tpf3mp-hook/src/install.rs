@@ -930,6 +930,12 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
                     ) {
                         Ok(period) => {
                             driver.set_batch_period(period);
+                            crate::interval::bound_short_recovery(period, short_recovery);
+                            if short_recovery && period < crate::interval::BASE {
+                                log_line(
+                                    "short-batch recovery: presentation trim stays at or above 0.8 (experiment)",
+                                );
+                            }
                             log_line(&format!(
                                 "batch grouping: {} ms target ({}; one native update minimum)",
                                 period.as_millis(),

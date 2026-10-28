@@ -950,8 +950,10 @@ and `TPF3MP_HOOK_MAX_BATCH_UPDATES=4|8|16` bounds each gate batch (default
 16). `TPF3MP_HOOK_BATCH_RECOVERY=1` allows short batches to repay backlog
 earlier, up to twice nominal under sustained pressure, still bounded by
 the gate cap and checkpoint. Controlled repayment is presented for its
-actual count. These change grouping only, never the native update duration,
-ordered steps or replay acknowledgements. Shorter calls can increase native
+actual count. This opt-in short recovery keeps trim at or above 0.8 rather than 0.5:
+repayment should not also demand an often impossible double-speed deadline.
+The controls change grouping while preserving the native update duration,
+ordered steps and replay acknowledgements. Shorter calls can increase native
 copy/readiness overhead; they are not accepted smoothness improvements.
 See `investigation/PERFORMANCE_EXPERIMENTS_2026-10-28.md` for comparisons.
 

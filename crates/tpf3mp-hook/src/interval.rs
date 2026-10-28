@@ -160,15 +160,26 @@ pub fn interval_us(count: u32, nominal: u32, step_us: u32, trim: f64, waiting: b
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Trim {
     value: f64,
+    /// Short-batch recovery already amortizes overhead with more updates.
+    /// Do not also demand twice room speed from those expensive batches.
+    recovery_floor: f64,
 }
 
 impl Default for Trim {
     fn default() -> Self {
-        Self { value: 1.0 }
+        Self {
+            value: 1.0,
+            recovery_floor: TRIM_DEEP,
+        }
     }
 }
 
 impl Trim {
+    pub fn bound_recovery(&mut self) {
+        self.recovery_floor = TRIM_MIN;
+        self.value = self.value.max(TRIM_MIN);
+    }
+
     pub fn value(&self) -> f64 {
         self.value
     }
@@ -199,13 +210,13 @@ impl Trim {
         // just under the far-behind catch-up): up to twice the room's pace
         // rather than 1.25 times, so it is caught up in seconds, not ten.
         let floor = if backlog > 2 * high + u64::from(nominal) {
-            TRIM_DEEP
+            self.recovery_floor
         } else {
             TRIM_MIN
         };
         let want = (1.0 - TRIM_GAIN * error / f64::from(nominal.max(1))).clamp(floor, TRIM_MAX);
         let step = (want - self.value).clamp(-TRIM_SLEW, TRIM_SLEW);
-        self.value = (self.value + step).clamp(TRIM_DEEP, TRIM_MAX);
+        self.value = (self.value + step).clamp(self.recovery_floor, TRIM_MAX);
     }
 }
 
@@ -437,7 +448,10 @@ pub struct Interval {
 impl Interval {
     pub const fn new() -> Self {
         Self {
-            trim: Trim { value: 1.0 },
+            trim: Trim {
+                value: 1.0,
+                recovery_floor: TRIM_DEEP,
+            },
             last: None,
             writable_for: None,
             delivery: None,
@@ -546,6 +560,17 @@ static FALSE_SYNCS: AtomicU64 = AtomicU64::new(0);
 pub fn arm(layout: Layout) {
     let _ = LAYOUT.set(layout);
     OFF.store(false, Ordering::Release);
+}
+
+/// Called during install, before a world starts. Only the opt-in short
+/// batch policy combines extra updates with this bounded acceleration.
+pub fn bound_short_recovery(period: Duration, recovery: bool) {
+    if recovery
+        && period < BASE
+        && let Ok(mut state) = STATE.lock()
+    {
+        state.trim.bound_recovery();
+    }
 }
 
 /// Whether the interval is in effect: armed, not off after a fault, and
@@ -800,6 +825,29 @@ pub fn writable(_address: usize, _len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extra_update_recovery_does_not_also_halve_the_presentation_deadline() {
+        for bounded in [false, true] {
+            let mut trim = Trim::default();
+            if bounded {
+                trim.bound_recovery();
+            }
+            for _ in 0..30 {
+                trim.update(20, 4);
+            }
+            assert_eq!(
+                interval_us(4, 4, 50_000, trim.value(), false),
+                if bounded { 160_000 } else { 100_000 }
+            );
+            trim.reset();
+            assert_eq!(trim.value(), 1.0);
+            for _ in 0..30 {
+                trim.update(20, 4);
+            }
+            assert!((trim.value() - if bounded { TRIM_MIN } else { TRIM_DEEP }).abs() < 1e-9);
+        }
+    }
 
     #[test]
     fn delivery_timing_uses_the_previous_interval_and_resets_between_worlds() {
