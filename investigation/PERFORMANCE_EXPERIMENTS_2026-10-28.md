@@ -115,3 +115,35 @@ run observation. Do not infer CPU regression/improvement from these runs.
 The corrected paired/crossover runs retain the fixture camera (`-NoZoom`),
 use the same room, and swap variants across seats. Raw first-run evidence
 is retained, not replaced by the improved methodology.
+
+## Paired AB: identical camera and world
+
+`paired-ab-bubu`: P1 200 ms/max16, P2 100 ms/max4, normal compression,
+3840x2161 windows, exact fixture camera, P1 foreground during measurement.
+DLL hash, EXE hash, source commit and settings are in the run's metadata.json.
+No builds, tests, clicks or recording during steps 1001-8000.
+
+| Peer/policy | median/p95/p99/max call ms | gap p95/max ms | updates/s | p95 backlog |
+|---|---|---|---:|---:|
+| P1 200/16 | 125.7/153.1/470.5/1592.3 | 232.2/1631.1 | 19.898 | 13 |
+| P2 100/4 | 73.0/137.1/160.0/1704.7 | 173.0/1753.9 | 19.843 | 31 |
+
+Native detour elapsed/update: 33.38 vs 35.60 ms. Whole-process CPU over
+361.3 s: P1 7.71 cores, P2 7.38; working sets 5.83/5.70 GiB. This is still
+host/guest confounded until roles are swapped. The candidate lowers ordinary
+and catch-up call tails, but its larger backlog and extra readiness failures
+are a concern, not evidence of a complete fix. No periodic save occurred in
+this window. Six/five replay-zero calls occurred; all outliers retained.
+
+After measurement, host pause/resume reached both games and P2 issued four
+company renames at 4x. All four appeared in both logs, and P1 displayed the
+last name. Final checkpoint/allocator/tick comparison is in
+`paired-ab-bubu/final-comparison.json`. Both owned games quit normally.
+
+Possible next experiment if the crossover confirms the backlog problem:
+small recovery batches before the 1.5-second far-behind threshold. At a
+hypothetical 35 ms/update plus 40 ms batch/copy/render overhead, two updates
+need 110 ms (18.18 updates/s); three need 145 ms (20.69 updates/s). This
+calculation motivates testing bounded extra work, not reducing checks or
+inventing steps. Presentation interval must still reflect actual count.
+No such recovery-policy change is implemented in the paired AB/BA binaries.
