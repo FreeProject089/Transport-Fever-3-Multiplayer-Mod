@@ -698,6 +698,24 @@ mod tests {
     }
 
     #[test]
+    fn shorter_batches_choose_the_selected_count_after_world_reset() {
+        let now = Instant::now();
+        for (ms, count) in [(50, 1), (100, 2), (200, 4)] {
+            let mut cadence = Cadence::new(true);
+            cadence.set_batch_period(Duration::from_millis(ms));
+            cadence.set_fixed(true);
+            cadence.begin(5);
+            cadence.speed(Speed(400));
+            cadence.reset(0, now);
+            let choice = cadence.choose(1, 5, 16, 50, false, false, now);
+            assert_eq!(choice.steps, count);
+            assert_eq!(cadence.fixed_nominal(), count);
+            cadence.speed(Speed(100));
+            assert_eq!(cadence.fixed_nominal(), 1);
+        }
+    }
+
+    #[test]
     fn with_the_batch_interval_the_count_is_fixed_and_never_repays() {
         let mut cadence = Cadence::new(true);
         cadence.begin(5);

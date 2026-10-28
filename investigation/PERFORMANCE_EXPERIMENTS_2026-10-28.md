@@ -35,3 +35,48 @@ batch has at least one update, so 1x remains about 200 ms even at a 50 ms target
 The native update's simulated duration is never changed. An executable model
 checks jitter, action barriers, checkpoint cuts, a long stall and recovery
 before a real-game comparison. Results are recorded below when measured.
+
+The archived October 9 investigation already found that one-update/20 Hz
+batches sometimes sustained only 17-19 Hz under recording load, due to false
+Sync/readiness losses. This experiment starts at 100 ms and measures those
+losses rather than assuming 50 ms is better. The current baseline differs:
+production interval/trim, early replay staging and shared industry history.
+The focused interval suite passes (22 tests, including the new coupled model).
+
+## Experiment B: restore the faster-save option for 40425
+
+Branch `codex/experiment-savefast-40425`, based on Experiment A. The existing
+save-fast option had no targets in this game's bundle and therefore could not
+apply. Ported the exact compressor sites: 0x32deb0 function, 0x32dec4 level
+load, 0x32e024 buffer. Its sole caller is save setup 0x32cba0; decompressor
+0x32e140 shares the level constant at 0x37e4ad8, which is left unchanged.
+Both optional signatures/prologues pass tpfre verification against the exact
+40425 EXE. No new compression implementation: credit remains silver2127's
+TPF2 Big Maps and the existing TF3 port. Off by default pending measurement.
+
+Compare the same paused world with ordinary and fast compression, check load
+success and matching world checkpoints, and report save size as well as time.
+Static target verification alone does not establish a speed-up.
+
+## 200 ms baseline
+
+`batch200-bubu`, Bubu `bubujujuoct10.sav`, two local games, default saving.
+The 4x click was initially aimed at the wrong scaled coordinate (the 1x
+button). A separate console read of a React module was invalid in that state
+and produced a missing-recipe error; it did not inspect the live UI. Exclude
+all that setup, the initial `cpu.csv`, and the 1x samples. Actual accepted
+4x starts at epoch 1793202354; the selected trace is room steps 4301-9000.
+No builds/tests ran during it. Both games closed normally. All shared rolling,
+allocator and tick observations match through 9850, with no missing samples.
+
+| Peer | Calls | median / p95 / p99 / max ms | positive-gap p95 / max ms | replay zeros |
+|---|---:|---|---|---:|
+| P1 | 1196 | 124.1 / 153.6 / 379.8 / 1410.9 | 229.2 / 1477.3 | 6 |
+| P2 | 1169 | 132.4 / 168.4 / 554.0 / 1646.9 | 234.8 / 1736.4 | 5 |
+
+The window covers 235.8 s, ~19.91 updates/s, with total detour wall time per
+update 32.93/35.14 ms (not CPU time). The separate 240.8 s whole-process CPU
+sample used 7.47/7.45 cores, working sets 5.86/5.92 GiB. These differ from
+the earlier day's measurements; compare the follow-up candidates here, not
+those earlier CPU figures. Raw evidence and analysis script are under
+`D:\TPF3MP-cargo\performance-followup-20261028`.
