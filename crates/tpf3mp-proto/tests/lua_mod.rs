@@ -14972,6 +14972,32 @@ fn the_map_line_probe_says_what_the_line_viewer_draws() {
     );
 }
 
+#[test]
+fn line_diagnostics_do_not_load_react_in_the_game_scripts_gui_state() {
+    let lua = gui();
+    lua.load(
+        r#"
+        local follow = ug_require('tpf3mp_1::/scripts/tpf3mp/follow.lua')
+        local loads, logged = 0, {}
+        local api_ = { engine = { system = { lineSystem = {
+            getLinesForPlayer = function() return {} end
+        } } } }
+        local link = { note = function() return '1' end,
+            log = function(_, text) logged[#logged + 1] = text end }
+        local require_ = function(path)
+            loads = loads + 1
+            error('Missing builtin recipeId: WithComponentParams')
+        end
+        follow.watchLines(api_, require_, link, "the game scripts' GUI state")
+        assert(loads == 0, 'even a caught require displays the native error banner')
+        assert(#api_.engine.system.lineSystem.getLinesForPlayer(25) == 0)
+        assert(#logged == 1, 'engine line diagnostics must remain available')
+    "#,
+    )
+    .exec()
+    .unwrap();
+}
+
 /// A purchase names its depot in hook.log: the entity the store passed, its
 /// owner, and the construction and index the room names it by, so a
 /// vehicle that leaves another depot than the player meant shows which one

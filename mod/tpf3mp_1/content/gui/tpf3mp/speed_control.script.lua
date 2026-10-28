@@ -80,6 +80,17 @@ function data()
 	return {
 		replace = function(replacementApi)
 			if not link then return end
+			-- GameSpeedHelper automatically commits its local performance cap,
+			-- even without a button press. During catch-up that can turn 4x
+			-- into 3x/2x/1x, which the native getter reports as a host request.
+			-- The room gate already paces simulation and holds lagging peers;
+			-- keep the stock helper's supported 0/1/2/4 choices unthrottled.
+			-- Returning zero would make its onStep commit every frame.
+			local estimate = api.gui.game.getEstimatedMaximumGameSpeed
+			api.gui.game.getEstimatedMaximumGameSpeed = function(...)
+				if roomNow() ~= nil then return 4 end
+				return estimate(...)
+			end
 			local function roomFeatures(...)
 				local features = getFeatures(...)
 				local status = roomNow()
@@ -93,6 +104,7 @@ function data()
 			gameGlobals.getDisableFeatures = roomFeatures
 			replacementApi.ReplaceRecipe(original, RoomSpeed)
 			link:log("guest speed controls follow the room; only the host can change speed")
+			link:log("local speed throttling is off in rooms; the room gate controls simulation pace")
 		end,
 	}
 end

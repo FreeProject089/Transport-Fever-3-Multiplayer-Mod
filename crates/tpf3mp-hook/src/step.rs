@@ -114,6 +114,11 @@ pub trait RoomGate {
     fn barrier_waiting(&self) -> bool {
         false
     }
+    /// Queue only the next step's commands after reporting a completed
+    /// batch, without consuming a release or world/lifecycle operation.
+    fn stage_actions(&mut self, _game: &mut HookGame) -> Result<(), SessionError> {
+        Ok(())
+    }
     fn after_step(&mut self, game: &mut HookGame) -> Result<u64, SessionError>;
     fn loaded(&mut self, next_step: u64) -> Result<(), SessionError>;
     fn request_speed(&mut self, speed: Speed) -> Result<(), SessionError>;
@@ -246,6 +251,9 @@ struct Loading {
 }
 
 impl RoomGate for Session {
+    fn stage_actions(&mut self, game: &mut HookGame) -> Result<(), SessionError> {
+        Session::stage_actions(self, game)
+    }
     fn heartbeat(&self) {
         Session::heartbeat(self);
     }
@@ -948,6 +956,9 @@ impl<G: RoomGate> StepDriver<G> {
                             }
                         }
                     }
+                    if steps > 0 && self.phase == Phase::Running {
+                        self.stage_actions_after_batch();
+                    }
                 }
             }
             // A failed update batch is not reported; the world holds.
@@ -955,6 +966,54 @@ impl<G: RoomGate> StepDriver<G> {
         }
         self.note_phase();
         Outcome { updates }
+    }
+
+    /// Start the GUI/engine wake as soon as the preceding updates and their
+    /// checkpoint are complete. Waiting for the next native callback adds
+    /// an avoidable zero-update batch to every action boundary. A late wake
+    /// still holds the next callback: this never simulates through replay.
+    fn stage_actions_after_batch(&mut self) {
+        if self.replaying.is_some() {
+            return;
+        }
+        if let Some(why) = self.foreign_world() {
+            self.hold(why);
+            return;
+        }
+        if let Err(error) = self.gate.stage_actions(&mut self.game) {
+            self.hold(format!(
+                "preparing actions after a completed batch: {error}"
+            ));
+            return;
+        }
+        if let Some(fault) = self.game.fault.take() {
+            self.hold(fault);
+            return;
+        }
+        if !self.game.actions.is_empty() {
+            self.log.push(format!(
+                "staging {} room action(s) before step {} after a completed batch",
+                self.game.actions.len(),
+                self.gate.next_step()
+            ));
+            self.start_replay();
+        }
+    }
+
+    fn start_replay(&mut self) {
+        let actions: Vec<_> = std::mem::take(&mut self.game.actions)
+            .into_iter()
+            .map(|(action, own, player, seal)| Ordered {
+                action,
+                ticket: own.and_then(|seq| self.tickets.remove(&seq)),
+                player,
+                seal,
+            })
+            .collect();
+        match self.control.request_replay(self.gate.next_step(), &actions) {
+            Ok(()) => self.replaying = Some(Instant::now()),
+            Err(why) => self.hold(format!("starting the room's actions: {why}")),
+        }
     }
 
     /// A divergence, or a line of the room's chat asking for a lane dump:
@@ -1153,19 +1212,7 @@ impl<G: RoomGate> StepDriver<G> {
             // Apply before any release, save, load or end that follows these
             // events. Even a paused world receives commands on its sim thread.
             if gate.is_ok() && self.game.fault.is_none() && !self.game.actions.is_empty() {
-                let actions: Vec<_> = std::mem::take(&mut self.game.actions)
-                    .into_iter()
-                    .map(|(action, own, player, seal)| Ordered {
-                        action,
-                        ticket: own.and_then(|seq| self.tickets.remove(&seq)),
-                        player,
-                        seal,
-                    })
-                    .collect();
-                match self.control.request_replay(self.gate.next_step(), &actions) {
-                    Ok(()) => self.replaying = Some(Instant::now()),
-                    Err(why) => self.hold(format!("starting the room's actions: {why}")),
-                }
+                self.start_replay();
                 self.why = "actions";
                 return Updates::Exactly(0);
             }
@@ -1420,6 +1467,7 @@ impl<G: RoomGate> StepDriver<G> {
     /// the order measurement number updates by the room's steps from here.
     fn world_loaded(&mut self, next_step: u64) {
         crate::persons::freed_ids::trace::reset_world();
+        crate::industries::reset_world();
         self.next_step = Some(next_step);
         // The released counter starts again here, whatever world ran before;
         // so do the batches the interval times (new GameSims).
@@ -3524,6 +3572,120 @@ mod even_steps_over_a_real_link {
                 kicked: false,
             },
         }
+    }
+
+    #[test]
+    fn replay_is_staged_after_the_preceding_checkpoint_and_can_finish_between_calls() {
+        let (mut driver, agent) = playing("staged-replay", 2, 1, 400);
+        let control = FakeControl::default();
+        let state = control.state.clone();
+        state.lock().unwrap().replay_wait = true;
+        driver.control = Box::new(control);
+        release(&agent, 1, 2);
+        let action = crate::lua::tests::depot_build();
+        let mut event = super::tests::command_event(7, 3, &action);
+        if let EventBody::Command { player, .. } = &mut event.body {
+            *player = ME;
+        }
+        driver.tickets.insert(7, 42);
+        say(&agent, &ToHook::Apply(event));
+        release(&agent, 3, 4);
+        driver.on_step(Vec::new(), &mut |batch| {
+            assert_eq!(batch.updates, Updates::Exactly(2));
+            assert!(batch.lanes);
+            assert!(state.lock().unwrap().replay_requests.is_empty());
+            Ok(Some(vec![(0, "before replay".to_owned())]))
+        });
+        let requests = state.lock().unwrap().replay_requests.clone();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, 3);
+        assert_eq!(requests[0].1[0].action, action);
+        assert_eq!(requests[0].1[0].ticket, Some(42));
+        assert_eq!(requests[0].1[0].player, ME);
+        assert_eq!(driver.gate.released(), 2, "the next release stays unread");
+        let mut reports = Vec::new();
+        let mut buf = vec![0; tpf3mp_bridge::MAX_MESSAGE];
+        while let Some(len) = agent.recv_into(&mut buf).unwrap() {
+            reports.push(tpf3mp_bridge::decode::<tpf3mp_bridge::ToAgent>(&buf[..len]).unwrap());
+        }
+        assert!(reports.iter().any(|report| matches!(report,
+            tpf3mp_bridge::ToAgent::Checkpoint { step: 2, lanes }
+                if *lanes == lane_digests(&[(0, "before replay".to_owned())])
+        )));
+        state.lock().unwrap().replay_answer = Some(Ok(()));
+        assert_eq!(
+            step(&mut driver).0,
+            Updates::Exactly(1),
+            "no compulsory zero batch; cadence keeps one released step in reserve"
+        );
+        assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
+        assert!(driver.tickets.is_empty());
+    }
+
+    #[test]
+    fn staged_replay_still_waits_for_ack_and_fails_closed() {
+        for failed in [false, true] {
+            let tag = if failed {
+                "staged-failed"
+            } else {
+                "staged-delayed"
+            };
+            let (mut driver, agent) = playing(tag, 50, 1, 400);
+            let control = FakeControl::default();
+            let state = control.state.clone();
+            state.lock().unwrap().replay_wait = true;
+            driver.control = Box::new(control);
+            release(&agent, 1, 4);
+            say(
+                &agent,
+                &ToHook::Apply(super::tests::command_event(
+                    1,
+                    5,
+                    &crate::lua::tests::depot_build(),
+                )),
+            );
+            release(&agent, 5, 8);
+            assert_eq!(step(&mut driver).0, Updates::Exactly(4));
+            assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
+            assert_eq!(step(&mut driver).0, Updates::Exactly(0));
+            assert_eq!(driver.why(), "replaying");
+            assert_eq!(driver.next_step(), Some(5));
+            state.lock().unwrap().replay_answer = Some(if failed {
+                Err("the action could not finish".into())
+            } else {
+                Ok(())
+            });
+            assert_eq!(
+                step(&mut driver).0,
+                Updates::Exactly(if failed { 0 } else { 3 })
+            );
+            assert_eq!(state.lock().unwrap().replay_requests.len(), 1);
+            if failed {
+                assert!(matches!(driver.phase(), Phase::Holding(_)));
+                assert_eq!(driver.next_step(), Some(5));
+            }
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_cut_does_not_stage_actions_ahead_of_unfinished_steps() {
+        let (mut driver, agent) = playing("stage-after-cut", 2, 1, 400);
+        let control = FakeControl::default();
+        let state = control.state.clone();
+        driver.control = Box::new(control);
+        release(&agent, 1, 3);
+        say(
+            &agent,
+            &ToHook::Apply(super::tests::command_event(
+                1,
+                4,
+                &crate::lua::tests::depot_build(),
+            )),
+        );
+        assert_eq!(step(&mut driver).0, Updates::Exactly(2));
+        assert!(state.lock().unwrap().replay_requests.is_empty());
+        assert_eq!(step(&mut driver).0, Updates::Exactly(1));
+        assert_eq!(state.lock().unwrap().replay_requests[0].0, 4);
     }
 
     #[test]

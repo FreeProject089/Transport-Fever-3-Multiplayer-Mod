@@ -27,6 +27,7 @@ param(
   [int]$MenuSettle = 5,
   [int]$GuestWait = 150,
   [string]$CloseConsoleAt = "557,47",
+  [switch]$ManualRoom,
   [switch]$NoInstall
 )
 $ErrorActionPreference = "Stop"
@@ -36,7 +37,7 @@ if (-not $GameLocal) { throw "the game's userdata folder not found; set TPF3MP_G
 $rig = "$Bin\tpf3mp-rig.exe"
 if (-not (Test-Path $rig)) { throw "no $rig; build it: cargo build --release -p tpf3mp-testkit --bin tpf3mp-rig; then cargo build --release -p tpf3mp-hook --lib" }
 if (-not (Test-Path "$Bin\tpf3mp_hook.dll")) { throw "no tpf3mp_hook.dll in $Bin; cargo build --release -p tpf3mp-hook" }
-if (-not (Test-Path "$GameSaves\$Fixture.sav")) { throw "no save $Fixture in $GameSaves (docs/GAME_TESTING.md, 'Fixture saves')" }
+if (-not $ManualRoom -and -not (Test-Path "$GameSaves\$Fixture.sav")) { throw "no save $Fixture in $GameSaves (docs/GAME_TESTING.md, 'Fixture saves')" }
 
 $games = @(Get-Process TransportFever3 -ErrorAction SilentlyContinue)
 $ours = @(Get-Process tpf3mp-rig, tpf3mp-server -ErrorAction SilentlyContinue)
@@ -64,6 +65,7 @@ if (-not $NoInstall) {
 New-Item -ItemType Directory -Force $runDir | Out-Null
 $rigArgs = @("--players", "$Players", "--stagger", "$Stagger", "--wait-for-games", "--server", "local",
   "--game", "`"$GameExe`"", "--data-root", "`"$runDir`"", "--game-build", $GameBuild)
+if ($ManualRoom) { $rigArgs += '--manual-room' }
 $proc = Start-Process -FilePath $rig -ArgumentList $rigArgs -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput "$runDir\rig.out" -RedirectStandardError "$runDir\rig.err"
 Set-Content "$runDir\rig.pid" $proc.Id
@@ -71,12 +73,13 @@ Set-Content "$runDir\rig.pid" $proc.Id
 
 # The room's game starts once every game's hook has attached.
 $out = "$runDir\rig.out"
+$startedPattern = if ($ManualRoom) { 'manual room setup' } else { 'game started with' }
 $deadline = (Get-Date).AddSeconds(600)
-while ((Get-Date) -lt $deadline -and -not ((Test-Path $out) -and (Select-String -Path $out -Pattern "game started with|rig: stopped" -Quiet))) {
+while ((Get-Date) -lt $deadline -and -not ((Test-Path $out) -and (Select-String -Path $out -Pattern "$startedPattern|rig: stopped" -Quiet))) {
   if ($proc.HasExited) { break }
   Start-Sleep -Seconds 3
 }
-if (-not ((Test-Path $out) -and (Select-String -Path $out -Pattern "game started with" -Quiet))) {
+if (-not ((Test-Path $out) -and (Select-String -Path $out -Pattern $startedPattern -Quiet))) {
   "the room did not start; the rig said:"
   Get-Content $out, "$runDir\rig.err" -ErrorAction SilentlyContinue | Select-Object -Last 15
   exit 1
@@ -89,6 +92,11 @@ while ($pids.Count -lt $Players -and -not $proc.HasExited -and (Get-Date) -lt $p
   $pids = @(Select-String -Path $out -Pattern "\(game pid (\d+)\)" | ForEach-Object { [int]$_.Matches[0].Groups[1].Value })
 }
 if ($pids.Count -ne $Players) { throw 'Rig did not report every game PID' }
+if ($ManualRoom) {
+  "games: " + (($pids | ForEach-Object -Begin { $number = 0 } -Process { $number++; "p$number=$_" }) -join ' ')
+  'Create a room and join it through the in-game menus. No fixture or console input was sent.'
+  return
+}
 
 $load = 'local ns=app.SaveGameNamespace.getSavegame() for _,i in ipairs(app.findAllSavegames(ns)) do ' +
   'if i.saveName=="' + $Fixture + '" then local id=api.type.SavegameId.new() id.path=i.path ' +

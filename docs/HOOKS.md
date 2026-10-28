@@ -1113,6 +1113,13 @@ every game between the same two simulation steps, including while paused:
    `StepDriver` gives the ordered actions to `lua::request_replay` and
    holds updates. This applies to running rooms too, so every replica uses
    the same engine phase regardless of when the resume arrives.
+   When commands are already queued at the end of a batch, the driver
+   stages their replay after reporting that batch and its checkpoint,
+   while the completed batch is being presented. It reads at most 1,024
+   commands without blocking and stops before a release, save, load,
+   roster event or end. Commands never cross unfinished released steps.
+   If replay finishes before the next native callback, that callback can
+   advance immediately; a delayed or failed replay still withholds updates.
 3. The GUI polls a `replay` token (Lua contract version 13) and sends only
    that token in the existing `tpf3mp/command` scripting event (a string
    token, rather than an action table, so older saves already subscribe).
@@ -4996,6 +5003,17 @@ gate redirects, and the other readers are `CGame::Sync`, the UI, the
 camera, the rail vehicles' sounds and their transformators. So it changes
 no lane; it does leave the host's saved `GameSpeed` unlike the guests'.
 
+Build 40425's `GameSpeedHelper` also commits speed changes automatically
+when `getEstimatedMaximumGameSpeed()` falls below its chosen speed. During
+rejoin catch-up this made the host request 3x, 2x and 1x without input;
+guests sent refused owner-only requests. In rooms, `speed_control.script.lua`
+reports the helper's full supported 4x range from that GUI estimate. The
+room gate still controls updates, replay barriers and catch-up budgets; this
+does not bypass any of them or promise that a slow machine can sustain 4x.
+Outside a room the original native estimate is returned. Zero is unsuitable:
+the stock helper would repeatedly commit on every GUI step. Button and
+keyboard handling, including mission restrictions, are otherwise unchanged.
+
 #### The street trace
 
 `TPF3MP_HOOK_STREET_TRACE=1` (or `on`; off unless set; logging only,
@@ -5448,9 +5466,35 @@ Unknown map key types or pre-existing metatables are refused. Native
 validation and its current limits are recorded in
 `investigation/TPF3_ROAD_TERMINALS_2026-10-01.md`.
 
+### Shared industry-demand history (40425)
+
+The native industry's `OnIntervalStep` lambda captures a separate
+`IndustryChainSpawnState` for each simulation buffer. That history is not
+replicated with the world. Both buffers can count the same demand change,
+and a peer's local batch boundaries choose which pending counter is read.
+The Bubu save reproduced different spawn times and roads despite identical
+current demand sets; see `investigation/PERFORMANCE_2026-10-28.md`.
+
+In rooms, the required `industry schedule` hook retains one native
+`shared_ptr` history per loaded logical world. An active scheduler receives
+that history in a stack copy of its captures, with the original GameState,
+resources, logger and callback queue. Inactive buffers keep their original
+callback. Native code still compares demand, schedules attempts and places
+industries. The native lambda copies the values it needs into queued work;
+it does not retain the temporary capture address.
+
+The exact compiled prologue, native shared-pointer layout, vtable and
+lifetime methods are validated. Invalid state holds the room; it never
+silently resumes independent scheduling. A world load advances the epoch
+and releases the retained history before the next active scheduler call.
+Native reference counting keeps its containers alive until the final owner
+releases them. This fix is always on in supported rooms, separate from the
+optional diagnostic probe, and does nothing outside multiplayer. It does
+not make the native industry-construction callback asynchronous.
+
 ### Automatic industry spawn probe
 
-Steam build 40408 has a separate native demand-spawn path. For a local
+The game has a separate native demand-spawn path. For a local
 diagnostic run only, set `TPF3MP_HOOK_TRACE_INDUSTRIES=1` in the launcher's
 environment. The exact-build hook then records each demand callback's native
 GameTime and FNV-1a seed, both target-capacity key strings and the unchanged
@@ -5464,13 +5508,17 @@ This is a read-only diagnostic: it never changes native values or sends the
 records to the room. The game-thread callbacks copy fixed-size records into a
 64-entry queue; a separate logger thread formats and writes them. The probe
 records at most 32 loop candidates per callback and 512 callbacks per game;
-queue overflow is reported explicitly. Its six signatures live in a separate
-compiled 40408-only diagnostic profile, leaving the release targets and the
-40418 Preview coverage contract unchanged. The probe enables only on an exact
+queue overflow is reported explicitly. The selected bundle supplies its
+diagnostic profile. Build 40425 adds demand-scheduler observations: interval
+time, pending attempts before/after, changed town/global demand sets, and
+comparison count (64 changes and cargo IDs per record, 4096 intervals). The
+scheduler target is shared with the required fix below; the other eight
+observation sites are optional. A bundle without that file cannot enable the probe; it never falls
+back to another build's profile. The probe enables only on an exact
 `TPF3MP_HOOK_TRACE_INDUSTRIES=1` opt-in and when every site resolves before
 the ordinary hooks patch the image. Any splice mismatch rolls back the detour
 and earlier splices. The capacity
-detour also checks its compiled 40408 entry bytes before installation, so a
+detour also checks its compiled native entry bytes before installation, so a
 shadow profile cannot redirect that name to a function with another ABI. With
 the switch unset, the probe installs nothing.
 
@@ -6059,7 +6107,11 @@ Logging only, on with `freed-id-order` (`TPF3MP_HOOK_FREED_ID_TRACE=0`
 turns it off). It rides on the fix's own splice and reads, through
 `image::Readable`, only the simulation's engine: the one `GameSim::Step`
 hands `ecs::Engine::Update` (`[[this+8]+0x18]`), noted at every call of
-the room's game's step. The replicated engine is left out.
+the room's game's step. The replicated engine is left out. Alternating
+simulation-buffer addresses do not clear the logical world's counters or
+retained history. An explicit world load or leaving the room clears them;
+an unreadable engine instead marks a gap and breaks allocation inference
+across that gap without discarding earlier evidence.
 
 - At every checkpoint (and the first batch after a load), right after the
   `ticks:` line:
@@ -6089,12 +6141,14 @@ the room's game's step. The replicated engine is left out.
   `tpfre q <db> func <rva>`. In a sound game there are none; a room
   action is applied for its step and counts as an update.
 
-- The trace also keeps the first 96 modifications, including ones that
-  take or free no IDs, of each
+- The trace also keeps the first 512 allocator-changing or unknown
+  modifications of each
   checkpoint interval in memory, across the last 128 checkpoints. When a
   divergent checkpoint or its room-wide lane-dump request arrives, each
   game writes the latest 64 retained intervals up to that checkpoint to
-  `hook.log`.
+  `hook.log`, newest interval first so the byte budget prioritizes the
+  failure. Proven no-op modifications remain in the aggregate counts but
+  are counted as `unchanged` instead of consuming detail slots.
   This includes an allocator split well before the first lane mismatch,
   without continuously filling the hook's 192 KiB/minute diagnostic upload
   budget. Native-operation trace bursts, whether triggered by a divergence or
@@ -6108,9 +6162,9 @@ the room's game's step. The replicated engine is left out.
   notices were suppressed and the latest suppressed step, then includes the
   latest retained interval through the eligible divergence. The header gives
   the oldest and newest retained checkpoints, expired checkpoints,
-  recorded/retained operations, omitted operations, unfit counts and
+  recorded/retained operations, omitted operations, unchanged observations, unfit counts and
   unreadable native observations.
-  `complete=true` means none of those gaps occurred within the selected
+  `complete=true` means no allocator-detail gaps occurred within the selected
   incident window. Older expired checkpoints are reported separately and do
   not make an intact recent window incomplete. The launcher's source
   and run budgets can still skip old log

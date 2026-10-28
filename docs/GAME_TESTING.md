@@ -92,6 +92,14 @@ reinstalled by every `room.ps1` (without `-NoInstall`).
 
 ### Fixture saves
 
+For an ordinary main-menu start, use `room.ps1 -ManualRoom -Run <name>`.
+It installs the mod and starts the local server, agents and games with the
+same isolation checks, then prints their PIDs. It does **not** connect players,
+create/join/start a room, load a fixture or type into the console. Do those
+steps through the games' Multiplayer/Join a friend pages, then select a save
+or generate a world normally. Quit the owned games with `quit.ps1` afterward.
+The corresponding rig option is `--manual-room`.
+
 Rooms start from a save in the game's `save` folder:
 
 - `tpf3mp_fixture`: a plain map, 16 by 16 tiles, seed `tpf3mp`, the

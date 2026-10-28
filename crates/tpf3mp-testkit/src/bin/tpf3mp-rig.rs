@@ -124,6 +124,11 @@ struct Args {
     #[arg(long)]
     wait_for_games: bool,
 
+    /// Leave room creation, joining and starting to the in-game menus.
+    /// The rig still owns the local server, agents and game processes.
+    #[arg(long, conflicts_with = "mods")]
+    manual_room: bool,
+
     /// Run the local server without a snapshot store. Every player then
     /// loads the world it starts from itself, as on a server that keeps no
     /// worlds, so every game must start from the same one: the fake games
@@ -244,6 +249,23 @@ async fn run(args: Args) -> Result<ExitCode> {
     };
 
     let content = content::manifest(&args.game_build, args.mods.as_deref())?;
+    // The ordinary menu's world chooser declares its selected mods. The
+    // automatic fixture rig has a fixed --mods manifest, but manual setup
+    // needs the same read-only discovery/picker as the player's launcher.
+    let installed = (args.manual_room && args.game != "fake")
+        .then(|| tpf3mp_agent::steam::find_game(Some(Path::new(&args.game))))
+        .flatten();
+    let picker = args.manual_room.then(|| {
+        tpf3mp_agent::picker::Mods::new(
+            tpf3mp_proto::Text::lossy(&args.game_build),
+            tpf3mp_agent::picker::discover(
+                installed.as_ref().map(|game| game.dir.as_path()),
+                &tpf3mp_agent::steam::steam_roots(),
+            ),
+            Vec::new(),
+            false,
+        )
+    });
     let tunnel = args.tunnel.choice()?;
     let room_settings = RoomSettings {
         steps_per_second: args.step_rate,
@@ -272,12 +294,13 @@ async fn run(args: Args) -> Result<ExitCode> {
             trust: trust.clone(),
             identity,
             name: name.clone(),
-            content: content.clone(),
-            mods: None,
-            picker: None,
+            content: picker
+                .as_ref()
+                .map_or_else(|| content.clone(), |mods| mods.manifest()),
+            mods: picker.as_ref().and_then(|mods| mods.lists()),
+            picker: picker.clone(),
             native: None,
-            // The rig's players run the fake game, not one Steam installed.
-            installed: None,
+            installed: installed.clone(),
             diagnostics: None,
             game_logs: None,
             hook: None,
@@ -420,6 +443,10 @@ async fn play(
 /// The host creates the room; everyone else joins its invite; all get
 /// ready, and the host starts the game.
 async fn set_up_room(args: &Args, server: &str, players: &[Player]) -> Result<()> {
+    if args.manual_room {
+        println!("rig: manual room setup; create and join through the in-game menus");
+        return Ok(());
+    }
     let (host, guests) = players.split_first().context("no players")?;
     act(
         host,
@@ -879,6 +906,17 @@ mod tests {
     #[test]
     fn the_command_line_is_consistent() {
         Args::command().debug_assert();
+    }
+
+    #[tokio::test]
+    async fn manual_room_setup_performs_no_automatic_player_actions() {
+        let args = Args::try_parse_from(["rig", "--server", "local", "--manual-room"])
+            .expect("manual room arguments");
+        // No player handles exist: this must return before connecting,
+        // creating a room, marking ready or starting a world.
+        set_up_room(&args, "127.0.0.1:1", &[])
+            .await
+            .expect("the in-game UI owns setup");
     }
 
     #[test]

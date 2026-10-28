@@ -4,6 +4,9 @@ local react = ug_require("::/gui/main/react.lua")
 local builtin = ug_require("::/gui/main/builtin.lua")
 local globals = ug_require("::/gui/main/game_react_globals.tl")
 local widgets = ug_require("::/gui/game_bar/game_bar_widgets.tl")
+local estimatedMaximum = 2
+api.gui.game = api.gui.game or {}
+api.gui.game.getEstimatedMaximumGameSpeed = function() return estimatedMaximum end
 for _, view in ipairs({ "ImageView", "ToggleButtonGroup" }) do
 	builtin[view] = function(params) return { view = view, params = params } end
 end
@@ -52,6 +55,7 @@ local function shortcut(speed)
 end
 stock()
 assert(globals.getDisableFeatures() == features)
+assert(api.gui.game.getEstimatedMaximumGameSpeed() == 2)
 if not tpf3mp_native then
 	assert(recipe == original and globals.getDisableFeatures == readFeatures
 		and gameGlobals.getDisableFeatures == readFeatures)
@@ -64,6 +68,18 @@ HOOK.room = true
 HOOK.status = { speed = 100, players = {
 	{ name = "Host", owner = true, me = false }, { name = "Guest", owner = false, me = true },
 } }
+-- The stock helper's automatic throttle must never generate local speed
+-- changes in a room, including while a joining peer catches up. Reproduce
+-- its condition and clamp: a zero "unlimited" result would still commit.
+for _, limit in ipairs({ 0, 1, 2, 3, 4 }) do
+	estimatedMaximum = limit
+	for _, desired in ipairs({ 1, 2, 4 }) do
+		local cap = api.gui.game.getEstimatedMaximumGameSpeed()
+		assert(not (desired >= 2 and desired <= 4 and desired > cap),
+			"local performance must not send an automatic room speed request")
+		assert(math.min(desired, cap) == desired)
+	end
+end
 for index, speed in ipairs({ 0, 100, 200, 400 }) do
 	HOOK.status.speed = speed
 	local c = assert(control())
@@ -117,5 +133,7 @@ assert(globals.getDisableFeatures().GameSpeedControl == true)
 HOOK.room = false
 stock()
 assert(globals.getDisableFeatures() == features)
+estimatedMaximum = 1
+assert(api.gui.game.getEstimatedMaximumGameSpeed() == 1, "single-player keeps its native limiter")
 shortcut(2)
 assert(#requests == 3 and requests[3] == 2)

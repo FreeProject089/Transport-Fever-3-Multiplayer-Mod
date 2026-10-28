@@ -13,7 +13,9 @@
 //! before; `u` the updates answered (`own` for the game's own speed); `why`
 //! the step driver's reason for that answer; `game` the game's own step and
 //! `call` the whole detour, in milliseconds; `lanes` marks a checkpoint
-//! batch, whose step also read the world's lanes. A call that could run the
+//! batch, whose step also read the world's lanes. `first` identifies the
+//! first ordered room step in a positive batch, allowing costly calls to
+//! be compared at the same world state across replicas. A call that could run the
 //! room's steps ends with how [`crate::cadence`] chose its count: the steps
 //! released and not run (`avail`), the batch's cap (`cap`), the nominal
 //! count (`nom`) and the rule (`pick`).

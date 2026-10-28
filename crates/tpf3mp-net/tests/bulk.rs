@@ -417,3 +417,48 @@ async fn a_trickling_server_is_given_up_on() {
 fn manifest_id_of(store: &ChunkStore) -> ManifestId {
     store.retained().unwrap()[0]
 }
+
+/// A receiver may spend time verifying/storing a requested batch while
+/// QUIC backpressures the next small frame. Its aggregate pace is still
+/// well above MIN_RATE; the deadline must account for the requested batch.
+#[tokio::test]
+async fn an_upload_survives_receiver_backpressure_within_the_batch_budget() {
+    let dir = tempfile::tempdir().unwrap();
+    let from = store(&dir);
+    let manifest = from
+        .ingest(random_bytes(41, 1_500_000).as_slice(), params())
+        .unwrap();
+    let entries = manifest.unique_chunks();
+    assert!(entries.len() <= tpf3mp_proto::MAX_CHUNKS_PER_REQUEST);
+    let Pipe {
+        fetcher: (mut upload_send, mut upload_recv),
+        server: (mut fetch_send, mut fetch_recv),
+        _alive,
+    } = pipe().await;
+    // Upload direction: the fetching server has a 256 KiB stream window.
+    let serving = tokio::spawn(async move {
+        bulk::serve(&mut upload_send, &mut upload_recv, &from, &manifest, IDLE).await
+    });
+    write_message(
+        &mut fetch_send,
+        &BulkRequest::Chunks {
+            ids: entries
+                .iter()
+                .map(|entry| ChunkHash(FixedBytes(entry.id.0)))
+                .collect(),
+        },
+        BULK_REQUEST_MAX_FRAME,
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    for entry in &entries {
+        let response = read_message::<BulkResponse>(&mut fetch_recv, BULK_RESPONSE_MAX_FRAME).await;
+        assert!(
+            matches!(response, Ok(BulkResponse::Chunk { id, .. }) if id.0.0 == entry.id.0),
+            "the requested upload was truncated: {response:?}"
+        );
+    }
+    fetch_send.finish().unwrap();
+    assert_eq!(serving.await.unwrap().unwrap().chunks, entries.len() as u64);
+}

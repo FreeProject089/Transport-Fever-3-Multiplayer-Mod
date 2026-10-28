@@ -552,6 +552,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
     let mut selected: Option<(Updates, bool)> = None;
     // What this call answered, and why, for the step trace.
     let mut answered: Option<(Updates, bool)> = None;
+    let mut first_step = None;
     let mut why: &'static str = "own";
     let mut note: Option<String> = None;
     let mut info = crate::interval::BatchInfo::default();
@@ -571,6 +572,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         driver.on_step(lua::take_commands(), &mut |batch| {
             ran = true;
             answered = Some((batch.updates, batch.lanes));
+            first_step = batch.first_step;
             selected = Some((batch.updates, batch.room));
             let updates = match batch.updates {
                 Updates::Exactly(updates) => updates,
@@ -579,10 +581,17 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
             match lua::begin_batch(&[], updates, batch.lanes, batch.dump) {
                 Ok(()) => {
                     unsafe { run_step(original, batch.updates, batch.room, this, a, b, c) };
-                    if let Some(first) = batch.first_step {
-                        log_counters(first, updates, batch.lanes);
+                    let result = lua::end_batch();
+                    if batch.room
+                        && let Some(reason) = crate::industries::fault()
+                    {
+                        Err(reason.to_owned())
+                    } else {
+                        if let Some(first) = batch.first_step {
+                            log_counters(first, updates, batch.lanes);
+                        }
+                        result
                     }
-                    lua::end_batch()
                 }
                 Err(reason) => {
                     selected = Some((Updates::Exactly(0), batch.room));
@@ -594,6 +603,12 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         why = driver.why();
         if traced_at.is_some() {
             note = driver.cadence_note();
+            if let Some(first) = first_step {
+                note = Some(format!(
+                    "first={first} {}",
+                    note.as_deref().unwrap_or_default()
+                ));
+            }
         }
         info = driver.batch_info();
         for (ticket, why) in driver.take_refused() {
@@ -1103,6 +1118,9 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     }
     for outcome in crate::order::install(&absolute) {
         log_line(&outcome.to_string());
+    }
+    if let Some(line) = crate::industries::install_scheduler(&absolute)? {
+        log_line(&line);
     }
     match industry_probe {
         Ok(Some(mut diagnostic)) => {
