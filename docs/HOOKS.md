@@ -6563,6 +6563,101 @@ nothing the game computes, so one game of a room may run them alone.
 The `road-entry:` digest at every checkpoint needs no switch: it is on
 while `road-entry-order` sorts.
 
+### What the renderer shows: the `motion:` line
+
+`crates/tpf3mp-hook/src/motion.rs`, logging only, on unless
+`TPF3MP_HOOK_MOTION=0`. Once a frame (after `CMenuUI::DoStep`, the main
+thread's frame) it reads `totalTime`, `lastSyncTime` and `guiFrameTime`
+through the guarded reads, the fields the batch interval uses, and works
+out the simulation time on screen: the updates of every timed batch shown
+before plus `alpha` times the current batch's. Its rate against the room's
+pace is how fast vehicles move on screen relative to how fast they should.
+Every 10 s in a room's game:
+
+```
+motion: 10.0s frames=341 fps=34.0 frame_ms p50=28.2 p95=42.1 p99=67.2 max=85.5 over33=61; shown speed p5=0.64 p50=1.03 p95=1.32 mean=1.036 cv=0.274 jerks=111; by the game's clock p5=1.00 p50=1.00 p95=1.00, clock gap ms p50=2.9 p95=22.7; still frames=0 (0.0% ) late=0/0ms empty=0/0ms waiting=0/0ms other=0; longest=0ms runs>50ms=0 >100ms=0; batches=52 empty=0
+```
+
+- `frame_ms`: the frames' wall-clock length.
+- `shown speed`: the on-screen speed per frame, 1 the room's pace, by the
+  wall clock at the frame's end; `cv` its coefficient of variation;
+  `jerks` frames whose speed differs from the previous frame's by more
+  than 0.3.
+- `by the game's clock`: the same against the game's own `totalTime`, and
+  how far each frame's clock step differs from its wall time. A steady
+  `1.00` here with a spread above means the batches are even and the
+  frame clock is not.
+- `still frames`: frames in which nothing moved, by why: `late` (the next
+  batch was not ready, `alpha` at its end), `empty` (a batch without
+  updates), `waiting` (the room released nothing); then the longest run
+  and the runs over 50 and 100 ms.
+
+`TPF3MP_HOOK_MOTION=frames` also logs the first 4,000 frames' raw values
+(`motion-frame: wall_us= game_us= last_us= gft_us= n=`) for offline
+analysis; a diagnosis, not for play.
+
+What it found (investigation/PERFORMANCE_AUDIT_2026-10-29.md, "Micro-
+stutter"): in steady play neither late nor empty batches; the speed by the
+game's clock 1.00 at p5 and p95 at 1x and 4x; but by the wall clock it
+swung between about 0.65 and 1.35 of the pace (`cv` 0.25), because the
+game's frame clock is one frame late (below).
+
+### Frame pacing
+
+`crates/tpf3mp-hook/src/pacing.rs`, on unless `TPF3MP_HOOK_FRAME_PACING=0`,
+in a room's game whose batches are timed. The game moves its vehicles by
+the frame's `dt`: `UI::CGameUI::GameStep(int64)` hands it to `CGame::Step`
+(`0x11f400`), which adds it to `totalTime`, and `alpha` follows. That `dt`
+is the previous frame's length: in 2,400 frames at 1x the clock's step at
+frame `i` correlated +1.000 with the wall time of frame `i - 1` and +0.27
+with frame `i`. So with uneven frames, a frame shown for 37 ms after one of
+22 ms moves vehicles 22 ms' worth, and the next the other way round: the
+micro-stutter of a vehicle followed up close. Smoothing the clock does not
+help much (the next frame's length is not predictable: `cv` 0.23 to 0.18 at
+best in the same frames).
+
+After each frame the hook waits until the frame has lasted the target: the
+75th percentile of the last 120 frames' own length (from the end of the
+last wait), moved at most 2% a frame, between 1/240 s and 1/20 s; frames of
+more than 200 ms (a save, a load) are not counted. A longer frame is not
+waited on. The wait is a high-resolution waitable timer, then a spin of
+the last half millisecond. Every frame then lasts about the same, so the
+previous frame's length is this frame's. A `pacing:` line every 10 s
+gives the target, the waits and the frames over the target.
+
+Pacing alone left the frames over the target (about one in four): the
+frame after one gets its full length as `dt` while it is shown only for the
+target, a jump to about 1.4 times the speed. So the hook also redirects
+`UI::CGameUI::GameStep`'s call of `CGame::Step` (40425 `0x65f26c`; profile
+target `UI::CGameUI::GameStep/CGame::Step call`, optional; the callee's
+first 31 bytes, up to its `add [m_data + totalTime], rdx`, are checked
+before) and gives it the pacing target as `dt` (`pacing::Clock`): a frame
+held to the target moves vehicles exactly its own length. What the game's
+own `dt` and the given one differ by is a debt, repaid a tenth a frame, so
+`totalTime` keeps the game's time over any span and only advances. A `dt`
+more than three times the target or under a third of it (a freeze, a
+load, the game's slow motion) is the game's own and clears the debt.
+Simulated on the recorded frames: speed variation 0.23 to 0.11, swings over
+30% from 827 to 150 in 2,400 frames, for about 10% fewer frames (the 85th
+percentile: 0.097, 14% fewer). Measured in the game at the 85th percentile:
+0.25-0.29 to 0.09-0.12 at 1x and 4x, swings 100-135 to 17-23 in 10 s.
+
+**Two targets.** A frame whose step hands over a batch (`CGame::Sync`,
+five times a second) is longer: in the same 2,400 frames, median 29.6 ms
+against 23.5 ms for the others (the guest: 30.3 against 23.7). With one
+target, either those frames run over it (a jerk five times a second) or
+every frame waits as long as they take. So the hook keeps a target for
+each kind: before the step runs, the clock knows whether it will sync
+(`totalTime + dt >= lastSyncTime + guiFrameTime`), gives that frame the
+handover target as `dt`, and the pacing holds it to that target; every
+other frame gets the shorter one. Simulated on the same frames: about 1.5
+to 2 fps more than one target at the same percentile, at the same
+smoothness. The `pacing:` line gives both targets and the handover frames.
+
+Only presentation changes: nothing the simulation computes depends on wall
+time or on `totalTime`'s steps, so a paced game and an unpaced one agree;
+`CGame::Sync` follows `totalTime` as before.
+
 ### The game's own systems: the `perf: sim` line
 
 `crates/tpf3mp-hook/src/simperf.rs` times the game systems whose cost
