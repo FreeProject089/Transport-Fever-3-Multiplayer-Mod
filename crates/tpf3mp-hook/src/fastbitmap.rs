@@ -389,7 +389,7 @@ mod original_tests {
 
     #[test]
     fn a_span_below_bit_zero_goes_to_the_games_loop() {
-        ORIGINAL.store(stand_in as usize, Ordering::Release);
+        ORIGINAL.store(stand_in as *const () as usize, Ordering::Release);
         let mut a = vec![0u32; 4];
         // A start of -3 with a count of 5: the original's own business.
         assert_eq!(run(fill, &mut a, 10, -3, 0, 5), 0);
