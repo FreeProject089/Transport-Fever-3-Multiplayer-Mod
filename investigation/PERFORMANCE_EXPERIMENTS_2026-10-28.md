@@ -200,8 +200,13 @@ Final source checks: 595 hook library tests passed, seven ignored; focused
 all-target hook/testkit clippy, rustfmt and a release hook build passed. The
 final compiled DLL SHA256 is
 `F856BE3896E73B33F6FD196FB187CA2BEF7444CD87E6075835A21C731AEE1AF8`.
-The full workspace and
-all-platform release checks were not rerun for this local experiment.
+The full workspace was subsequently checked for PR preparation on 2026-10-29,
+at `e58f5adf`: `cargo fmt --all`, workspace all-target clippy with warnings
+denied, and `cargo test --workspace` passed (2073 passed, 14 ignored, no
+failures). Logs are retained in
+`F:\TPF3MP-test-archives\pr-performance-20261029`. The subsequent documentation
+commit only records these results and the observed save measurements.
+All-platform release acceptance has not been run for this branch.
 
 Both games quit normally and the local rig exited. The original staging
 folder was restored and all 95 original file hashes and the file count
