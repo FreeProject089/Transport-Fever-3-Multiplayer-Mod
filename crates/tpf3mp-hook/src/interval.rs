@@ -595,6 +595,12 @@ pub fn arm(layout: Layout) {
     OFF.store(false, Ordering::Release);
 }
 
+/// The game's layout once the interval is armed (`crate::motion` reads the
+/// same fields each frame).
+pub fn layout() -> Option<Layout> {
+    LAYOUT.get().copied()
+}
+
 /// Called during install, before a world starts. Only the opt-in short
 /// batch policy combines extra updates with this bounded acceleration.
 pub fn bound_short_recovery(period: Duration, recovery: bool) {
@@ -783,16 +789,21 @@ pub fn after_sync(cgame: usize, ok: bool) {
         Done::Skipped(_) => {
             SKIPS.fetch_add(1, Ordering::Relaxed);
             state.delivery = None;
+            crate::motion::on_untimed();
         }
         Done::Off(why) => {
             OFF.store(true, Ordering::Release);
             state.delivery = None;
+            crate::motion::on_untimed();
             say(format!(
                 "batch interval: off for good, {why}; the game paces itself"
             ));
         }
         Done::Wrote(us, record) => {
             WRITES.fetch_add(1, Ordering::Relaxed);
+            if let Some((m_data, _)) = state.writable_for {
+                crate::motion::on_batch(m_data, record.count, record.step_us, record.waiting);
+            }
             if crate::steptrace::enabled() {
                 let now = Instant::now();
                 let delivery = state.delivered(now, record.epoch, us, record.count);

@@ -277,6 +277,8 @@ fn menu_seen(menu: usize) -> (Seen, Vec<String>) {
 pub(crate) fn menu_frame(menu: usize) {
     // The GUI thread and its menu, for the others' previews drawn.
     crate::drawing::note_menu(menu);
+    // What the renderer showed this frame (logging only).
+    crate::motion::on_frame();
     if BROKEN.load(Ordering::Acquire) {
         return;
     }
@@ -623,6 +625,7 @@ unsafe extern "C" fn step_detour(this: usize, a: usize, b: usize, c: usize) {
         let mut lines = driver.take_log();
         lines.extend(lua::take_log());
         lines.extend(crate::interval::take_lines());
+        lines.extend(crate::motion::take_lines());
         if !lines.is_empty()
             && let Some(log) = LOG.lock().unwrap_or_else(|p| p.into_inner()).as_mut()
         {
@@ -1144,6 +1147,8 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     // Guarded reads (docs/HOOKS.md, "Reading the game's memory"): the
     // handler goes in before any fix reads.
     log_line(&crate::image::guarded::configure_from_env());
+    log_line(&crate::motion::configure_from_env());
+    log_line(&crate::motion::configure_pacing_from_env());
     if let Some(line) = crate::steptrace::configure_from_env() {
         log_line(&line);
     }
@@ -1197,6 +1202,11 @@ fn install_inner(profile: &Profile, link_name: &str) -> Result<u64, String> {
     }
     log_line(&crate::fastindex::install(&absolute));
     log_line(&crate::fastbitmap::install(&absolute));
+    // Frame pacing's clock (crate::pacing::Clock): only with pacing wanted.
+    log_line(&crate::pacing::install_clock(
+        &absolute,
+        crate::pacing::wanted(std::env::var(crate::pacing::ENV).ok().as_deref()),
+    ));
     // The fused emission grid (crate::emission): bit-identical, on unless
     // TPF3MP_HOOK_FAST_EMISSION=0.
     log_line(&crate::emission::install(&absolute));

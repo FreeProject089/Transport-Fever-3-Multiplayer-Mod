@@ -1865,6 +1865,17 @@ offset = 0
 prologue = "48 89 5C 24 20 89 54 24 10 57 48 81 EC E0 00 00 00"
 required = false
 
+# Frame pacing's clock (crates/tpf3mp-hook/src/pacing.rs). UI::CGameUI::
+# GameStep's call of CGame::Step (0x11f400; the call at 0x65f26c), whose dt
+# (rdx, µs) CGame::Step adds to totalTime, the vehicles' clock. The hook
+# checks the callee's first 31 bytes, up to that add, before redirecting.
+[[target]]
+name = "UI::CGameUI::GameStep/CGame::Step call"
+signature = "4C 8D 84 24 F0 01 00 00 48 8B 8E E0 06 00 00 E8 ?? ?? ?? ?? 90 48 8B 8C 24 28 02 00 00"
+offset = 15
+prologue = "E8"
+required = false
+
 # The faster bitmap span (crates/tpf3mp-hook/src/fastbitmap.rs;
 # investigation/PERFORMANCE_AUDIT_2026-10-29.md). An anonymous
 # BitmapRasterizable's span fill (0x91a560, vtable 0x3709b70 slot 1,

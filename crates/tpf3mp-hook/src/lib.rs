@@ -57,6 +57,7 @@ pub mod log;
 pub mod lua;
 pub mod menu;
 pub mod modules;
+pub mod motion;
 pub mod native_mods;
 pub mod netread;
 pub mod network;
@@ -65,6 +66,7 @@ pub mod order;
 /// executable and run in the test process.
 #[cfg(all(test, windows, target_arch = "x86_64"))]
 pub(crate) mod original;
+pub mod pacing;
 pub mod perf;
 pub mod persons;
 mod platform;
