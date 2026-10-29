@@ -30,7 +30,9 @@
 #![allow(unsafe_code, clippy::cast_precision_loss)]
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(windows)]
+use std::time::Instant;
 
 pub const ENV: &str = "TPF3MP_HOOK_FRAME_PACING";
 /// Frames whose length sets the target.
