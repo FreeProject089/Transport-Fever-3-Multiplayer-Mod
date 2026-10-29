@@ -18126,6 +18126,30 @@ fn the_finance_window_shows_a_founded_companys_own_loans() {
         .eval()
         .unwrap();
     assert_eq!(board, "0 0");
+    // Every getComponent of this GUI state comes through the loan view, many
+    // times a frame: another kind goes straight to the game's, reading the
+    // api's GAME_SCRIPT kind once at most, never once a call.
+    let reads: i64 = lua
+        .load(
+            r#"
+            local CT = api.type.ComponentType
+            rawset(CT, "GAME_SCRIPT", nil)
+            READS = 0
+            setmetatable(CT, { __index = function(_, k)
+                if k == "GAME_SCRIPT" then READS = READS + 1 return 7 end
+            end })
+            for _ = 1, 100 do api.engine.getComponent(40, 3) end
+            local reads = READS
+            assert(type(api.engine.getComponent(40, 7).state.availableLoans) == "table")
+            return reads
+            "#,
+        )
+        .eval()
+        .unwrap_or_else(|error| panic!("{error}\n{}", log(&lua)));
+    assert!(
+        reads <= 1,
+        "the loan view read GAME_SCRIPT {reads} times for 100 calls of another kind"
+    );
 }
 
 /// Tracks over FAKE_NETWORK and FAKE_STOPS, for signals: track 200 runs east
