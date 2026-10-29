@@ -1865,6 +1865,21 @@ offset = 0
 prologue = "48 89 5C 24 20 89 54 24 10 57 48 81 EC E0 00 00 00"
 required = false
 
+# The faster bitmap span (crates/tpf3mp-hook/src/fastbitmap.rs;
+# investigation/PERFORMANCE_AUDIT_2026-10-29.md). An anonymous
+# BitmapRasterizable's span fill (0x91a560, vtable 0x3709b70 slot 1,
+# game/urbansim/init_streets_util.cpp's rasterizer): start = y*[rcx+0x10] + x,
+# then bits [start, start+count) of the std::vector<uint32_t> at [[rcx+8]],
+# set one at a time with bts; returns false. 61% of "Connect industry" in a
+# profile. The signature is the whole function, entry to `ret`; the hook
+# fills the same bits by whole words and hands any span below bit 0 back.
+[[target]]
+name = "fast-bitmap-span: BitmapRasterizable::Fill"
+signature = "44 0F AF 41 10 4C 8B D9 44 03 C2 43 8D 04 08 44 3B C0 7D 37 49 63 C0 45 8B D1 66 0F 1F 44 00 00 49 8B 4B 08 4C 8B C0 49 C1 E8 05 48 8B 11 42 8B 0C 82 4E 8D 0C 82 48 8B D0 83 E2 1F 48 FF C0 0F AB D1 41 89 09 49 83 EA 01 75 D5 32 C0 C3"
+offset = 0
+prologue = "44 0F AF 41 10 4C 8B D9 44 03 C2 43 8D 04 08"
+required = false
+
 # The fused emission grid (crates/tpf3mp-hook/src/emission; investigation/
 # TF3_SIM_COST_2026-10-05.md §1). ecs::EmissionGridSystem::Update
 # (0xaa9230, vtable 0x1436fcab8 slot 11; Game/ecs/EmissionGridSystem.cpp):
