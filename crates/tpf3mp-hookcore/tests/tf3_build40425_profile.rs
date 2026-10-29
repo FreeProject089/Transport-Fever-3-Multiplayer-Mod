@@ -61,7 +61,7 @@ const SHA256: &str = "e9a6190f9ca8f7f34a46dfafac0f3b897e41ea6dc6498d6f5871aed6b9
 const SIZE: u64 = 69_876_664;
 const PE_TIMESTAMP: u32 = 0x6ad9_ce10;
 
-/// All 168 profile targets, including optional targets, at their RVAs in the
+/// All 169 profile targets, including optional targets, at their RVAs in the
 /// public build 26129055 executable (image base 0x140000000).
 const TARGETS: &[(&str, u64)] = &[
     ("save: PushCompressor level load", 0x32dec4),
@@ -260,6 +260,7 @@ const TARGETS: &[(&str, u64)] = &[
     ),
     ("emission::EmissionGridSystem::Update", 0xaaf890),
     ("industry schedule", 0x1513f0),
+    ("fast-bitmap-span: BitmapRasterizable::Fill", 0x91a560),
 ];
 
 #[test]
@@ -273,8 +274,8 @@ fn profile_pins_public_steam_build_40425_and_all_target_names() {
     assert_eq!(profile.build.size, Some(SIZE));
     assert_eq!(profile.build.pe_timestamp, Some(PE_TIMESTAMP));
     assert_eq!(profile.image_base, Some(0x0001_4000_0000));
-    assert_eq!(profile.targets.len(), 168);
-    assert_eq!(TARGETS.len(), 168);
+    assert_eq!(profile.targets.len(), 169);
+    assert_eq!(TARGETS.len(), 169);
     for &(name, _) in TARGETS {
         assert!(
             profile.targets.iter().any(|target| target.name == name),
@@ -638,7 +639,7 @@ fn assert_native_data(image: &[u8], pe: &PeHeaders, text: &[u8], text_rva: u64) 
 }
 
 #[test]
-fn supplied_40425_executable_has_the_exact_identity_and_all_168_sites() {
+fn supplied_40425_executable_has_the_exact_identity_and_all_169_sites() {
     let Some(exe) = std::env::var_os(EXE_ENV).map(PathBuf::from) else {
         eprintln!("skipping executable resolution: set {EXE_ENV} to the archived 40425 executable");
         return;

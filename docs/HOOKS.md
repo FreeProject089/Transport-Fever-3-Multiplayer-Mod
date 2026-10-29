@@ -5946,7 +5946,18 @@ does this without asking the system first:
   is read, as before.
 - The handler is never removed: the hook stays loaded for the life of
   the game. The cold paths (code checks before a patch, install-time
-  reads) still ask `VirtualQuery` through `image::readable`.
+  reads) still ask `VirtualQuery` through `image::readable`; nothing that
+  runs per call, per frame or per update may. In a running game one
+  `VirtualQuery` costs about 50 µs, not the microsecond of a small test
+  process: measured 2026-10-29 on build 40425 with a 150 MB world, the
+  GUI's `getPlayer` took 203 µs a call while the hook's GUI player fix
+  checked its closure with four of them, and the main thread spent about
+  6% of its time in those calls (investigation/PERFORMANCE_AUDIT_2026-10-29.md).
+  The GUI fixes, the tool player, the tick counters, the module and stop
+  tool reads, the terrain writes, plugin reads and the industry probe now
+  check through `image::readable_cached` (the guarded check); a test
+  (`guiplayer::tests::the_guis_per_call_reads_never_ask_the_system`)
+  counts the thread's system queries.
 
 The tests (`image::guarded::windows_tests`) read committed, reserved,
 freed, no-access and read-only pages, ranges that run from a committed
@@ -6527,6 +6538,12 @@ Each switch changes what the game computes, so a game with one off
 diverges from a room whose other games have it on: A/B in a room where
 every game has the same switches, or alone.
 
+`TPF3MP_HOOK_SAVE_FAST=0` (or `off`) keeps the game's own save
+compression (zstd level 3 through a 128-byte buffer) instead of the
+hook's level 1 and 64 KiB buffer, which are on by default (docs/BIGMAPS.md,
+"Saving"). It changes how a save is compressed, never the world, so one
+game of a room may set it alone.
+
 The desync diagnostics are off unless set, and logging only: they change
 nothing the game computes, so one game of a room may run them alone.
 
@@ -6622,6 +6639,38 @@ searches again and asserts as the game does.
 To A/B it, run the same save with and without
 `TPF3MP_HOOK_FAST_COMPONENT_INDEX=0` and compare the first line's `ms/update`
 and the `perf: sim` line's `parcel-collision`.
+
+### The faster bitmap span
+
+`crates/tpf3mp-hook/src/fastbitmap.rs` (`fast-bitmap-span`, on unless
+`TPF3MP_HOOK_FAST_BITMAP_SPAN=0` or `off`; profile target
+`fast-bitmap-span: BitmapRasterizable::Fill`, 40425 only). Every time an
+industry spawns, the game connects it to the road network on the
+simulation thread (`game/urbansim/init_streets_util.cpp`), and its console
+says `Connect industry: 850-1075 ms` on Bubu's 150 MB world: a freeze of
+every game of the room, several times in ten minutes. A sampling profile of
+four of those calls (investigation/PERFORMANCE_AUDIT_2026-10-29.md) found
+61% of their time in one 78-byte function, an anonymous
+`BitmapRasterizable`'s span fill (`0x91a560`, vtable slot 1): it sets
+`count` bits from `y * width + x` in a `std::vector<uint32_t>`, one bit at
+a time (load, `bts`, store).
+
+- **Exact, so not a room setting.** The hook jumps from its entry to a fill
+  of whole 32-bit words: the span's bits become 1 and every other bit keeps
+  its value, which is what the game's loop leaves. It takes the plain case
+  only (a start at or past bit 0 and a count that moves forward); an empty
+  span answers at once as the game's does, and anything else goes to the
+  game's own loop through the trampoline. Nothing is cached.
+- **Fails closed**: the signature is the whole function, entry to `ret`.
+- **Tested against the game's own bytes**: the 78 bytes run in an
+  executable page of the test process beside the hook's fill on 20,000
+  random bitmaps, widths and spans, empty and negative counts included;
+  every word must match (`fastbitmap::original_tests`).
+- The `perf: sim` line ends with `; bitmap spans <n> by words, <m> the
+  game's` in a window with calls.
+- **Measured** on the same world, two games in one room at 4x: `Connect
+  industry` 850-1075 ms in eight calls before, 409-416 ms in four after;
+  both games' rolling checks agreed throughout.
 
 ## Release-day procedure: adding a target for a new build
 

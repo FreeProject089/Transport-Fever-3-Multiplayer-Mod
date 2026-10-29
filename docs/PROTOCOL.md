@@ -370,9 +370,12 @@ A room has a name, an owner, a player limit, settings, members, and a phase:
 
 ## Turns: the ordered event log
 
-A running room has a **sequencer**. Every tick (100 ms by default) it seals a
-**turn**: a sequence number, the step **frontier** `sealed_through`, the
-session speed, and the events appended since the previous turn. Each event has
+A running room has a **sequencer**. Every tick (100 ms by default), and at
+once whenever it orders a player's command, it seals a **turn**: a sequence
+number, the step **frontier** `sealed_through`, the session speed, and the
+events appended since the previous turn. A command therefore reaches every
+game without waiting for the next tick; the pacer carries fractions of a
+step, so sealing between ticks changes no step's pace. Each event has
 a room-global sequence number and an execution step.
 
 Invariants every client relies on:
@@ -463,7 +466,9 @@ at the room's pace behind a jitter buffer of its own
   than the release.
 
 What players feel on their own commands is their round trip, plus their own
-buffer, plus the wait for the next turn. It is not the room's input delay,
+buffer, plus the wait for the game's next call; the server no longer adds
+the wait for its next tick (up to 100 ms before 2026-10-29). It is not the
+room's input delay,
 and not anyone else's link: a poor connection only delays its owner. Paced
 bots over 150 ms round trips with jitter feel a median of about 220 ms,
 whether the input delay is 60 or 1000 ms.

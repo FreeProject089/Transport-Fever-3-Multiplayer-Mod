@@ -129,6 +129,32 @@ async fn everyone_applies_the_same_log_in_the_same_order() {
     server.shut_down().await;
 }
 
+/// A command is ordered and sent to every game as it arrives, not at the
+/// sequencer's next tick, so the tick (100 ms by default) is no longer part
+/// of what players feel on their own commands.
+#[tokio::test]
+async fn a_command_is_sealed_when_it_arrives_not_at_the_next_tick() {
+    let server = RunningServer::start(|config| config.tick = Duration::from_secs(4)).await;
+    let clients = vec![server.client("ann").await];
+    let (mut players, _) = start(clients, FAST).await;
+    let mut ann = players.remove(0);
+    // A tick has just sealed steps: the next one is about four seconds away.
+    ann.play_until(|p| p.executed >= 1).await;
+    let sent = std::time::Instant::now();
+    ann.client()
+        .send_intent(1, payload(b"at once"))
+        .await
+        .unwrap();
+    ann.play_until(|p| !commands(p).is_empty()).await;
+    let took = sent.elapsed();
+    assert!(
+        took < Duration::from_secs(2),
+        "the command waited {took:?} for the next tick"
+    );
+    assert_eq!(commands(&ann)[0].2, b"at once".to_vec());
+    server.shut_down().await;
+}
+
 #[tokio::test]
 async fn the_clock_waits_until_everyone_has_loaded() {
     let server = RunningServer::start(|_| {}).await;

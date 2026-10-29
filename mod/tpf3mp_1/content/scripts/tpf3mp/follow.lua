@@ -173,8 +173,17 @@ function follow.loans(api, mine)
 		cached, cachedFor, cachedAt = (ok and built) or table0, company, t
 		return cached
 	end
+	-- The GAME_SCRIPT kind, read once: every getComponent of this GUI state
+	-- comes through here (the game's windows call it many times a frame),
+	-- and any other kind goes straight to the game's without a closure, a
+	-- pcall or a walk through the api's bindings.
+	local gameScriptKind = nil
 	local wrapper = function(entity, kind, ...)
-		if kind ~= nil and entity ~= nil then
+		if kind ~= nil and entity ~= nil and gameScriptKind == nil then
+			local ok, k = pcall(function() return api.type.ComponentType.GAME_SCRIPT end)
+			if ok and k ~= nil then gameScriptKind = k end
+		end
+		if kind ~= nil and entity ~= nil and gameScriptKind ~= nil and kind == gameScriptKind then
 			local isLoans = false
 			pcall(function()
 				if loanEntity == nil or loanEntity < 0 then
