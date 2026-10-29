@@ -312,28 +312,63 @@ static ON: AtomicBool = AtomicBool::new(true);
 /// A timed batch is on screen: the room's game runs (pacing's condition).
 static TIMED: AtomicBool = AtomicBool::new(false);
 static PACING_ON: AtomicBool = AtomicBool::new(false);
-/// The pacing target in µs while frames are paced, else 0 (for the clock).
+/// The pacing targets in µs while frames are paced, else 0 (for the
+/// clock): a frame without a batch handed over, and one with.
 static TARGET_US: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static TARGET_SYNC_US: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+/// This frame's `CGame::Step` hands over a batch (`CGame::Sync`): set by
+/// the clock at the frame's start, taken by the pacing at its end.
+static FRAME_SYNC: AtomicBool = AtomicBool::new(false);
 /// The vehicles' clock (`crate::pacing::Clock`), main thread only.
 static CLOCK: Mutex<crate::pacing::Clock> = Mutex::new(crate::pacing::Clock::new());
 
 /// The `dt` `CGame::Step` gets for the game's `raw` one: the pacing target
 /// while frames are paced (`crate::pacing::Clock`), else the game's own.
+///
+/// A frame whose step hands over a batch takes longer (measured: about 6 ms
+/// more, five times a second), so it has a target of its own: whether this
+/// one will is known before the step runs, from `totalTime`, `lastSyncTime`
+/// and `guiFrameTime` (`CGame::Step` syncs once `totalTime + dt` reaches
+/// `lastSyncTime + guiFrameTime`).
 pub fn clock_dt(raw: i64) -> i64 {
-    let target = if PACING_ON.load(Ordering::Acquire) && TIMED.load(Ordering::Acquire) {
+    let mut target = if PACING_ON.load(Ordering::Acquire) && TIMED.load(Ordering::Acquire) {
         TARGET_US.load(Ordering::Acquire)
     } else {
         0
     };
+    let sync_target = TARGET_SYNC_US.load(Ordering::Acquire);
+    let syncs = target > 0
+        && read_clock().is_some_and(|(total, last, gft)| total + target >= last + i64::from(gft));
+    FRAME_SYNC.store(syncs, Ordering::Release);
+    if syncs && sync_target > 0 {
+        target = sync_target;
+    }
     match CLOCK.try_lock() {
         Ok(mut clock) => clock.give(raw, target),
         Err(_) => raw,
     }
 }
 
-/// Frame pacing's state (`crate::pacing`), main thread only.
+/// The game's `totalTime`, `lastSyncTime` and `guiFrameTime` now.
+fn read_clock() -> Option<(i64, i64, i32)> {
+    let m_data = M_DATA.load(Ordering::Acquire);
+    let layout = crate::interval::layout()?;
+    if m_data == 0 {
+        return None;
+    }
+    let mut reader = crate::image::Readable::new();
+    let total = reader.read::<i64>((m_data + layout.total_time) as u64)?;
+    let last = reader.read::<i64>((m_data + layout.last_sync) as u64)?;
+    let gft = reader.read::<i32>((m_data + layout.gui_frame_time) as u64)?;
+    (gft > 0).then_some((total, last, gft))
+}
+
+/// Frame pacing's state (`crate::pacing`), main thread only: a pacer for
+/// frames without a batch handed over, and one for frames with.
 struct Pacing {
     pacer: crate::pacing::Pacer,
+    sync_pacer: crate::pacing::Pacer,
+    sync_frames: u64,
     released: Option<Instant>,
     window_start: Option<Instant>,
     frames: u64,
@@ -344,6 +379,8 @@ struct Pacing {
 
 static PACING: Mutex<Pacing> = Mutex::new(Pacing {
     pacer: crate::pacing::Pacer::new_const(),
+    sync_pacer: crate::pacing::Pacer::new_const(),
+    sync_frames: 0,
     released: None,
     window_start: None,
     frames: 0,
@@ -398,10 +435,10 @@ pub fn configure_pacing_from_env() -> String {
 /// From the Sync wrapper (main thread): a timed batch on screen.
 pub fn on_batch(m_data: usize, count: u32, step_us: u32, waiting: bool) {
     TIMED.store(true, Ordering::Release);
+    M_DATA.store(m_data, Ordering::Release);
     if !ON.load(Ordering::Acquire) {
         return;
     }
-    M_DATA.store(m_data, Ordering::Release);
     if let Ok(mut tracker) = TRACKER.try_lock() {
         tracker.batch(count, step_us, waiting);
     }
@@ -427,39 +464,57 @@ fn pace() {
         return;
     };
     let now = Instant::now();
+    let synced = FRAME_SYNC.swap(false, Ordering::AcqRel);
     if !TIMED.load(Ordering::Acquire) {
         p.pacer.reset();
+        p.sync_pacer.reset();
         p.released = None;
         TARGET_US.store(0, Ordering::Release);
+        TARGET_SYNC_US.store(0, Ordering::Release);
         return;
     }
     if let Some(released) = p.released {
         let length = now.saturating_duration_since(released).as_secs_f64() * 1000.0;
-        let wait = p.pacer.plan(length);
+        let pacer = if synced {
+            p.sync_frames += 1;
+            &mut p.sync_pacer
+        } else {
+            &mut p.pacer
+        };
+        let wait = pacer.plan(length);
+        let target = pacer.target_ms();
         p.frames += 1;
         if wait > 0.0 {
             crate::pacing::wait(wait);
             p.waits += 1;
             p.waited_ms += wait;
-        } else if p.pacer.target_ms() > 0.0 && length > p.pacer.target_ms() {
+        } else if target > 0.0 && length > target {
             p.overruns += 1;
         }
     }
     let released = Instant::now();
     p.released = Some(released);
     #[allow(clippy::cast_possible_truncation)]
-    TARGET_US.store(
-        (p.pacer.target_ms() * 1000.0).round() as i64,
-        Ordering::Release,
-    );
+    {
+        TARGET_US.store(
+            (p.pacer.target_ms() * 1000.0).round() as i64,
+            Ordering::Release,
+        );
+        TARGET_SYNC_US.store(
+            (p.sync_pacer.target_ms() * 1000.0).round() as i64,
+            Ordering::Release,
+        );
+    }
     let start = *p.window_start.get_or_insert(released);
     let span = released.saturating_duration_since(start);
     if span >= WINDOW && p.frames > 0 {
         let line = format!(
-            "pacing: {:.1}s frames={} target_ms={:.1} waited={} mean_wait_ms={:.2} over_target={}",
+            "pacing: {:.1}s frames={} target_ms={:.1} handover frames={} target_ms={:.1} waited={} mean_wait_ms={:.2} over_target={}",
             span.as_secs_f64(),
             p.frames,
             p.pacer.target_ms(),
+            p.sync_frames,
+            p.sync_pacer.target_ms(),
             p.waits,
             if p.waits > 0 {
                 p.waited_ms / p.waits as f64
@@ -470,6 +525,7 @@ fn pace() {
         );
         p.window_start = Some(released);
         p.frames = 0;
+        p.sync_frames = 0;
         p.waits = 0;
         p.waited_ms = 0.0;
         p.overruns = 0;

@@ -6642,6 +6642,18 @@ Simulated on the recorded frames: speed variation 0.23 to 0.11, swings over
 percentile: 0.097, 14% fewer). Measured in the game at the 85th percentile:
 0.25-0.29 to 0.09-0.12 at 1x and 4x, swings 100-135 to 17-23 in 10 s.
 
+**Two targets.** A frame whose step hands over a batch (`CGame::Sync`,
+five times a second) is longer: in the same 2,400 frames, median 29.6 ms
+against 23.5 ms for the others (the guest: 30.3 against 23.7). With one
+target, either those frames run over it (a jerk five times a second) or
+every frame waits as long as they take. So the hook keeps a target for
+each kind: before the step runs, the clock knows whether it will sync
+(`totalTime + dt >= lastSyncTime + guiFrameTime`), gives that frame the
+handover target as `dt`, and the pacing holds it to that target; every
+other frame gets the shorter one. Simulated on the same frames: about 1.5
+to 2 fps more than one target at the same percentile, at the same
+smoothness. The `pacing:` line gives both targets and the handover frames.
+
 Only presentation changes: nothing the simulation computes depends on wall
 time or on `totalTime`'s steps, so a paced game and an unpaced one agree;
 `CGame::Sync` follows `totalTime` as before.
