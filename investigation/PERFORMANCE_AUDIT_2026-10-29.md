@@ -209,3 +209,23 @@ The guest's window (in the background) lost more frames at 4x (31 to
 one PC widen the frame times; one game per PC should lose fewer.
 Every shared checkpoint agreed in all four pacing runs (45, 26, 63, 45).
 `TPF3MP_HOOK_FRAME_PACING=0` turns pacing and its clock off.
+
+**Batch handovers make their frame longer.** Frames whose step hands over
+a batch (`CGame::Sync`, five a second) took a median 29.6 ms against
+23.5 ms for the others (the guest: 30.3 against 23.7), a regular 5 Hz
+unevenness of its own. `CGame::Sync` itself is short (0.3% of the main
+thread's samples, mostly the UI's per-batch terrain and model updates in
+its callback); the extra time falls later in the frame. The pacing
+therefore keeps a target per kind of frame: the clock knows before the
+step whether it will sync and gives that frame the handover target.
+Measured at 1x against one target: host 35.5 to 36-36.5 fps, speed
+variation 0.133 to 0.125; guest 33.5-34 to 35.3-35.6 fps, 0.135 to
+0.12-0.13, swings 36-46 to 20-25 in 10 s. At 4x the same as one target
+(host 30.2-30.5 fps, 0.12-0.13). 47 shared checkpoints agreed.
+
+**Frame rate through the hook.** After the `getPlayer` fix the hook is
+1.4% of the main thread's samples. The main thread waits 45% of its
+samples, mostly on the game's render jobs (`std::future`) and the GPU
+driver, so on this PC (two 4K games on one GPU) the frame rate is bound by
+rendering; the hook cannot raise it much further. What pacing costs is
+now about 1-5% at 1x and about 10% at 4x.
