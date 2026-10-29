@@ -691,9 +691,13 @@ frame, and is checked against its hash before it is stored; the finished
 file is checked against the manifest's file hash. A server stores received
 chunks compressed by itself, never an uploader's frames. Requests are
 capped at 16 KiB per frame and responses at 11 MiB. A side that sends
-nothing for a minute is given up on, and every chunk must move at
-64 KiB/s for its size (at least 5 s each), so nobody holds a transfer by
-trickling.
+nothing for a minute is given up on. The fetcher gives each chunk a
+64 KiB/s budget for its uncompressed size (at least 5 s, at most a minute).
+The sender uses that budget for the whole requested chunk batch, with one
+deadline rather than renewing it for each frame. This accommodates QUIC
+backpressure while the receiver verifies and stores earlier chunks, while
+still bounding a slow reader. Chunk validation and the fetcher's protection
+against a trickling sender remain unchanged.
 
 **Persistence.** Next to each room's log, a pointer file names its current
 snapshot and where it stands. A restored room keeps offering that snapshot

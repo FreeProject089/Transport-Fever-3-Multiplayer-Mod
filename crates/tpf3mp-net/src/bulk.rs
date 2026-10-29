@@ -15,7 +15,7 @@
 //! Store calls do blocking file I/O and run on Tokio's blocking pool.
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     path::PathBuf,
     time::Duration,
 };
@@ -151,7 +151,11 @@ pub async fn serve_with_progress(
     idle: Duration,
     mut progress: impl FnMut(Served),
 ) -> Result<Served, BulkError> {
-    let listed: HashSet<ChunkId> = manifest.chunks().iter().map(|entry| entry.id).collect();
+    let listed: HashMap<ChunkId, u64> = manifest
+        .chunks()
+        .iter()
+        .map(|entry| (entry.id, u64::from(entry.len)))
+        .collect();
     let manifest_bytes = manifest.to_bytes();
     let mut served = Served::default();
     loop {
@@ -182,11 +186,19 @@ pub async fn serve_with_progress(
                     return Err(BulkError::Violation("a chunk request of the wrong size"));
                 }
                 let ids: Vec<ChunkId> = ids.iter().map(chunk_id).collect();
-                if !ids.iter().all(|id| listed.contains(id)) {
+                if !ids.iter().all(|id| listed.contains_key(id)) {
                     return Err(BulkError::Violation(
                         "a request for a chunk not in the manifest",
                     ));
                 }
+                // QUIC may block a small frame while the receiver verifies
+                // and stores earlier chunks. Apply the rate budget to the
+                // requested batch, using the manifest's raw sizes as the
+                // fetcher does. One deadline covers the whole batch: it
+                // cannot be renewed by trickling another small frame.
+                let bytes = ids.iter().map(|id| listed[id]).sum();
+                let budget = frame_time(bytes, idle);
+                let deadline = tokio::time::Instant::now() + budget;
                 for id in ids {
                     let store = store.clone();
                     let frame = match blocking(move || store.read_compressed(&id)).await? {
@@ -210,16 +222,16 @@ pub async fn serve_with_progress(
                     };
                     served.chunks += 1;
                     served.bytes += frame.len() as u64;
-                    let deadline = frame_time(frame.len() as u64, idle);
                     let response = BulkResponse::Chunk {
                         id: chunk_hash(&id),
                         frame,
                     };
-                    within(
+                    tokio::time::timeout_at(
                         deadline,
                         write_message(send, &response, BULK_RESPONSE_MAX_FRAME),
                     )
-                    .await??;
+                    .await
+                    .map_err(|_| BulkError::Idle(budget))??;
                     progress(served);
                 }
             }

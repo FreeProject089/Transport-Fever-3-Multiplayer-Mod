@@ -71,6 +71,7 @@ pub mod plugins;
 pub mod previewcancel;
 pub mod previews;
 pub mod probe;
+mod ready_budget;
 pub mod roadtrace;
 pub mod savefast;
 pub mod seeds;
