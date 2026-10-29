@@ -165,3 +165,47 @@ divergence, resync or held world was logged. Raw logs are in
   world numbers its entities differently from one that loaded it
   (PROTOCOL.md, "Snapshots"). That trade (one long replay against everyone
   reloading) is a decision for the owner.
+
+## Micro-stutter: vehicles moving unevenly up close
+
+The owner's report: constant micro-stutter when zoomed in on a train. The
+fixes above remove freezes, not this.
+
+**Measured.** A new `motion:` line (docs/HOOKS.md, "What the renderer
+shows") works out each frame's on-screen simulation time from `totalTime`,
+`lastSyncTime`, `guiFrameTime` and the batch's updates, and its rate against
+the room's pace. In steady play, two games of Bubu's world on this PC:
+
+- no frame stood still for a late or an empty batch (they occur only
+  around a speed change, an industry connection or a save);
+- by the game's own clock the speed was exactly 1.00 at p5 and p95, at 1x
+  and 4x: the batches and the trim are even;
+- by the wall clock it swung between about 0.65 and 1.35 (coefficient of
+  variation 0.25-0.29; 100-135 frames in 10 s whose speed differed from
+  the previous frame's by more than 30%).
+
+A dump of 2,400 frames at 1x (`TPF3MP_HOOK_MOTION=frames`) showed why: the
+`dt` the game adds to `totalTime` at frame `i` is the wall time of frame
+`i - 1` (correlation +1.000; +0.27 with frame `i`). With frames of 22 to 37
+ms (two 4K games on one PC), each frame moves vehicles by the previous
+frame's length. Smoothing that `dt` would help little (0.23 to 0.18 at
+best, simulated), since the next frame's length is not predictable.
+
+**Fixed: frame pacing with a matching clock** (`pacing.rs`). In a room's
+game the hook holds every frame to the 75th percentile of the last 120
+frames' own length, and gives `CGame::Step` that target as its `dt`, the
+difference to the game's own repaid a tenth a frame. Measured, same world
+and PC (1x / 4x, host):
+
+| | without | 85th percentile | 75th percentile (default) |
+|---|---|---|---|
+| speed variation (cv) | 0.25-0.27 / 0.25-0.29 | 0.09-0.10 / 0.11-0.12 | 0.13 / 0.11-0.14 |
+| frames swinging >30% per 10 s | 115-135 / 100-118 | 18-21 / 17-19 | 25-27 / 19-22 |
+| speed p5-p95 | 0.65-1.40 / 0.63-1.33 | 0.84-1.11 / 0.81-1.13 | 0.76-1.15 / 0.74-1.14 |
+| fps | 37-38 / 34 | 31-32 / 29-30 | 35-36 / 30-31 |
+
+The guest's window (in the background) lost more frames at 4x (31 to
+24-26 fps at the 85th, 26-28 at the 75th) for the same gain. Two games on
+one PC widen the frame times; one game per PC should lose fewer.
+Every shared checkpoint agreed in all four pacing runs (45, 26, 63, 45).
+`TPF3MP_HOOK_FRAME_PACING=0` turns pacing and its clock off.
